@@ -80,6 +80,20 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
       }
     }
   }
+  if (input.cdbOfMul.valid) {
+    if (!input.squashDetect.needSquash ||
+        ROB::isOlder(input.cdbOfMul.robTag, input.squashDetect.SquashTag)) {
+      auto robIdx = ((input.cdbOfMul.robTag) & 0x3F);
+      auto value = input.cdbOfMul.value;
+      int newPhy = input.ROBModule.getNewPhy(robIdx);
+      if (newPhy != InvalidPhy) {
+        CPUstate.PRFModule.write(newPhy, value);
+        if (debug::enabled(debug::TOPIC_EXEC))
+          debug::print("prf mul-write rob=%u phy=%d val=%08x\n",
+                       input.cdbOfMul.robTag, newPhy, (uint32_t)value);
+      }
+    }
+  }
   if (input.issuePacket.valid) {
     CPUstate.PRFModule.PRFHeadCkpt[input.issuePacket.robEntry.ckptId] =
         headSeq + (input.issuePacket.allocDest ? 1 : 0);

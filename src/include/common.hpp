@@ -4,6 +4,7 @@
 #include <cstdint>
 using RobTag = uint8_t;
 constexpr int INTEGERRS_CAP = 8;
+constexpr int MULTIPLYRS_CAP = 4; // dedicated RS for the M-extension multiply ops
 constexpr int STORERS_CAP = 4;
 constexpr int LOADRS_CAP = 4;
 constexpr int BRANCHRS_CAP = 4;
@@ -19,6 +20,7 @@ constexpr int IQ_CAP = 16;
 constexpr int REGISTER_CAP = 32;
 constexpr int FLUSHARBITER_CAP = 4;
 constexpr int ALU_CAP = 4;
+constexpr int MUL_CAP = 4;
 constexpr int AGU_CAP = 4;
 constexpr int BRU_CAP = 4;
 constexpr int PC_Direct_CAP = 1 << 12;
@@ -71,6 +73,7 @@ enum class ValueState {
 
 enum class SquashKind : uint8_t { None, Branch, LoadViolation };
 enum class Operation {
+  OP_INVALID,
   ADD,
   SUB,
   AND,
@@ -92,12 +95,23 @@ enum class Operation {
   Load,
   Store,
   JALR,
-  OP_INVALID,
+  MUL,
+  MULH,
+  MULHU,
+  MULHSU,
+  // M-extension divide/remainder: enum reserves the full funct3 space so the
+  // decode table is complete; stage A only *decodes+issues* funct3 0..3 and
+  // deliberately stalls funct3 4..7 (no DIV unit yet, no silent-0 trap).
+  DIV,
+  DIVU,
+  REM,
+  REMU,
 };
 constexpr bool isControlOp(Operation op) { return op == Operation::JALR; }
 enum class RISC_V {
   R,
   I,
+  M,
   Istar,
   S,
   B,
@@ -161,22 +175,7 @@ struct SquashInfo {
   uint32_t SquashPC = 0;
   uint8_t CkptId = 0;
 };
-struct ALU;
-struct aluCDB {
-  int32_t value = 0;
-  uint8_t robTag = 0;
-  bool isControl = false;
-  bool valid = false;
-  static aluCDB build(const ALU &alu, const SquashInfo &squash);
-};
-struct LQ;
-struct lqCDB {
-  int32_t value = 0;
-  uint8_t robTag = 0;
-  uint8_t memIndex = 0;
-  bool valid = false;
-  static lqCDB build(const LQ &lq, const SquashInfo &squash);
-};
+#include "CDB.hpp"
 
 struct Operand {
   int tag = InvalidPhy;
@@ -263,7 +262,7 @@ struct UopView {
   int32_t predictedPC = 0;
   uint8_t ckptId = 0;
 };
-enum class RSType { Integer, Branch, Load, StoreAddr };
+enum class RSType { Integer, Multiply, Branch, Load, StoreAddr };
 struct DispatchInfo {
   bool valid = false;
   int rsIndex = -1;
@@ -271,7 +270,7 @@ struct DispatchInfo {
   RSType rsType = RSType::Integer;
 };
 struct DispatchBus {
-  DispatchInfo alu, agu, bru;
+  DispatchInfo alu, agu, bru, mul;
 };
 class ROB;
 class PRF;

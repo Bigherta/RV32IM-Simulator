@@ -163,6 +163,14 @@ void ROB::work() {
       }
     }
   }
+  if (static_cast<bool>(cdbOfMUL.cdbValid)) {
+    uint32_t cdbTag = static_cast<uint32_t>(cdbOfMUL.cdbRobTag);
+    if (!needSquash || ROB::isOlder(cdbTag, squashTag)) {
+      if (!curEmpty && !ROB::isOlder(cdbTag, curHead)) {
+        markReady(cdbTag & 0x3F);
+      }
+    }
+  }
 
   if (needSquash) {
     flush(squashTag);

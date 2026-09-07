@@ -15,10 +15,12 @@ set(CPU_SOURCES
 	src/DMEM/DMEM.cpp
 	src/ROB/ROB.cpp
 	src/RS/RS.cpp
-	src/ALU/ALU.cpp
-	src/AGU/AGU.cpp
+ 	src/ALU/ALU.cpp
+ 	src/MUL/MUL.cpp
+ 	src/AGU/AGU.cpp
 	src/BRU/BRU.cpp
 	src/StaticArbiter/StaticArbiter.cpp
+	src/CDB/CDB.cpp
 	src/DynamicArbiter/DynamicArbiter.cpp
 	src/IMEM/IMEM.cpp
 	src/ICache/ICache.cpp

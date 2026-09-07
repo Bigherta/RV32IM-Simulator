@@ -1,5 +1,6 @@
 #include "../include/RS.hpp"
 #include "../include/CPU.hpp"
+#include "common.hpp"
 int RSUnit::tryAllocInteger() const {
   for (int i = 0; i < INTEGERRS_CAP; i++)
     if (integerRS[i].free)
@@ -30,11 +31,19 @@ int RSUnit::tryAllocBranch() const {
       return i;
   return -1;
 }
+int RSUnit::tryAllocMultiply() const {
+  for (int i = 0; i < MULTIPLYRS_CAP; i++)
+    if (multiplyRS[i].free)
+      return i;
+  return -1;
+}
 void RSUnit::tick(const RSInput &input, systemState &CPUstate) {
   const auto &p = input.issuePacket;
   if (p.valid) {
     if (p.hasInteger) {
       CPUstate.RSModule.integerRS[p.integerSlot] = p.integerRS;
+    } else if (p.hasMultiply) {
+      CPUstate.RSModule.multiplyRS[p.multiplySlot] = p.multiplyRS;
     } else if (p.hasLoad) {
       CPUstate.RSModule.loadRS[p.loadSlot] = p.loadRS;
     } else if (p.hasStore) {
@@ -49,6 +58,12 @@ void RSUnit::tick(const RSInput &input, systemState &CPUstate) {
     CPUstate.RSModule.integerRS[idx].free = true;
     CPUstate.RSModule.integerRS[idx].src1 = {};
     CPUstate.RSModule.integerRS[idx].src2 = {};
+  }
+  if (input.dispatchBus.mul.valid) {
+    int idx = input.dispatchBus.mul.rsIndex;
+    CPUstate.RSModule.multiplyRS[idx].free = true;
+    CPUstate.RSModule.multiplyRS[idx].src1 = {};
+    CPUstate.RSModule.multiplyRS[idx].src2 = {};
   }
   if (input.dispatchBus.agu.valid) {
     int idx = input.dispatchBus.agu.rsIndex;
@@ -84,6 +99,14 @@ void RSUnit::tick(const RSInput &input, systemState &CPUstate) {
         CPUstate.RSModule.integerRS[i].free = true;
         CPUstate.RSModule.integerRS[i].src1 = {};
         CPUstate.RSModule.integerRS[i].src2 = {};
+      }
+    }
+    for (int i = 0; i < MULTIPLYRS_CAP; i++) {
+      if (!multiplyRS[i].free &&
+          ROB::isOlder(sqTag, multiplyRS[i].robTag)) {
+        CPUstate.RSModule.multiplyRS[i].free = true;
+        CPUstate.RSModule.multiplyRS[i].src1 = {};
+        CPUstate.RSModule.multiplyRS[i].src2 = {};
       }
     }
     for (int i = 0; i < LOADRS_CAP; i++) {

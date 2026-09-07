@@ -8,20 +8,22 @@
 #include <cassert>
 #include <cstdint>
 
-DispatchBus DispatchArbiter::arbitrate(const RSUnit &RS, const ALU &ALU,
-                                       const AGU &AGU, const BRU &BRU,
-                                       const ROB &ROB, const PRF &PRF,
+DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
+                                       const AGU &agu, const BRU &bru,
+                                       const MUL &mul, const ROB &rob,
+                                       const PRF &prf,
                                        const SquashInfo &squash) {
   DispatchBus dispatch;
-  auto opReady = [&PRF](const Operand &op) { return PRF.isOperandReady(op); };
-  if (!ALU.isFull()) {
+  // ALU channel: oldest operand-ready integerRS entry (I-extension ALU ops).
+  if (!alu.isFull()) {
     bool foundAny = false;
-    int best = -1;
+    int best = 0;
     uint8_t bestTag = 0;
     for (int i = 0; i < INTEGERRS_CAP; ++i) {
-      auto rs = RS.integerRS[i];
-      if (!rs.free && opReady(rs.src1) && opReady(rs.src2)) {
-        auto tag = rs.robTag;
+      const auto &rs_ = rs.integerRS[i];
+      if (!rs_.free && prf.isOperandReady(rs_.src1) &&
+          prf.isOperandReady(rs_.src2)) {
+        auto tag = rs_.robTag;
         if (!foundAny || ROB::isOlder(tag, bestTag)) {
           foundAny = true;
           best = i;
@@ -38,15 +40,46 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &RS, const ALU &ALU,
         dispatch.alu.valid = false;
     }
   }
-  if (!AGU.isFull()) {
+  // MUL channel: oldest operand-ready multiplyRS entry. The dedicated
+  // multiply RS decouples M-ops from the integer RS shared with ALU ops,
+  // so a mul-heavy stream cannot starve I-extension ALU ops of RS slots.
+  if (!mul.isFull()) {
     bool foundAny = false;
-    int best = -1;
+    int best = 0;
+    uint8_t bestTag = 0;
+    for (int i = 0; i < MULTIPLYRS_CAP; ++i) {
+      const auto &rs_ = rs.multiplyRS[i];
+      if (!rs_.free && prf.isOperandReady(rs_.src1) &&
+          prf.isOperandReady(rs_.src2)) {
+        auto tag = rs_.robTag;
+        if (!foundAny || ROB::isOlder(tag, bestTag)) {
+          foundAny = true;
+          best = i;
+          bestTag = tag;
+        }
+      }
+    }
+    if (foundAny) {
+      dispatch.mul.rsIndex = best;
+      dispatch.mul.robTag = bestTag;
+      dispatch.mul.rsType = RSType::Multiply;
+      dispatch.mul.valid = true;
+      if (squash.needSquash && !ROB::isOlder(bestTag, squash.SquashTag))
+        dispatch.mul.valid = false;
+    }
+  }
+  // AGU channel: one memory-op dispatch per cycle, oldest first; loads
+  // (both sources ready) outrank store-address (single source ready).
+  if (!agu.isFull()) {
+    bool foundAny = false;
+    int best = 0;
     uint8_t bestTag = 0;
     RSType bestType = RSType::Load;
     for (int i = 0; i < LOADRS_CAP; ++i) {
-      auto rs = RS.loadRS[i];
-      if (!rs.free && opReady(rs.src1) && opReady(rs.src2)) {
-        auto tag = rs.robTag;
+      const auto &rs_ = rs.loadRS[i];
+      if (!rs_.free && prf.isOperandReady(rs_.src1) &&
+          prf.isOperandReady(rs_.src2)) {
+        auto tag = rs_.robTag;
         if (!foundAny || ROB::isOlder(tag, bestTag)) {
           foundAny = true;
           best = i;
@@ -56,9 +89,9 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &RS, const ALU &ALU,
       }
     }
     for (int i = 0; i < STORERS_CAP; ++i) {
-      auto rs = RS.storeAddressRS[i];
-      if (!rs.free && opReady(rs.src1)) {
-        auto tag = rs.robTag;
+      const auto &rs_ = rs.storeAddressRS[i];
+      if (!rs_.free && prf.isOperandReady(rs_.src1)) {
+        auto tag = rs_.robTag;
         if (!foundAny || ROB::isOlder(tag, bestTag)) {
           foundAny = true;
           best = i;
@@ -76,14 +109,16 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &RS, const ALU &ALU,
         dispatch.agu.valid = false;
     }
   }
-  if (!BRU.isFull()) {
+  // BRU channel: oldest operand-ready branchRS entry.
+  if (!bru.isFull()) {
     bool foundAny = false;
-    int best = -1;
+    int best = 0;
     uint8_t bestTag = 0;
     for (int i = 0; i < BRANCHRS_CAP; ++i) {
-      auto rs = RS.branchRS[i];
-      if (!rs.free && opReady(rs.src1) && opReady(rs.src2)) {
-        auto tag = rs.robTag;
+      const auto &rs_ = rs.branchRS[i];
+      if (!rs_.free && prf.isOperandReady(rs_.src1) &&
+          prf.isOperandReady(rs_.src2)) {
+        auto tag = rs_.robTag;
         if (!foundAny || ROB::isOlder(tag, bestTag)) {
           foundAny = true;
           best = i;
@@ -104,9 +139,8 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &RS, const ALU &ALU,
 }
 
 MemDispatchDecision MemArbiter::arbitrate(const LQ &LQ, const SQ &SQ,
-                                                 const ROB &rob,
-                                                 const DCache &dcache,
-                                                 const SquashInfo &squash) {
+                                         const ROB &rob, const DCache &dcache,
+                                         const SquashInfo &squash) {
   MemDispatchDecision memDecision{};
   if (!dcache.isBusy() && !SQ.isEmpty()) {
     auto storeTag = SQ.headRobTag();
@@ -139,8 +173,7 @@ MemDispatchDecision MemArbiter::arbitrate(const LQ &LQ, const SQ &SQ,
         newRequest.robTag = LQ.getRobTag(loadIndex);
         newRequest.memIndex = static_cast<uint8_t>(loadIndex);
         if (!squash.needSquash ||
-            (squash.needSquash &&
-             ROB::isOlder(newRequest.robTag, squash.SquashTag))) {
+            (squash.needSquash && ROB::isOlder(newRequest.robTag, squash.SquashTag))) {
           memDecision.valid = true;
           memDecision.request = newRequest;
         }
@@ -155,7 +188,7 @@ MemDispatchDecision MemArbiter::arbitrate(const LQ &LQ, const SQ &SQ,
 // PRF at dispatch), x0 is a constant zero, and immediates/PC are constants.
 static Operand resolveSrc(const IssueArbiterInput &input, int regNum) {
   auto op = input.RATModule.readOperand(regNum);
-  if (op.ready)  // x0: constant zero
+  if (op.ready) // x0: constant zero
     return {.tag = InvalidPhy, .imm = op.value};
   assert(op.phyRegIndex != InvalidPhy); // P0 is never mapped (P0-dead invariant)
   return {.tag = op.phyRegIndex, .imm = 0};
@@ -196,8 +229,7 @@ IssuePacket IssueArbiter::issue_IntegerRS(const IssueArbiterInput &input,
   p.robEntry.lqtTailSnapshot = input.LQModule.getTail();
   p.robEntry.sqTailSnapshot = input.SQModule.getTail();
   p.robEntry.ckptId = inst.ckptId;
-  p.robEntry.oldPhy =
-      inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
+  p.robEntry.oldPhy = inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
   p.robEntry.newPhy = p.phy;
   if (debug::enabled(debug::TOPIC_PRF) && inst.allocDest)
     debug::print("PRF rename x%d <- P%d (old=P%d)\n", destination, p.phy,
@@ -208,9 +240,52 @@ IssuePacket IssueArbiter::issue_IntegerRS(const IssueArbiterInput &input,
     p.robEntry.type = ROBType::LINK;
     p.robEntry.isIndirect = true; // JALR path: target is register-driven
     if (inst.rd == 0 && inst.rs1 == 1 && inst.imm == 0)
-      p.robEntry.isRet = true;  // JALR x0, 0(x1): return
+      p.robEntry.isRet = true; // JALR x0, 0(x1): return
   }
   p.integerRS.robTag = p.robTag;
+  return p;
+}
+
+// M-extension multiply ops (funct3 0..3) issue into the dedicated
+// multiplyRS, decoupled from the integer RS so a mul-heavy stream cannot
+// starve ALU-class I-ops of RS slots. The payload mirrors issue_IntegerRS
+// (REGISTER ROB entry, two register sources, optional dest rename).
+IssuePacket IssueArbiter::issue_Multiply(const IssueArbiterInput &input,
+                                         const UopView &inst) {
+  IssuePacket p{};
+  if (input.ROBModule.isFull()) {
+    return p;
+  }
+  int mulSlot = input.RSModule.tryAllocMultiply();
+  if (mulSlot < 0) {
+    return p;
+  }
+  p.valid = true;
+  p.hasMultiply = true;
+  p.multiplySlot = mulSlot;
+  p.robTag = input.ROBModule.getNextTag();
+  p.multiplyRS.free = false;
+  p.multiplyRS.op = decodeOp(inst);
+  auto destination = inst.rd;
+  p.multiplyRS.src1 = resolveSrc(input, inst.rs1);
+  p.multiplyRS.src2 = resolveSrc(input, inst.rs2);
+  if (inst.allocDest && !input.PRFModule.isFreeListEmpty()) {
+    p.allocDest = true;
+    p.phy = input.PRFModule.getFreeListSlot(input.PRFModule.getHeadSeq());
+  }
+  p.robEntry = ROBEntry(ROBType::REGISTER);
+  p.robEntry.dest = destination;
+  p.robEntry.pc = inst.pc;
+  p.robEntry.predictedPC = inst.predictedPC;
+  p.robEntry.lqtTailSnapshot = input.LQModule.getTail();
+  p.robEntry.sqTailSnapshot = input.SQModule.getTail();
+  p.robEntry.ckptId = inst.ckptId;
+  p.robEntry.oldPhy = inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
+  p.robEntry.newPhy = p.phy;
+  if (debug::enabled(debug::TOPIC_PRF) && inst.allocDest)
+    debug::print("PRF rename x%d <- P%d (old=P%d)\n", destination, p.phy,
+                 p.robEntry.oldPhy);
+  p.multiplyRS.robTag = p.robTag;
   return p;
 }
 
@@ -247,8 +322,7 @@ IssuePacket IssueArbiter::issue_UandJ(const IssueArbiterInput &input,
   p.robEntry.lqtTailSnapshot = input.LQModule.getTail();
   p.robEntry.sqTailSnapshot = input.SQModule.getTail();
   p.robEntry.ckptId = inst.ckptId;
-  p.robEntry.oldPhy =
-      inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
+  p.robEntry.oldPhy = inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
   p.robEntry.newPhy = p.phy;
   if (debug::enabled(debug::TOPIC_PRF) && inst.allocDest)
     debug::print("PRF rename x%d <- P%d (old=P%d)\n", destination, p.phy,
@@ -258,7 +332,7 @@ IssuePacket IssueArbiter::issue_UandJ(const IssueArbiterInput &input,
     p.pc = inst.pc;
     p.robEntry.type = ROBType::LINK;
     if (inst.rd == 1)
-      p.robEntry.isCall = true;  // JAL with return address register
+      p.robEntry.isCall = true; // JAL with return address register
   }
   p.integerRS.robTag = p.robTag;
   return p;
@@ -331,8 +405,7 @@ IssuePacket IssueArbiter::issue_Load(const IssueArbiterInput &input,
   // the LQ over its own entry, freezing retirement at that row.
   p.robEntry.lqtTailSnapshot = input.LQModule.getTailSnapshot();
   p.robEntry.sqTailSnapshot = input.SQModule.getTail();
-  p.robEntry.oldPhy =
-      inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
+  p.robEntry.oldPhy = inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
   p.robEntry.newPhy = p.phy;
   p.robEntry.ckptId = inst.ckptId;
   if (debug::enabled(debug::TOPIC_PRF) && inst.allocDest)
@@ -360,8 +433,7 @@ IssuePacket IssueArbiter::issue_Store(const IssueArbiterInput &input,
   p.storeValueSlot = storeValueSlot;
   p.nBytes = n_bytes;
   p.robTag = input.ROBModule.getNextTag();
-  p.storeAddrRS.memIndex =
-      static_cast<uint8_t>(input.SQModule.getTail() | MEM_STORE_BIT);
+  p.storeAddrRS.memIndex = static_cast<uint8_t>(input.SQModule.getTail() | MEM_STORE_BIT);
   p.storeValueRS.memIndex = p.storeAddrRS.memIndex;
   p.storeAddrRS.free = false;
   p.storeAddrRS.op = decodeOp(inst);
@@ -407,6 +479,24 @@ Operation IssueArbiter::decodeOp(const UopView &inst) {
       return Operation::OR;
     case 0b1110000000:
       return Operation::AND;
+    default:
+      return Operation::OP_INVALID;
+    }
+  }
+  if (inst.type == RISC_V::M) {
+    // funct7 == 0b0000001 (guaranteed by the decoder's M classification).
+    // Stage A decodes only the four multiply ops; funct3 4..7 (DIV/REM
+    // family) stay undecoded so IssueArbiter::build can stall them instead
+    // of silently producing 0 in the ALU.
+    switch (inst.funct3) {
+    case 0b000:
+      return Operation::MUL;
+    case 0b001:
+      return Operation::MULH;
+    case 0b010:
+      return Operation::MULHSU;
+    case 0b011:
+      return Operation::MULHU;
     default:
       return Operation::OP_INVALID;
     }
@@ -495,6 +585,15 @@ IssuePacket IssueArbiter::build(const IssueArbiterInput &input) {
   switch (inst.type) {
   case RISC_V::R: {
     issuePacket = issue_IntegerRS(input, inst, true, false, false);
+    break;
+  }
+  case RISC_V::M: {
+    // Only the stage-A multiply ops (funct3 0..3) are issuable; DIV/REM
+    // family stays OP_INVALID and is NOT issued -> the decode head blocks
+    // (visible stall), never an ALU-silent-0. M-ops enter the dedicated
+    // multiplyRS so they cannot consume integerRS slots from ALU ops.
+    if (decodeOp(inst) != Operation::OP_INVALID)
+      issuePacket = issue_Multiply(input, inst);
     break;
   }
   case RISC_V::I: {
@@ -587,5 +686,9 @@ IssuePacket IssueArbiter::build(const IssueArbiterInput &input) {
     break;
   }
   }
+  if (issuePacket.valid && debug::enabled(debug::TOPIC_EXEC))
+    debug::print("issue pc=%08x rob=%u int=%d br=%d halt=%d\n", inst.pc,
+                 issuePacket.robTag, issuePacket.hasInteger ? 1 : 0,
+                 issuePacket.hasBranch ? 1 : 0, issuePacket.isHalt ? 1 : 0);
   return issuePacket;
 }

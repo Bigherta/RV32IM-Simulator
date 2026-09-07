@@ -2,51 +2,6 @@
 #include <cassert>
 #include <cstdint>
 
-// ---- AluCDBArbiter / LqCDBArbiter: dual-CDB bus sources ----
-// Pure combinational: the retired CDBArbiter's age arbitration is gone (each
-// bus has a single candidate); the per-candidate squash guard is verbatim
-// from the former aluLive()/lsqLive(). Outputs are lazy Wires re-evaluated
-// every cycle like an always_comb.
-bool AluCDBArbiter::aluLive() const {
-  return !static_cast<bool>(aluEmpty) &&
-         (!static_cast<bool>(squashNeed) ||
-          ROB::isOlder(static_cast<uint32_t>(aluRobTag),
-                       static_cast<uint32_t>(squashTag)));
-}
-
-void AluCDBArbiter::wire_output() {
-  valid = [this]() -> uint32_t { return aluLive() ? 1u : 0u; };
-  value = [this]() -> uint32_t {
-    return aluLive() ? static_cast<uint32_t>(aluValue) : 0u;
-  };
-  robTag = [this]() -> uint32_t {
-    return aluLive() ? static_cast<uint32_t>(aluRobTag) : 0u;
-  };
-  isControl = [this]() -> uint32_t {
-    return aluLive() ? static_cast<uint32_t>(aluIsControl) : 0u;
-  };
-}
-
-bool LqCDBArbiter::lsqLive() const {
-  return static_cast<bool>(lsqValid) &&
-         (!static_cast<bool>(squashNeed) ||
-          ROB::isOlder(static_cast<uint32_t>(lsqRobTag),
-                       static_cast<uint32_t>(squashTag)));
-}
-
-void LqCDBArbiter::wire_output() {
-  valid = [this]() -> uint32_t { return lsqLive() ? 1u : 0u; };
-  value = [this]() -> uint32_t {
-    return lsqLive() ? static_cast<uint32_t>(lsqValue) : 0u;
-  };
-  robTag = [this]() -> uint32_t {
-    return lsqLive() ? static_cast<uint32_t>(lsqRobTag) : 0u;
-  };
-  memIndex = [this]() -> uint32_t {
-    return lsqLive() ? static_cast<uint32_t>(lsqMemIndex) : 0u;
-  };
-}
-
 // ---- MemArbiter: stateless combinational memory-request arbiter ----
 // Store priority + load disambiguation semantics are verbatim from the
 // inlined MemRequestArbiter that used to live in CPU::comb().
@@ -155,6 +110,10 @@ DispatchArbiter::WinResult DispatchArbiter::bruSelect() const {
   return selectOldest(brBusy, brSrc1Tag, brSrc2Tag, brRobTag);
 }
 
+DispatchArbiter::WinResult DispatchArbiter::mulSelect() const {
+  return selectOldest(mulBusy, mulSrc1Tag, mulSrc2Tag, mulRobTag);
+}
+
 // load[0..3] ++ sa[0..7] concatenated into a single 12-slot pass -- verbatim
 // iteration order and fold condition of the former software double loop
 // (store-addr carries a single operand; equal tags keep the earlier slot).
@@ -250,6 +209,26 @@ void DispatchArbiter::wire_output() {
                ? static_cast<uint32_t>(RSType::Branch)
                : static_cast<uint32_t>(RSType::Integer);
   };
+  mul.valid = [this]() -> uint32_t {
+    WinResult w = mulSelect();
+    return !static_cast<bool>(mulFull) && w.v &&
+                   (!static_cast<bool>(squashNeed) ||
+                    ROB::isOlder(w.tag, static_cast<uint32_t>(squashTag)))
+               ? 1u
+               : 0u;
+  };
+  mul.rsIndex = [this]() -> uint32_t {
+    WinResult w = mulSelect();
+    return !static_cast<bool>(mulFull) && w.v ? w.idx : 0u;
+  };
+  mul.robTag = [this]() -> uint32_t {
+    WinResult w = mulSelect();
+    return !static_cast<bool>(mulFull) && w.v ? w.tag : 0u;
+  };
+  mul.rsType = [this]() -> uint32_t {
+    return static_cast<uint32_t>(RSType::Multiply); // verbatim: dedicated mul
+                                                   // grant carries its type
+  };
 }
 
 namespace {
@@ -280,6 +259,24 @@ Operation decodeOp(uint32_t type, uint32_t opcode, uint32_t funct3,
       return Operation::OR;
     case 0b1110000000:
       return Operation::AND;
+    default:
+      return Operation::OP_INVALID;
+    }
+  }
+  if (type == static_cast<uint32_t>(RISC_V::M)) {
+    // funct7 == 0b0000001 (guaranteed by the decoder's M classification).
+    // Stage A decodes only the four multiply ops; funct3 4..7 (DIV/REM
+    // family) stay OP_INVALID so the win gate stalls them instead of
+    // silently producing 0 in the ALU.
+    switch (funct3) {
+    case 0b000:
+      return Operation::MUL;
+    case 0b001:
+      return Operation::MULH;
+    case 0b010:
+      return Operation::MULHSU;
+    case 0b011:
+      return Operation::MULHU;
     default:
       return Operation::OP_INVALID;
     }
@@ -356,6 +353,8 @@ uint32_t IssueArbiter::issueClass() const {
   const uint32_t opcode = static_cast<uint32_t>(dec.opcode);
   if (type == static_cast<uint32_t>(RISC_V::R))
     return 1u;
+  if (type == static_cast<uint32_t>(RISC_V::M))
+    return 8u;
   if (type == static_cast<uint32_t>(RISC_V::I)) {
     if (opcode == 0x13u)
       return static_cast<bool>(dec.isHalt) ? 2u : 1u;
@@ -503,6 +502,18 @@ void IssueArbiter::wire_output() {
         return static_cast<uint32_t>(i);
     return 0u;
   };
+  mulFree = [this]() -> uint32_t {
+    for (int i = 0; i < MULTIPLYRS_CAP; i++)
+      if (!static_cast<bool>(rs.mulBusy[i]))
+        return 1u;
+    return 0u;
+  };
+  mulSlot = [this]() -> uint32_t {
+    for (int i = 0; i < MULTIPLYRS_CAP; i++)
+      if (!static_cast<bool>(rs.mulBusy[i]))
+        return static_cast<uint32_t>(i);
+    return 0u;
+  };
 
   win = [this]() -> uint32_t {
     if (static_cast<bool>(squashNeed) || static_cast<bool>(dec.isEmpty))
@@ -530,6 +541,13 @@ void IssueArbiter::wire_output() {
       return (!robFull && static_cast<bool>(intFree)) ? 6u : 0u;
     case 7u: // RV_INVALID
       return 7u;
+    case 8u: // MUL (issue_Multiply: the DIV/REM family decodes OP_INVALID
+             // and stalls the head instead of issuing)
+      return (!robFull && static_cast<bool>(mulFree) &&
+              static_cast<uint32_t>(opDec) !=
+                  static_cast<uint32_t>(Operation::OP_INVALID))
+                 ? 8u
+                 : 0u;
     default:
       return 0u;
     }
@@ -540,10 +558,10 @@ void IssueArbiter::wire_output() {
     return static_cast<uint32_t>(win) != 0u ? 1u : 0u;
   };
   core.allocDest = [this]() -> uint32_t {
-    // only the renaming branches (INT / LOAD / UJ) carry the allocDest
+    // only the renaming branches (INT / LOAD / UJ / MUL) carry the allocDest
     // block; HALT / STORE / BR / INVALID / none leave the default (false)
     const uint32_t w = static_cast<uint32_t>(win);
-    if (w != 1u && w != 3u && w != 6u)
+    if (w != 1u && w != 3u && w != 6u && w != 8u)
       return 0u;
     return (static_cast<bool>(dec.allocDest) &&
             !static_cast<bool>(prf.freeListEmpty))
@@ -552,7 +570,7 @@ void IssueArbiter::wire_output() {
   };
   core.phy = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
-    if (w != 1u && w != 3u && w != 6u)
+    if (w != 1u && w != 3u && w != 6u && w != 8u)
       return static_cast<uint32_t>(InvalidPhy);
     return (static_cast<bool>(dec.allocDest) &&
             !static_cast<bool>(prf.freeListEmpty))
@@ -561,7 +579,8 @@ void IssueArbiter::wire_output() {
   };
   core.robTag = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
-    return (w >= 1u && w <= 6u) ? static_cast<uint32_t>(rob.nextTag) : 0u;
+    return ((w >= 1u && w <= 6u) || w == 8u) ? static_cast<uint32_t>(rob.nextTag)
+                                            : 0u;
   };
   core.isLoad = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 3u ? 1u : 0u;
@@ -641,6 +660,9 @@ void IssueArbiter::wire_output() {
   select.hasBranch = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 5u ? 1u : 0u;
   };
+  select.hasMultiply = [this]() -> uint32_t {
+    return static_cast<uint32_t>(win) == 8u ? 1u : 0u;
+  };
   select.integerSlot = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
     return (w == 1u || w == 6u) ? static_cast<uint32_t>(intSlot) : 0u;
@@ -659,6 +681,10 @@ void IssueArbiter::wire_output() {
   };
   select.branchSlot = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 5u ? static_cast<uint32_t>(brSlot)
+                                            : 0u;
+  };
+  select.multiplySlot = [this]() -> uint32_t {
+    return static_cast<uint32_t>(win) == 8u ? static_cast<uint32_t>(mulSlot)
                                             : 0u;
   };
 
@@ -839,6 +865,38 @@ void IssueArbiter::wire_output() {
                                             : 0u;
   };
 
+  // ---- mulP payload (MUL branch: two register sources, dest rename) ----
+  mulP.op = [this]() -> uint32_t {
+    return static_cast<uint32_t>(win) == 8u
+               ? static_cast<uint32_t>(opDec)
+               : static_cast<uint32_t>(Operation::OP_INVALID);
+  };
+  mulP.s1Tag = [this]() -> uint32_t {
+    if (static_cast<uint32_t>(win) != 8u)
+      return static_cast<uint32_t>(InvalidPhy);
+    return static_cast<uint32_t>(resolveSrc(rat.s1).tag);
+  };
+  mulP.s1Imm = [this]() -> uint32_t {
+    if (static_cast<uint32_t>(win) != 8u)
+      return 0u;
+    return static_cast<uint32_t>(resolveSrc(rat.s1).imm);
+  };
+  mulP.s2Tag = [this]() -> uint32_t {
+    if (static_cast<uint32_t>(win) != 8u)
+      return static_cast<uint32_t>(InvalidPhy);
+    return static_cast<uint32_t>(resolveSrc(rat.s2).tag);
+  };
+  mulP.s2Imm = [this]() -> uint32_t {
+    if (static_cast<uint32_t>(win) != 8u)
+      return 0u;
+    return static_cast<uint32_t>(resolveSrc(rat.s2).imm);
+  };
+  mulP.robTag = [this]() -> uint32_t {
+    return static_cast<uint32_t>(win) == 8u
+               ? static_cast<uint32_t>(rob.nextTag)
+               : 0u;
+  };
+
   // ---- robEntry group ----
   robEntry.type = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
@@ -854,14 +912,14 @@ void IssueArbiter::wire_output() {
       return static_cast<uint32_t>(ROBType::STORE);
     if (w == 5u)
       return static_cast<uint32_t>(ROBType::BRANCH);
-    return static_cast<uint32_t>(ROBType::REGISTER); // 0/2/3/7 default
+    return static_cast<uint32_t>(ROBType::REGISTER); // 0/2/3/7/8 default
   };
   robEntry.isCommitReady = [this]() -> uint32_t {
     return static_cast<uint32_t>(win) == 2u ? 1u : 0u;
   };
   robEntry.dest = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
-    return (w == 1u || w == 2u || w == 3u || w == 6u)
+    return (w == 1u || w == 2u || w == 3u || w == 6u || w == 8u)
                ? static_cast<uint32_t>(dec.rd)
                : 0u;
   };
@@ -894,26 +952,27 @@ void IssueArbiter::wire_output() {
   };
   robEntry.ckptId = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
-    return (w >= 1u && w <= 6u) ? static_cast<uint32_t>(dec.ckptId) : 0u;
+    return ((w >= 1u && w <= 6u) || w == 8u) ? static_cast<uint32_t>(dec.ckptId)
+                                            : 0u;
   };
   robEntry.predictedPC = [this]() -> uint32_t {
-    // only INT / BR / UJ assign predictedPC (LOAD/STORE/HALT leave 0)
+    // only INT / BR / UJ / MUL assign predictedPC (LOAD/STORE/HALT leave 0)
     const uint32_t w = static_cast<uint32_t>(win);
-    return (w == 1u || w == 5u || w == 6u)
+    return (w == 1u || w == 5u || w == 6u || w == 8u)
                ? static_cast<uint32_t>(dec.predictedPC)
                : 0u;
   };
   robEntry.pc = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
-    return (w >= 1u && w <= 6u && w != 2u)
+    return (((w >= 1u && w <= 6u) || w == 8u) && w != 2u)
                ? static_cast<uint32_t>(dec.pc)
                : 0u;
   };
   robEntry.lqTailSnapshot = [this]() -> uint32_t {
     // LOAD uses the include-self LQ snapshot (LoadViolation rewind guard);
-    // INT/UJ/BR and STORE use the raw LQ tail.
+    // INT/UJ/BR/MUL and STORE use the raw LQ tail.
     const uint32_t w = static_cast<uint32_t>(win);
-    if (w == 1u || w == 4u || w == 5u || w == 6u)
+    if (w == 1u || w == 4u || w == 5u || w == 6u || w == 8u)
       return static_cast<uint32_t>(lsq.lqTail);
     if (w == 3u)
       return static_cast<uint32_t>(lsq.lqTailSnapshot);
@@ -922,16 +981,17 @@ void IssueArbiter::wire_output() {
   robEntry.sqTailSnapshot = [this]() -> uint32_t {
     // STORE uses the include-self SQ snapshot; all other issuers the raw tail
     const uint32_t w = static_cast<uint32_t>(win);
-    if (w == 1u || w == 3u || w == 5u || w == 6u)
+    if (w == 1u || w == 3u || w == 5u || w == 6u || w == 8u)
       return static_cast<uint32_t>(lsq.sqTail);
     if (w == 4u)
       return static_cast<uint32_t>(lsq.sqTailSnapshot);
     return 0u;
   };
   robEntry.newPhy = [this]() -> uint32_t {
-    // renaming branches only (INT / LOAD / UJ); STORE/BR/HALT leave InvalidPhy
+    // renaming branches only (INT / LOAD / UJ / MUL); STORE/BR/HALT leave
+    // InvalidPhy
     const uint32_t w = static_cast<uint32_t>(win);
-    if (w != 1u && w != 3u && w != 6u)
+    if (w != 1u && w != 3u && w != 6u && w != 8u)
       return static_cast<uint32_t>(InvalidPhy);
     return (static_cast<bool>(dec.allocDest) &&
             !static_cast<bool>(prf.freeListEmpty))
@@ -939,9 +999,10 @@ void IssueArbiter::wire_output() {
                : static_cast<uint32_t>(InvalidPhy);
   };
   robEntry.oldPhy = [this]() -> uint32_t {
-    // only INT / LOAD / UJ assign oldPhy (verbatim per-branch assignments)
+    // only INT / LOAD / UJ / MUL assign oldPhy (verbatim per-branch
+    // assignments)
     const uint32_t w = static_cast<uint32_t>(win);
-    if (w != 1u && w != 3u && w != 6u)
+    if (w != 1u && w != 3u && w != 6u && w != 8u)
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<bool>(dec.allocDest)
                ? static_cast<uint32_t>(rat.rdOldPhy)

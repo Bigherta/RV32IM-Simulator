@@ -1,16 +1,17 @@
 #pragma once
 // StaticArbiter: the stateless arbiter family (pure combinational, zero
-// flip-flops in RTL). CDBArbiter / DispatchArbiter / MemArbiter / IssueArbiter
-// share one form: no members at all, every entry point is a static function of
-// its module snapshots. CDBBus::build rides along here (it is a bus, not an
-// arbiter -- its type declaration stays in common.hpp because LQ holds one by
-// value). The stateful FlushArbiter lives separately in DynamicArbiter.hpp
+// flip-flops in RTL). DispatchArbiter / MemArbiter / IssueArbiter share one
+// form: no members at all, every entry point is a static function of its
+// module snapshots. The dual-CDB bus payloads + build() factories live in
+// CDB.hpp/CDB.cpp (bus sources, not arbiters). The stateful FlushArbiter
+// lives separately in DynamicArbiter.hpp
 // (registered queue vs always_comb is the stateful/stateless hardware boundary).
 // NOTE: this tree is still the comb()/tick()/memcpy reference implementation --
 // only the file layout follows RISC-V-Simulator-Template/, the classes here are
 // plain C++ (no Register/Wire/dark::Module).
 #include "AGU.hpp"
 #include "ALU.hpp"
+#include "MUL.hpp"
 #include "BRU.hpp"
 #include "DCache.hpp"
 #include "Decoder.hpp"
@@ -25,8 +26,8 @@
 
 class DispatchArbiter {
 public:
-  static DispatchBus arbitrate(const RSUnit &RS, const ALU &ALU, const AGU &AGU,
-                               const BRU &BRU, const ROB &ROB, const PRF &PRF,
+  static DispatchBus arbitrate(const RSUnit &rs, const ALU &alu, const AGU &agu,
+                               const BRU &bru, const MUL & mul, const ROB &rob, const PRF &prf,
                                const SquashInfo &squash);
 };
 
@@ -48,6 +49,9 @@ struct IssuePacket {
   bool hasInteger = false;
   int integerSlot = -1;
   ReservationStation integerRS;
+  bool hasMultiply = false;
+  int multiplySlot = -1;
+  ReservationStation multiplyRS; // payload for the dedicated multiply RS
   bool hasLoad = false;
   int loadSlot = -1;
   LoadAddressRS loadRS;
@@ -88,6 +92,8 @@ private:
                                      const UopView &inst,
                                      bool has_rs2, bool imm_as_vk,
                                      bool isControl);
+  static IssuePacket issue_Multiply(const IssueArbiterInput &,
+                                    const UopView &inst);
   static IssuePacket issue_UandJ(const IssueArbiterInput &,
                                  const UopView &inst,
                                  bool has_PC, bool isControl = false);

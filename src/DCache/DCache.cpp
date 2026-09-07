@@ -81,7 +81,7 @@ bool DCache::PrRd(uint32_t addr, int n_bytes, bool isSigned, int32_t &value) {
     }
     request.readValid = true;
     request.read.address = (addr >> 4) << 4;
-    request.read.remainCycle = 3;
+    request.read.remainCycle = 50; // main-memory latency (benchmarks.md)
     if (cacheSet.lines[distributeWay].dirty) {
       request.writeValid = true;
       // Victim base address must be rebuilt from the VICTIM line's own tag,
@@ -93,7 +93,7 @@ bool DCache::PrRd(uint32_t addr, int n_bytes, bool isSigned, int32_t &value) {
           << 4;
       std::memcpy(request.write.lineData, cacheSet.lines[distributeWay].datas,
                   DCACHE_BLOCK_CAP);
-      request.write.remainCycle = 3; // write port latency, mirrors read
+      request.write.remainCycle = 50; // write port latency, mirrors read
     }
     return false;
   }
@@ -146,7 +146,7 @@ bool DCache::PrWr(uint32_t addr, uint32_t val, int n_bytes) {
     }
     request.readValid = true;
     request.read.address = (addr >> 4) << 4;
-    request.read.remainCycle = 3;
+    request.read.remainCycle = 50; // main-memory latency (benchmarks.md)
     if (cacheSet.lines[distributeWay].dirty) {
       request.writeValid = true;
       // Victim base address must be rebuilt from the VICTIM line's own tag,
@@ -158,7 +158,7 @@ bool DCache::PrWr(uint32_t addr, uint32_t val, int n_bytes) {
           << 4;
       std::memcpy(request.write.lineData, cacheSet.lines[distributeWay].datas,
                   DCACHE_BLOCK_CAP);
-      request.write.remainCycle = 3; // write port latency, mirrors read
+      request.write.remainCycle = 50; // write port latency, mirrors read
     }
     return false;
   }
@@ -185,6 +185,7 @@ void DCache::tick(const DCacheInput &input, systemState &CPUstate) {
         bool hit = CPUstate.DCacheModule.PrRd(req.address, req.n_bytes,
                                               req.isSigned, value);
         if (hit) {
+          ++CPUstate.DCacheModule.hitCount;
           // 1 拍自答：loadBuffer 当拍填好（LQ 下拍 comb 读 loadResp 可见）
 #ifdef _DEBUG
           // clean-line hit must match live DMEM (dirty lines are newer)
@@ -210,6 +211,7 @@ void DCache::tick(const DCacheInput &input, systemState &CPUstate) {
           CPUstate.DCacheModule.loadBuffer =
               LoadResponse{true, req.memIndex, req.robTag, value};
         } else {
+          ++CPUstate.DCacheModule.missCount;
           // PrRd parks without identity (address/width/sign only); the
           // request's LQ identity lives on the decision bus -- latch it here
           // so the FILL_WAIT serve stage can build the real LoadResponse.
@@ -222,7 +224,10 @@ void DCache::tick(const DCacheInput &input, systemState &CPUstate) {
       } else { /* Store 同构：PrWr 命中无 loadBuffer / 缺失 busy+FILL_WAIT */
         bool hit =
             CPUstate.DCacheModule.PrWr(req.address, req.value, req.n_bytes);
-        if (!hit) {
+        if (hit)
+          ++CPUstate.DCacheModule.hitCount;
+        else {
+          ++CPUstate.DCacheModule.missCount;
           CPUstate.DCacheModule.cacheRequestBuffer.request.memIndex =
               req.memIndex;
           CPUstate.DCacheModule.cacheRequestBuffer.request.robTag = req.robTag;

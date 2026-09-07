@@ -13,9 +13,11 @@ set(CPU_SOURCES
     src/RS/RS.cpp
     src/ALU/ALU.cpp
     src/AGU/AGU.cpp
+    src/MUL/MUL.cpp
     src/BRU/BRU.cpp
     src/DynamicArbiter/DynamicArbiter.cpp
     src/StaticArbiter/StaticArbiter.cpp
+    src/CDB/CDB.cpp
     src/IMEM/IMEM.cpp
     src/ICache/ICache.cpp
     src/FetchUnit/FetchUnit.cpp

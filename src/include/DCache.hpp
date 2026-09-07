@@ -4,6 +4,7 @@
 #include "common.hpp"
 #include <array>
 #include <cstdint>
+#include <cstring>
 
 struct systemState;
 struct DCachePark {
@@ -48,10 +49,23 @@ private:
   DCachePark cacheRequestBuffer;
   LoadResponse loadBuffer;
   DMEMRequest request;
+  uint64_t hitCount = 0;
+  uint64_t missCount = 0;
 
 public:
+  // Same whole-object zero-init as ICache: without this, cacheSets[] lines
+  // that are never filled carry uninitialized datas[] (never-written stack
+  // bytes), which made the reorder_test dcache digest garbage-dependent
+  // (valid=false lines were hashed too). Whole-object memset also pins any
+  // future member added without an NSDMI. Object is trivially copyable POD,
+  // so memset(this) is safe here (ICache already does the same).
+  DCache() { std::memset(this, 0, sizeof(*this)); }
   bool isBusy() const { return busy; }
   const DMEMRequest &forwardRequest() const { return request; }
+  // D$ access statistics: one count per accepted mem decision (load or store,
+  // hit == line present, miss == refill started). Debug/report only.
+  uint64_t getHitCount() const { return hitCount; }
+  uint64_t getMissCount() const { return missCount; }
   bool PrRd(uint32_t addr, int n_bytes, bool isSigned, int32_t &value);
   bool PrWr(uint32_t addr, uint32_t val, int n_bytes);
   LoadResponse loadResp(const SquashInfo &squash) const {

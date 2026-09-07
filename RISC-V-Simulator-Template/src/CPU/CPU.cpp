@@ -56,6 +56,7 @@ CPU::CPU(Memory mem) : IMEMModule(mem), DMEMModule(mem) {
   dcpu.add_module(&ROBModule);
   dcpu.add_module(&PRFModule);
   dcpu.add_module(&ALUModule);
+  dcpu.add_module(&MULModule);
   dcpu.add_module(&AGUModule);
   dcpu.add_module(&BRUModule);
   dcpu.add_module(&BPUModule);
@@ -65,6 +66,7 @@ CPU::CPU(Memory mem) : IMEMModule(mem), DMEMModule(mem) {
   dcpu.add_module(&RATModule);
   dcpu.add_module(&AluCDBArbiterModule);
   dcpu.add_module(&LqCDBArbiterModule);
+  dcpu.add_module(&MulCDBModule);
   dcpu.add_module(&MemArbiterModule);
   dcpu.add_module(&DispatchArbiterModule);
   dcpu.add_module(&IssueArbiterModule);
@@ -97,7 +99,9 @@ void CPU::wire() {
   // (still memcpy-snapshotted) ICache accessors; decodeFull samples the
   // DecodeUnit snapshot; haltFetched comes from the converted FetchUnit
   // Register.
-  FQModule.needSquash = [this]() { return static_cast<bool>(flushArbiter.needSquash); };
+  FQModule.needSquash = [this]() {
+    return static_cast<bool>(flushArbiter.needSquash);
+  };
   FQModule.haltFetched = [this]() {
     return static_cast<uint32_t>(FetchUnitModule.haltFetched);
   };
@@ -117,7 +121,9 @@ void CPU::wire() {
   // Wire the DecodeUnit's input wires once. fq* sample the converted
   // InstructBuffer's bridge accessors (_M_old); issueValid samples the
   // IssueArbiter's combinational Output.
-  DecodeUnitModule.needSquash = [this]() { return static_cast<bool>(flushArbiter.needSquash); };
+  DecodeUnitModule.needSquash = [this]() {
+    return static_cast<bool>(flushArbiter.needSquash);
+  };
   DecodeUnitModule.issueValid = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.core.valid);
   };
@@ -129,7 +135,9 @@ void CPU::wire() {
   };
   DecodeUnitModule.fqHeadCkptId = [this]() { return FQModule.headCkptId(); };
   // Wire the IMEM's input wires once.
-  IMEMModule.needSquash = [this]() { return static_cast<bool>(flushArbiter.needSquash); };
+  IMEMModule.needSquash = [this]() {
+    return static_cast<bool>(flushArbiter.needSquash);
+  };
   // original comb() gated imemFetch: a fetch that hits in the ICache must
   // NOT claim an IMEM line, and the claimed address is 16B-line aligned
   IMEMModule.fetchValid = [this]() {
@@ -146,7 +154,9 @@ void CPU::wire() {
   // popConsume is a combinational predicate over committed state; lineReturn
   // references IMEM's combinational return view (Wire-over-_M_old, no extra
   // pipeline stage).
-  ICacheModule.needSquash = [this]() { return static_cast<bool>(flushArbiter.needSquash); };
+  ICacheModule.needSquash = [this]() {
+    return static_cast<bool>(flushArbiter.needSquash);
+  };
   ICacheModule.fetchValid = [this]() {
     return static_cast<uint32_t>(BPUModule.fetchOut.valid);
   };
@@ -177,7 +187,9 @@ void CPU::wire() {
   // ---- Wire the dual-CDB bus sources (producers stay bridges reading _M_old;
   // lsq* are gated here so an invalid CDBDetect index never reaches
   // getValue's throw; each source carries its own squash guard) ----
-  AluCDBArbiterModule.aluEmpty = [this]() { return ALUModule.isEmpty() ? 1u : 0u; };
+  AluCDBArbiterModule.aluEmpty = [this]() {
+    return ALUModule.isEmpty() ? 1u : 0u;
+  };
   AluCDBArbiterModule.aluValue = [this]() {
     return static_cast<uint32_t>(ALUModule.headValue());
   };
@@ -187,7 +199,9 @@ void CPU::wire() {
   AluCDBArbiterModule.aluIsControl = [this]() {
     return ALUModule.headIsControl() ? 1u : 0u;
   };
-  AluCDBArbiterModule.squashNeed = [this]() { return static_cast<bool>(flushArbiter.needSquash); };
+  AluCDBArbiterModule.squashNeed = [this]() {
+    return static_cast<bool>(flushArbiter.needSquash);
+  };
   AluCDBArbiterModule.squashTag = [this]() {
     return static_cast<uint32_t>(static_cast<uint32_t>(flushArbiter.SquashTag));
   };
@@ -206,8 +220,27 @@ void CPU::wire() {
     auto d = LQModule.CDBDetect();
     return d != -1 ? static_cast<uint32_t>(LQModule.getValue(d)) : 0u;
   };
-  LqCDBArbiterModule.squashNeed = [this]() { return static_cast<bool>(flushArbiter.needSquash); };
+  LqCDBArbiterModule.squashNeed = [this]() {
+    return static_cast<bool>(flushArbiter.needSquash);
+  };
   LqCDBArbiterModule.squashTag = [this]() {
+    return static_cast<uint32_t>(static_cast<uint32_t>(flushArbiter.SquashTag));
+  };
+  // MulCDB: the MUL unit's dedicated result bus. Empty/value/tag sample the
+  // MUL head bridges (_M_old); the squash guard lives in MulCDB::mulLive.
+  MulCDBModule.mulEmpty = [this]() {
+    return MULModule.isEmpty() ? 1u : 0u;
+  };
+  MulCDBModule.mulValue = [this]() {
+    return static_cast<uint32_t>(MULModule.headValue());
+  };
+  MulCDBModule.mulRobTag = [this]() {
+    return static_cast<uint32_t>(MULModule.headRobTag());
+  };
+  MulCDBModule.squashNeed = [this]() {
+    return static_cast<bool>(flushArbiter.needSquash);
+  };
+  MulCDBModule.squashTag = [this]() {
     return static_cast<uint32_t>(static_cast<uint32_t>(flushArbiter.SquashTag));
   };
 
@@ -217,7 +250,7 @@ void CPU::wire() {
   // flag gate is a superset-safe call of the original storeSelected-only
   // call sites, pure reads with no side effects) ----
   MemArbiterModule.dmemBusy = [this]() {
-    return static_cast<uint32_t>(DCacheModule.isBusy);
+    return static_cast<uint32_t>(DCacheModule.isBusy());
   };
   MemArbiterModule.sqEmpty = [this]() { return SQModule.isEmpty() ? 1u : 0u; };
   MemArbiterModule.sqHeadRobTag = [this]() {
@@ -248,9 +281,9 @@ void CPU::wire() {
   };
   MemArbiterModule.robHeadCommitReady = [this]() {
     return static_cast<bool>(
-               ROBModule.entry.isCommitReady[static_cast<uint32_t>(
-                                                 SQModule.headRobTag()) &
-                                             0x3F])
+               ROBModule.entry
+                   .isCommitReady[static_cast<uint32_t>(SQModule.headRobTag()) &
+                                  0x3F])
                ? 1u
                : 0u;
   };
@@ -263,13 +296,11 @@ void CPU::wire() {
   };
   MemArbiterModule.loadAddr = [this]() {
     auto d = LQModule.LoadDetect();
-    return d != 0xFFFFFFFF ? static_cast<uint32_t>(LQModule.getAddress(d))
-                           : 0u;
+    return d != 0xFFFFFFFF ? static_cast<uint32_t>(LQModule.getAddress(d)) : 0u;
   };
   MemArbiterModule.loadRobTag = [this]() {
     auto d = LQModule.LoadDetect();
-    return d != 0xFFFFFFFF ? static_cast<uint32_t>(LQModule.getRobTag(d))
-                           : 0u;
+    return d != 0xFFFFFFFF ? static_cast<uint32_t>(LQModule.getRobTag(d)) : 0u;
   };
   MemArbiterModule.loadIsSigned = [this]() {
     auto d = LQModule.LoadDetect();
@@ -284,13 +315,14 @@ void CPU::wire() {
   };
   MemArbiterModule.loadCanDispatch = [this]() {
     auto d = LQModule.LoadDetect();
-    return d != 0xFFFFFFFF &&
-                   SQModule.canDispatchLoad(LQModule.getAddress(d),
-                                            LQModule.getRobTag(d))
+    return d != 0xFFFFFFFF && SQModule.canDispatchLoad(LQModule.getAddress(d),
+                                                       LQModule.getRobTag(d))
                ? 1u
                : 0u;
   };
-  MemArbiterModule.squashNeed = [this]() { return static_cast<bool>(flushArbiter.needSquash); };
+  MemArbiterModule.squashNeed = [this]() {
+    return static_cast<bool>(flushArbiter.needSquash);
+  };
   MemArbiterModule.squashTag = [this]() {
     return static_cast<uint32_t>(static_cast<uint32_t>(flushArbiter.SquashTag));
   };
@@ -298,9 +330,15 @@ void CPU::wire() {
   // ---- Wire DispatchArbiter's Input Wires (ports are buses: RS slot fields
   // + PRF ready bitmap; src tags go through Wire<7> so the 8th sentinel bit
   // is clipped at the wiring site and prdReady indexing stays in-bounds) ----
-  DispatchArbiterModule.aluFull = [this]() { return ALUModule.isFull() ? 1u : 0u; };
-  DispatchArbiterModule.aguFull = [this]() { return AGUModule.isFull() ? 1u : 0u; };
-  DispatchArbiterModule.bruFull = [this]() { return BRUModule.isFull() ? 1u : 0u; };
+  DispatchArbiterModule.aluFull = [this]() {
+    return ALUModule.isFull() ? 1u : 0u;
+  };
+  DispatchArbiterModule.aguFull = [this]() {
+    return AGUModule.isFull() ? 1u : 0u;
+  };
+  DispatchArbiterModule.bruFull = [this]() {
+    return BRUModule.isFull() ? 1u : 0u;
+  };
   for (int i = 0; i < INTEGERRS_CAP; ++i) {
     DispatchArbiterModule.intBusy[i] = [this, i]() {
       return RSModule.isIntFree(i) ? 0u : 1u;
@@ -354,6 +392,25 @@ void CPU::wire() {
       return static_cast<uint32_t>(RSModule.getBrRobTag(i));
     };
   }
+  // MUL channel buses: multiplyRS slot fields + MUL isFull gate (mirrors the
+  // ALU channel over the dedicated multiply pool).
+  DispatchArbiterModule.mulFull = [this]() {
+    return MULModule.isFull() ? 1u : 0u;
+  };
+  for (int i = 0; i < MULTIPLYRS_CAP; ++i) {
+    DispatchArbiterModule.mulBusy[i] = [this, i]() {
+      return RSModule.isMulFree(i) ? 0u : 1u;
+    };
+    DispatchArbiterModule.mulSrc1Tag[i] = [this, i]() {
+      return static_cast<uint32_t>(RSModule.getMulSrc1(i).tag);
+    };
+    DispatchArbiterModule.mulSrc2Tag[i] = [this, i]() {
+      return static_cast<uint32_t>(RSModule.getMulSrc2(i).tag);
+    };
+    DispatchArbiterModule.mulRobTag[i] = [this, i]() {
+      return static_cast<uint32_t>(RSModule.getMulRobTag(i));
+    };
+  }
   for (int i = 0; i < PRF_CAP; ++i) {
     DispatchArbiterModule.prdReady[i] = [this, i]() {
       return PRFModule.isReady(i) ? 1u : 0u;
@@ -368,8 +425,12 @@ void CPU::wire() {
 
   // Wire the ALU's input wires once: dispatch payload samples the
   // DispatchArbiter's alu grant; RS/PRF reads guard on dispatch.valid.
-  ALUModule.needSquash = [this]() { return static_cast<bool>(flushArbiter.needSquash); };
-  ALUModule.SquashTag = [this]() { return static_cast<uint32_t>(flushArbiter.SquashTag); };
+  ALUModule.needSquash = [this]() {
+    return static_cast<bool>(flushArbiter.needSquash);
+  };
+  ALUModule.SquashTag = [this]() {
+    return static_cast<uint32_t>(flushArbiter.SquashTag);
+  };
   ALUModule.dispatchValid = [this]() {
     return static_cast<bool>(DispatchArbiterModule.alu.valid);
   };
@@ -389,9 +450,9 @@ void CPU::wire() {
   };
   ALUModule.op = [this]() {
     const auto &d = DispatchArbiterModule.alu;
-    return static_cast<bool>(d.valid)
-               ? static_cast<uint32_t>(RSModule.getIntOp(static_cast<uint32_t>(d.rsIndex)))
-               : 0u;
+    return static_cast<bool>(d.valid) ? static_cast<uint32_t>(RSModule.getIntOp(
+                                            static_cast<uint32_t>(d.rsIndex)))
+                                      : 0u;
   };
   ALUModule.dispatchRobTag = [this]() {
     return static_cast<uint32_t>(DispatchArbiterModule.alu.robTag);
@@ -401,10 +462,55 @@ void CPU::wire() {
     return static_cast<uint32_t>(AluCDBArbiterModule.robTag);
   };
 
+  // Wire the MUL's input wires once: dispatch payload samples the
+  // DispatchArbiter's mul grant; RS/PRF reads guard on dispatch.valid; the
+  // CDB drain samples the dedicated MulCDB bus.
+  MULModule.needSquash = [this]() {
+    return static_cast<bool>(flushArbiter.needSquash);
+  };
+  MULModule.SquashTag = [this]() {
+    return static_cast<uint32_t>(flushArbiter.SquashTag);
+  };
+  MULModule.dispatchValid = [this]() {
+    return static_cast<bool>(DispatchArbiterModule.mul.valid);
+  };
+  MULModule.src1Value = [this]() {
+    const auto &d = DispatchArbiterModule.mul;
+    return static_cast<bool>(d.valid)
+               ? static_cast<uint32_t>(PRFModule.getOperandValue(
+                     RSModule.getMulSrc1(static_cast<uint32_t>(d.rsIndex))))
+               : 0u;
+  };
+  MULModule.src2Value = [this]() {
+    const auto &d = DispatchArbiterModule.mul;
+    return static_cast<bool>(d.valid)
+               ? static_cast<uint32_t>(PRFModule.getOperandValue(
+                     RSModule.getMulSrc2(static_cast<uint32_t>(d.rsIndex))))
+               : 0u;
+  };
+  MULModule.op = [this]() {
+    const auto &d = DispatchArbiterModule.mul;
+    return static_cast<bool>(d.valid) ? static_cast<uint32_t>(RSModule.getMulOp(
+                                            static_cast<uint32_t>(d.rsIndex)))
+                                      : 0u;
+  };
+  MULModule.dispatchRobTag = [this]() {
+    return static_cast<uint32_t>(DispatchArbiterModule.mul.robTag);
+  };
+  MULModule.cdbValid = [this]() { return MulCDBModule.valid ? 1u : 0u; };
+  MULModule.cdbRobTag = [this]() {
+    return static_cast<uint32_t>(MulCDBModule.robTag);
+  };
+
   // Wire the AGU's input wires once: the load/store RS array choice is made
-  // here (rsType on the DispatchArbiter's agu grant), guarded by dispatch.valid.
-  AGUModule.needSquash = [this]() { return static_cast<bool>(flushArbiter.needSquash); };
-  AGUModule.SquashTag = [this]() { return static_cast<uint32_t>(flushArbiter.SquashTag); };
+  // here (rsType on the DispatchArbiter's agu grant), guarded by
+  // dispatch.valid.
+  AGUModule.needSquash = [this]() {
+    return static_cast<bool>(flushArbiter.needSquash);
+  };
+  AGUModule.SquashTag = [this]() {
+    return static_cast<uint32_t>(flushArbiter.SquashTag);
+  };
   AGUModule.dispatchValid = [this]() {
     return static_cast<bool>(DispatchArbiterModule.agu.valid);
   };
@@ -444,8 +550,12 @@ void CPU::wire() {
 
   // Wire the BRU's input wires once: payload comes from the branchRS slot
   // selected by the DispatchArbiter's bru grant, guarded by dispatch.valid.
-  BRUModule.needSquash = [this]() { return static_cast<bool>(flushArbiter.needSquash); };
-  BRUModule.SquashTag = [this]() { return static_cast<uint32_t>(flushArbiter.SquashTag); };
+  BRUModule.needSquash = [this]() {
+    return static_cast<bool>(flushArbiter.needSquash);
+  };
+  BRUModule.SquashTag = [this]() {
+    return static_cast<uint32_t>(flushArbiter.SquashTag);
+  };
   BRUModule.dispatchValid = [this]() {
     return static_cast<bool>(DispatchArbiterModule.bru.valid);
   };
@@ -465,35 +575,43 @@ void CPU::wire() {
   };
   BRUModule.pc = [this]() {
     const auto &d = DispatchArbiterModule.bru;
-    return static_cast<bool>(d.valid)
-               ? static_cast<uint32_t>(RSModule.getBrPc(static_cast<uint32_t>(d.rsIndex)))
-               : 0u;
+    return static_cast<bool>(d.valid) ? static_cast<uint32_t>(RSModule.getBrPc(
+                                            static_cast<uint32_t>(d.rsIndex)))
+                                      : 0u;
   };
   BRUModule.imm = [this]() {
     const auto &d = DispatchArbiterModule.bru;
-    return static_cast<bool>(d.valid)
-               ? static_cast<uint32_t>(RSModule.getBrImm(static_cast<uint32_t>(d.rsIndex)))
-               : 0u;
+    return static_cast<bool>(d.valid) ? static_cast<uint32_t>(RSModule.getBrImm(
+                                            static_cast<uint32_t>(d.rsIndex)))
+                                      : 0u;
   };
   BRUModule.op = [this]() {
     const auto &d = DispatchArbiterModule.bru;
-    return static_cast<bool>(d.valid)
-               ? static_cast<uint32_t>(RSModule.getBrOp(static_cast<uint32_t>(d.rsIndex)))
-               : 0u;
+    return static_cast<bool>(d.valid) ? static_cast<uint32_t>(RSModule.getBrOp(
+                                            static_cast<uint32_t>(d.rsIndex)))
+                                      : 0u;
   };
   BRUModule.dispatchRobTag = [this]() {
     return static_cast<uint32_t>(DispatchArbiterModule.bru.robTag);
   };
 
   // Wire PRF's Input Wires (Verilog-style explicit ports)
-  PRFModule.squash.needSquash = [this]() { return static_cast<bool>(flushArbiter.needSquash); };
-  PRFModule.squash.SquashTag = [this]() { return static_cast<uint32_t>(flushArbiter.SquashTag); };
-  PRFModule.squash.CkptId = [this]() { return static_cast<uint32_t>(flushArbiter.CkptId); };
+  PRFModule.squash.needSquash = [this]() {
+    return static_cast<bool>(flushArbiter.needSquash);
+  };
+  PRFModule.squash.SquashTag = [this]() {
+    return static_cast<uint32_t>(flushArbiter.SquashTag);
+  };
+  PRFModule.squash.CkptId = [this]() {
+    return static_cast<uint32_t>(flushArbiter.CkptId);
+  };
   // dual-CDB write ports: ALU group keeps isControl (PRF never writes control
   // results); the LQ group omits it (loads are never control ops). newPhy is
   // looked up from the ROB entry by tag, valid-gated (a broadcast only ever
   // targets an in-flight entry's rename).
-  PRFModule.cdbOfALU.cdbValid = [this]() { return AluCDBArbiterModule.valid ? 1u : 0u; };
+  PRFModule.cdbOfALU.cdbValid = [this]() {
+    return AluCDBArbiterModule.valid ? 1u : 0u;
+  };
   PRFModule.cdbOfALU.cdbValue = [this]() {
     return static_cast<uint32_t>(AluCDBArbiterModule.value);
   };
@@ -507,10 +625,12 @@ void CPU::wire() {
     if (!static_cast<bool>(AluCDBArbiterModule.valid))
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<uint32_t>(
-        ROBModule.entry.newPhy[static_cast<uint32_t>(AluCDBArbiterModule.robTag) &
-                               0x3F]);
+        ROBModule.entry
+            .newPhy[static_cast<uint32_t>(AluCDBArbiterModule.robTag) & 0x3F]);
   };
-  PRFModule.cdbOfLQ.cdbValid = [this]() { return LqCDBArbiterModule.valid ? 1u : 0u; };
+  PRFModule.cdbOfLQ.cdbValid = [this]() {
+    return LqCDBArbiterModule.valid ? 1u : 0u;
+  };
   PRFModule.cdbOfLQ.cdbValue = [this]() {
     return static_cast<uint32_t>(LqCDBArbiterModule.value);
   };
@@ -521,7 +641,25 @@ void CPU::wire() {
     if (!static_cast<bool>(LqCDBArbiterModule.valid))
       return static_cast<uint32_t>(InvalidPhy);
     return static_cast<uint32_t>(
-        ROBModule.entry.newPhy[static_cast<uint32_t>(LqCDBArbiterModule.robTag) &
+        ROBModule.entry
+            .newPhy[static_cast<uint32_t>(LqCDBArbiterModule.robTag) & 0x3F]);
+  };
+  // MUL write port: never a control op, so no isControl wire (loads and
+  // multiplies share that port saving).
+  PRFModule.cdbOfMUL.cdbValid = [this]() {
+    return MulCDBModule.valid ? 1u : 0u;
+  };
+  PRFModule.cdbOfMUL.cdbValue = [this]() {
+    return static_cast<uint32_t>(MulCDBModule.value);
+  };
+  PRFModule.cdbOfMUL.cdbRobTag = [this]() {
+    return static_cast<uint32_t>(MulCDBModule.robTag);
+  };
+  PRFModule.cdbOfMUL.cdbNewPhy = [this]() {
+    if (!static_cast<bool>(MulCDBModule.valid))
+      return static_cast<uint32_t>(InvalidPhy);
+    return static_cast<uint32_t>(
+        ROBModule.entry.newPhy[static_cast<uint32_t>(MulCDBModule.robTag) &
                                0x3F]);
   };
   PRFModule.issue.issueValid = [this]() {
@@ -566,8 +704,12 @@ void CPU::wire() {
   };
 
   // Wire RAT's Input Wires
-  RATModule.needSquash = [this]() { return static_cast<bool>(flushArbiter.needSquash); };
-  RATModule.SquashCkptId = [this]() { return static_cast<uint32_t>(flushArbiter.CkptId); };
+  RATModule.needSquash = [this]() {
+    return static_cast<bool>(flushArbiter.needSquash);
+  };
+  RATModule.SquashCkptId = [this]() {
+    return static_cast<uint32_t>(flushArbiter.CkptId);
+  };
   RATModule.issueValid = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.core.valid);
   };
@@ -616,9 +758,7 @@ void CPU::wire() {
   IssueArbiterModule.dec.imm = [this]() {
     return static_cast<uint32_t>(DecodeUnitModule.headImm());
   };
-  IssueArbiterModule.dec.pc = [this]() {
-    return DecodeUnitModule.headPc();
-  };
+  IssueArbiterModule.dec.pc = [this]() { return DecodeUnitModule.headPc(); };
   IssueArbiterModule.dec.isHalt = [this]() {
     return DecodeUnitModule.headIsHalt() ? 1u : 0u;
   };
@@ -634,9 +774,7 @@ void CPU::wire() {
   IssueArbiterModule.rob.isFull = [this]() {
     return ROBModule.isFull() ? 1u : 0u;
   };
-  IssueArbiterModule.rob.nextTag = [this]() {
-    return ROBModule.getNextTag();
-  };
+  IssueArbiterModule.rob.nextTag = [this]() { return ROBModule.getNextTag(); };
   for (int i = 0; i < INTEGERRS_CAP; ++i) {
     IssueArbiterModule.rs.intBusy[i] = [this, i]() {
       return RSModule.isIntFree(i) ? 0u : 1u;
@@ -660,12 +798,17 @@ void CPU::wire() {
       return RSModule.isBrFree(i) ? 0u : 1u;
     };
   }
+  for (int i = 0; i < MULTIPLYRS_CAP; ++i) {
+    IssueArbiterModule.rs.mulBusy[i] = [this, i]() {
+      return RSModule.isMulFree(i) ? 0u : 1u;
+    };
+  }
   IssueArbiterModule.prf.freeListEmpty = [this]() {
     return PRFModule.isFreeListEmpty() ? 1u : 0u;
   };
   IssueArbiterModule.prf.freePhy = [this]() {
-    return static_cast<uint32_t>(PRFModule.getFreeListSlot(
-        PRFModule.getHeadSeq()));
+    return static_cast<uint32_t>(
+        PRFModule.getFreeListSlot(PRFModule.getHeadSeq()));
   };
   IssueArbiterModule.lsq.lqFull = [this]() {
     return LQModule.isFull() ? 1u : 0u;
@@ -692,7 +835,8 @@ void CPU::wire() {
     return RATModule.readOperand(DecodeUnitModule.headRs1()).phyRegIndex;
   };
   IssueArbiterModule.rat.s1.value = [this]() {
-    return static_cast<uint32_t>(RATModule.readOperand(DecodeUnitModule.headRs1()).value);
+    return static_cast<uint32_t>(
+        RATModule.readOperand(DecodeUnitModule.headRs1()).value);
   };
   IssueArbiterModule.rat.s2.ready = [this]() {
     return RATModule.readOperand(DecodeUnitModule.headRs2()).ready ? 1u : 0u;
@@ -701,7 +845,8 @@ void CPU::wire() {
     return RATModule.readOperand(DecodeUnitModule.headRs2()).phyRegIndex;
   };
   IssueArbiterModule.rat.s2.value = [this]() {
-    return static_cast<uint32_t>(RATModule.readOperand(DecodeUnitModule.headRs2()).value);
+    return static_cast<uint32_t>(
+        RATModule.readOperand(DecodeUnitModule.headRs2()).value);
   };
   IssueArbiterModule.rat.rdOldPhy = [this]() {
     return RATModule.readRAT_PRF(DecodeUnitModule.headRd());
@@ -728,6 +873,9 @@ void CPU::wire() {
   RSModule.sel.hasBranch = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.select.hasBranch);
   };
+  RSModule.sel.hasMultiply = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.select.hasMultiply);
+  };
   RSModule.sel.integerSlot = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.select.integerSlot);
   };
@@ -742,6 +890,9 @@ void CPU::wire() {
   };
   RSModule.sel.branchSlot = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.select.branchSlot);
+  };
+  RSModule.sel.multiplySlot = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.select.multiplySlot);
   };
   RSModule.data.intP.op = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.intP.op);
@@ -839,6 +990,24 @@ void CPU::wire() {
   RSModule.data.brP.pc = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.brP.pc);
   };
+  RSModule.data.mulP.op = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.mulP.op);
+  };
+  RSModule.data.mulP.s1Tag = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.mulP.s1Tag);
+  };
+  RSModule.data.mulP.s1Imm = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.mulP.s1Imm);
+  };
+  RSModule.data.mulP.s2Tag = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.mulP.s2Tag);
+  };
+  RSModule.data.mulP.s2Imm = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.mulP.s2Imm);
+  };
+  RSModule.data.mulP.robTag = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.mulP.robTag);
+  };
   RSModule.dispatch.aluValid = [this]() {
     return static_cast<bool>(DispatchArbiterModule.alu.valid);
   };
@@ -861,8 +1030,18 @@ void CPU::wire() {
   RSModule.dispatch.bruIdx = [this]() {
     return static_cast<uint32_t>(DispatchArbiterModule.bru.rsIndex);
   };
-  RSModule.squash.needSquash = [this]() { return static_cast<bool>(flushArbiter.needSquash); };
-  RSModule.squash.SquashTag = [this]() { return static_cast<uint32_t>(flushArbiter.SquashTag); };
+  RSModule.dispatch.mulValid = [this]() {
+    return static_cast<bool>(DispatchArbiterModule.mul.valid);
+  };
+  RSModule.dispatch.mulIdx = [this]() {
+    return static_cast<uint32_t>(DispatchArbiterModule.mul.rsIndex);
+  };
+  RSModule.squash.needSquash = [this]() {
+    return static_cast<bool>(flushArbiter.needSquash);
+  };
+  RSModule.squash.SquashTag = [this]() {
+    return static_cast<uint32_t>(flushArbiter.SquashTag);
+  };
   for (int i = 0; i < STORERS_CAP; ++i) {
     RSModule.prf.svReady[i] = [this, i]() {
       return PRFModule.isOperandReady(RSModule.getSvData(i));
@@ -945,8 +1124,12 @@ void CPU::wire() {
     };
   }
 
-  LQModule.squash.needSquash = [this]() { return static_cast<bool>(flushArbiter.needSquash); };
-  LQModule.squash.SquashTag = [this]() { return static_cast<uint32_t>(flushArbiter.SquashTag); };
+  LQModule.squash.needSquash = [this]() {
+    return static_cast<bool>(flushArbiter.needSquash);
+  };
+  LQModule.squash.SquashTag = [this]() {
+    return static_cast<uint32_t>(flushArbiter.SquashTag);
+  };
   LQModule.issue.issueValid = [this]() {
     return (static_cast<bool>(IssueArbiterModule.core.valid) &&
             static_cast<bool>(IssueArbiterModule.core.isLoad))
@@ -995,7 +1178,9 @@ void CPU::wire() {
   };
   LQModule.rob.squashLQTailSnapshot = [this]() {
     return static_cast<uint32_t>(
-        ROBModule.entry.lqTailSnapshot[static_cast<uint32_t>(flushArbiter.SquashTag) & 0x3F]);
+        ROBModule.entry
+            .lqTailSnapshot[static_cast<uint32_t>(flushArbiter.SquashTag) &
+                            0x3F]);
   };
   // loadResp now comes from the DCache (hit self-answer or fill serve); the
   // squash guard lives inside DCache::wire_output (valid && (!needSquash ||
@@ -1075,8 +1260,12 @@ void CPU::wire() {
   };
 
   // ---- Wire SQ's Input Wires ----
-  SQModule.squash.needSquash = [this]() { return static_cast<bool>(flushArbiter.needSquash); };
-  SQModule.squash.SquashTag = [this]() { return static_cast<uint32_t>(flushArbiter.SquashTag); };
+  SQModule.squash.needSquash = [this]() {
+    return static_cast<bool>(flushArbiter.needSquash);
+  };
+  SQModule.squash.SquashTag = [this]() {
+    return static_cast<uint32_t>(flushArbiter.SquashTag);
+  };
   SQModule.issue.issueValid = [this]() {
     return (static_cast<bool>(IssueArbiterModule.core.valid) &&
             static_cast<bool>(IssueArbiterModule.core.isStore))
@@ -1103,7 +1292,9 @@ void CPU::wire() {
   };
   SQModule.rob.squashSQTailSnapshot = [this]() {
     return static_cast<uint32_t>(
-        ROBModule.entry.sqTailSnapshot[static_cast<uint32_t>(flushArbiter.SquashTag) & 0x3F]);
+        ROBModule.entry
+            .sqTailSnapshot[static_cast<uint32_t>(flushArbiter.SquashTag) &
+                            0x3F]);
   };
   SQModule.agu.isAGUEmpty = [this]() { return AGUModule.isEmpty(); };
   SQModule.agu.aguHeadMemIndex = [this]() { return AGUModule.headMemIndex(); };
@@ -1117,7 +1308,8 @@ void CPU::wire() {
           !PRFModule.isOperandReady(RSModule.getSvData(i)))
         return 0u;
       if (static_cast<bool>(flushArbiter.needSquash) &&
-          !ROB::isOlder(RSModule.getSvRobTag(i), static_cast<uint32_t>(flushArbiter.SquashTag)))
+          !ROB::isOlder(RSModule.getSvRobTag(i),
+                        static_cast<uint32_t>(flushArbiter.SquashTag)))
         return 0u;
       return 1u;
     };
@@ -1138,13 +1330,23 @@ void CPU::wire() {
   ROBModule.squash.SquashTag = [this]() {
     return static_cast<uint32_t>(static_cast<uint32_t>(flushArbiter.SquashTag));
   };
-  ROBModule.cdbOfALU.cdbValid = [this]() { return AluCDBArbiterModule.valid ? 1u : 0u; };
+  ROBModule.cdbOfALU.cdbValid = [this]() {
+    return AluCDBArbiterModule.valid ? 1u : 0u;
+  };
   ROBModule.cdbOfALU.cdbRobTag = [this]() {
     return static_cast<uint32_t>(AluCDBArbiterModule.robTag);
   };
-  ROBModule.cdbOfLQ.cdbValid = [this]() { return LqCDBArbiterModule.valid ? 1u : 0u; };
+  ROBModule.cdbOfLQ.cdbValid = [this]() {
+    return LqCDBArbiterModule.valid ? 1u : 0u;
+  };
   ROBModule.cdbOfLQ.cdbRobTag = [this]() {
     return static_cast<uint32_t>(LqCDBArbiterModule.robTag);
+  };
+  ROBModule.cdbOfMUL.cdbValid = [this]() {
+    return MulCDBModule.valid ? 1u : 0u;
+  };
+  ROBModule.cdbOfMUL.cdbRobTag = [this]() {
+    return static_cast<uint32_t>(MulCDBModule.robTag);
   };
   ROBModule.bru.isBRUEmpty = [this]() { return BRUModule.isEmpty() ? 1u : 0u; };
   ROBModule.bru.bruHeadRobTag = [this]() {
@@ -1316,7 +1518,9 @@ void CPU::wire() {
   // BPU training consumes only the ALU bus (its cdb port gates on
   // cdbValid && cdbIsControl; loads never produce control), so the LQ bus is
   // not wired here -- an area/port saving over a shared single CDB.
-  BPUModule.cdb.cdbValid = [this]() { return AluCDBArbiterModule.valid ? 1u : 0u; };
+  BPUModule.cdb.cdbValid = [this]() {
+    return AluCDBArbiterModule.valid ? 1u : 0u;
+  };
   BPUModule.cdb.cdbValue = [this]() {
     return static_cast<uint32_t>(AluCDBArbiterModule.value);
   };
@@ -1425,7 +1629,8 @@ void CPU::wire() {
           !PRFModule.isOperandReady(RSModule.getSvData(i)))
         return 0u;
       if (static_cast<bool>(flushArbiter.needSquash) &&
-          !ROB::isOlder(RSModule.getSvRobTag(i), static_cast<uint32_t>(flushArbiter.SquashTag)))
+          !ROB::isOlder(RSModule.getSvRobTag(i),
+                        static_cast<uint32_t>(flushArbiter.SquashTag)))
         return 0u;
       return SQModule.planDataForward(
                          memSlot(RSModule.getSvMemIndex(i)),
@@ -1486,7 +1691,8 @@ void CPU::wire() {
     if (AGUModule.isEmpty() || !isStoreMem(AGUModule.headMemIndex()))
       return 0u;
     if (static_cast<bool>(flushArbiter.needSquash) &&
-        !ROB::isOlder(AGUModule.headRobTag(), static_cast<uint32_t>(flushArbiter.SquashTag)))
+        !ROB::isOlder(AGUModule.headRobTag(),
+                      static_cast<uint32_t>(flushArbiter.SquashTag)))
       return 0u;
     return SQModule.planAddressForward(
                        memSlot(AGUModule.headMemIndex()),
@@ -1566,11 +1772,20 @@ void CPU::run(bool shuffle) {
     bool s_fqEmpty = FQModule.isEmpty();
     bool s_decEmpty = DecodeUnitModule.isEmpty();
     bool s_robEmpty = ROBModule.isEmpty();
+    bool s_sqEmpty = SQModule.isEmpty();
+    bool s_dmemFree = !DMEMModule.isReadBusy() && !DMEMModule.isWriteBusy();
+    bool s_dcacheFree = !DCacheModule.isBusy();
     if (shuffle)
       dcpu.run_once_shuffle();
     else
       dcpu.run_once();
-    finish = s_halt && s_fqEmpty && s_decEmpty && s_robEmpty;
+    // Halt drain (mirrors main tree): stop only after every committed store
+    // has left the SQ and reached the DCache (SQ empty), and after any
+    // in-flight cache refill/writeback finished (DCache idle + DMEM both
+    // ports idle). Otherwise a store committed right before halt could be
+    // truncated while its fill spans the halt window.
+    finish = s_halt && s_fqEmpty && s_decEmpty && s_robEmpty &&
+             s_sqEmpty && s_dmemFree && s_dcacheFree;
   }
   if (debug::enabled(debug::TOPIC_DCACHE))
     debug::print("dcache: hits=%llu misses=%llu total=%llu hit-rate=%.2f%% "

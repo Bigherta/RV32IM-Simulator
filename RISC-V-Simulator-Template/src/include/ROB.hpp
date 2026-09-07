@@ -59,14 +59,18 @@ struct ROBInputIssue {
   Wire<1> issueValid;
   ROBInputEntry entry;
 };
-// Dual-CDB commit-ready ports (mirrors the main tree's
-// ROBInput.cdbOfALU/cdbOfLQ): each bus marks its result's ROB entry
+// Triple-CDB commit-ready ports (mirrors the main tree's
+// ROBInput.cdbOfALU/cdbOfLQ/cdbOfMul): each bus marks its result's ROB entry
 // commit-ready; only valid+tag are needed (the ROB reads no payload).
 struct ROBInputCDBAlu {
   Wire<1> cdbValid;
   Wire<7> cdbRobTag;
 };
 struct ROBInputCDBLq {
+  Wire<1> cdbValid;
+  Wire<7> cdbRobTag;
+};
+struct ROBInputCDBMul {
   Wire<1> cdbValid;
   Wire<7> cdbRobTag;
 };
@@ -86,6 +90,7 @@ struct ROBInput {
   ROBInputIssue issue;
   ROBInputCDBAlu cdbOfALU;
   ROBInputCDBLq cdbOfLQ;
+  ROBInputCDBMul cdbOfMUL;
   ROBInputBRU bru;
   ROBInputSQ sq;
 };

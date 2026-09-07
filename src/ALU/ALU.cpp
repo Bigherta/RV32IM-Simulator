@@ -139,16 +139,3 @@ void ALU::tick(const ALUInput &input, systemState &CPUstate) {
     CPUstate.ALUModule.flush(input.squashDetect.SquashTag);
   }
 }
-aluCDB aluCDB::build(const ALU &alu, const SquashInfo &squash) {
-  aluCDB alucdb{};
-  if (!alu.isEmpty()) {
-    uint8_t tag = alu.headRobTag();
-    if (!squash.needSquash || ROB::isOlder(tag, squash.SquashTag)) {
-      alucdb.valid = true;
-      alucdb.value = alu.headValue();
-      alucdb.robTag = tag;
-      alucdb.isControl = alu.headIsControl();
-    }
-  }
-  return alucdb;
-}

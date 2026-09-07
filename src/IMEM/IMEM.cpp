@@ -17,7 +17,7 @@ void IMEM::pushRequest(uint32_t lineAddr) {
   assert(count != IMEM_CAP);
   auto idx = (head + count) & (IMEM_CAP - 1);
   IMEMRequest request{};
-  request.remain_cycle = 3;
+  request.remain_cycle = 50; // main-memory latency (benchmarks.md)
   request.lineAddr = lineAddr;
   request.valid = true;
   IMEMreqs[idx] = request;

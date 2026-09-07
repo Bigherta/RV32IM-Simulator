@@ -207,17 +207,3 @@ void LQ::tick(const LQInput &input, systemState &CPUstate) {
     CPUstate.LQModule.flush(
         input.ROBModule.getLqtTailSnapshot(input.squashDetect.SquashTag & 0x3F));
 }
-lqCDB lqCDB::build(const LQ &lq, const SquashInfo &squash) {
-  lqCDB lqcdb{};
-  auto lsqCDBDetect = lq.CDBDetect();
-  if (lsqCDBDetect != -1) {
-    uint8_t tag = lq.getRobTag(lsqCDBDetect);
-    if (!squash.needSquash || ROB::isOlder(tag, squash.SquashTag)) {
-      lqcdb.valid = true;
-      lqcdb.memIndex = static_cast<uint8_t>(lsqCDBDetect);
-      lqcdb.robTag = tag;
-      lqcdb.value = lq.getValue(lsqCDBDetect);
-    }
-  }
-  return lqcdb;
-}

@@ -26,7 +26,7 @@ struct DecodeInput {
 };
 
 struct UopEntry {
-  Register<3> type; // RISC_V
+  Register<4> type; // RISC_V (R..RV_INVALID, 9 values)
   Register<7> opcode;
   Register<3> funct3;
   Register<7> funct7;

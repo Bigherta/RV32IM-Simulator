@@ -1,6 +1,4 @@
 #pragma once
-#ifndef MEMORY_HPP
-#define MEMORY_HPP
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -13,15 +11,15 @@ static constexpr uint32_t MEM_SIZE = 128 * 1024;
 // tracking) belongs to the concrete DMEM/IMEM modules.
 class Memory {
 protected:
-  uint8_t* mem;
-  
+  uint8_t *mem;
+
 public:
   Memory() : mem(new uint8_t[MEM_SIZE]()) {}
   ~Memory() { delete[] mem; }
-  Memory(const Memory& other) : mem(new uint8_t[MEM_SIZE]) {
+  Memory(const Memory &other) : mem(new uint8_t[MEM_SIZE]) {
     std::memcpy(mem, other.mem, MEM_SIZE);
   }
-  Memory& operator=(const Memory& other) {
+  Memory &operator=(const Memory &other) {
     if (this != &other) {
       std::memcpy(mem, other.mem, MEM_SIZE);
     }
@@ -29,30 +27,40 @@ public:
   }
 
   void load_ins() {
-    while (!std::cin.eof()) {
-      char sign = std::cin.get();
-      if (sign == EOF) {
-        return;
+    uint32_t cur = 0;
+    uint32_t acc = 0;
+    int n = 0;
+    bool addr_mode = false;
+    char c;
+    while (std::cin.get(c)) {
+      int v = (c >= '0' && c <= '9')   ? (c - '0')
+              : (c >= 'A' && c <= 'F') ? c - 'A' + 10
+              : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+                                       : -1;
+      if (v >= 0) {
+        acc = (acc << 4) | uint32_t(v);
+        ++n;
+        continue;
       }
-      if (sign == '@') {
-        char hex_address[9];
-        std::cin >> hex_address;
-        uint32_t cur_address = hex2uint32(8, hex_address);
-        char hex_byte[3];
-        while (std::cin >> hex_byte) {
-          write_data(cur_address++, hex2uint32(2, hex_byte));
-          while (std::cin.peek() == '\n' || std::cin.peek() == ' ') {
-            std::cin.get();
-          }
-          if (std::cin.peek() == '@')
-            break;
-        }
+      if (n) {
+        if (addr_mode) {
+          cur = acc;
+          addr_mode = false;
+        } else
+          write_data(cur++, uint8_t(acc));
+        acc = 0;
+        n = 0;
       }
+      if (c == '@')
+        addr_mode = true;
+    }
+    if (n) {
+      if (addr_mode)
+        cur = acc;
+      else
+        write_data(cur++, uint8_t(acc));
     }
   }
-
-  inline uint32_t hex2uint32(int len, char hex[]) const;
-  
   uint8_t read_data(uint32_t addr) const {
     return addr < MEM_SIZE ? mem[addr] : 0;
   }
@@ -64,14 +72,3 @@ public:
     return std::memcmp(mem, other.mem, MEM_SIZE) == 0;
   }
 };
-inline uint32_t Memory::hex2uint32(int len, char hex[]) const {
-  uint32_t result = 0;
-  for (int i = 0; i < len; i++) {
-    result *= 0x10;
-    uint32_t value =
-        (hex[i] >= '0' && hex[i] <= '9') ? (hex[i] - '0') : (hex[i] - 'A' + 10);
-    result += value;
-  }
-  return result;
-}
-#endif // MEMORY_HPP

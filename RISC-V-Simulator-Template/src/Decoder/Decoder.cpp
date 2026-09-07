@@ -39,8 +39,12 @@ Uop Decoder::decode(int32_t raw_inst) {
 
   switch (opcode) {
   case 0b0110011: {
-    inst.type = RISC_V::R;
     inst.funct7 = (raw >> 25) & 0x7F;
+    if (inst.funct7 == 0b0000001) {
+      inst.type = RISC_V::M;
+    } else {
+      inst.type = RISC_V::R;
+    }
     break;
   }
   case 0b0010011: {

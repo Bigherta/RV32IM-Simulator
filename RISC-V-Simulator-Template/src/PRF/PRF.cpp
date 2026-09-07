@@ -29,12 +29,12 @@ void PRF::work() {
   bool issueIsCtrl = static_cast<bool>(issue.issueIsControl);
   uint32_t issuePCVal = static_cast<uint32_t>(issue.issuePC);
 
-  // ---- Dual-CDB writeback: two independent write ports (aluCDB / lqCDB).
-  // Register renaming guarantees a distinct newPhy per in-flight instruction,
-  // so a same-cycle ALU + load writeback always hits different physical
-  // registers (no WAW; the Register array's per-element single write port is
-  // naturally satisfied). Each port keeps its own squash guard, verbatim from
-  // the single-CDB era.
+  // ---- Triple-CDB writeback: three independent write ports
+  // (aluCDB / lqCDB / mulCDB). Register renaming guarantees a distinct
+  // newPhy per in-flight instruction, so same-cycle writebacks always hit
+  // different physical registers (no WAW; the Register array's per-element
+  // single write port is naturally satisfied). Each port keeps its own
+  // squash guard, verbatim from the single-CDB era.
   bool cdbWriteAlu = false;
   uint32_t cdbPhyAlu = 0;
   uint32_t cdbValAlu = 0;
@@ -65,6 +65,22 @@ void PRF::work() {
       }
     }
   }
+  bool cdbWriteMul = false;
+  uint32_t cdbPhyMul = 0;
+  uint32_t cdbValMul = 0;
+  uint32_t cdbTagMul = 0;
+  if (static_cast<bool>(cdbOfMUL.cdbValid)) {
+    uint32_t cdbTag = static_cast<uint32_t>(cdbOfMUL.cdbRobTag);
+    if (!needSquash || ROB::isOlder(cdbTag, squashTag)) {
+      uint32_t newPhy = static_cast<uint32_t>(cdbOfMUL.cdbNewPhy);
+      if (newPhy != static_cast<uint32_t>(InvalidPhy)) {
+        cdbWriteMul = true;
+        cdbPhyMul = newPhy;
+        cdbValMul = static_cast<uint32_t>(cdbOfMUL.cdbValue);
+        cdbTagMul = cdbTag;
+      }
+    }
+  }
 
   if (cdbWriteAlu) {
     if (debug::enabled(debug::TOPIC_PRF))
@@ -77,6 +93,13 @@ void PRF::work() {
       debug::print("PRF write P%d = %d (lqCDB)\n", cdbPhyLq, cdbValLq);
     PhysicalRegs[cdbPhyLq].ready <= true;
     PhysicalRegs[cdbPhyLq].value <= cdbValLq;
+  }
+  if (cdbWriteMul) {
+    if (debug::enabled(debug::TOPIC_EXEC))
+      debug::print("prf mul-write rob=%u phy=%d val=%08x\n", cdbTagMul,
+                   cdbPhyMul, cdbValMul);
+    PhysicalRegs[cdbPhyMul].ready <= true;
+    PhysicalRegs[cdbPhyMul].value <= cdbValMul;
   }
 
   // ---- Issue: PRFHeadCkpt snapshot + free-list pop ----

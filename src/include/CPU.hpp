@@ -1,11 +1,10 @@
 #pragma once
-#ifndef CPU_HPP
-#define CPU_HPP
 #include "AGU.hpp"
 #include "ALU.hpp"
 #include "DynamicArbiter.hpp"
 #include "StaticArbiter.hpp"
 #include "BRU.hpp"
+#include "MUL.hpp"
 #include "BPU.hpp"
 #include "DCache.hpp"
 #include "DMEM.hpp"
@@ -30,6 +29,7 @@ struct systemState {
   ROB ROBModule;
   ALU ALUModule;
   AGU AGUModule;
+  MUL MULModule;
   BRU BRUModule;
   LQ LQModule;
   SQ SQModule;
@@ -59,6 +59,7 @@ private:
   ROB ROBModule;
   ALU ALUModule;
   AGU AGUModule;
+  MUL MULModule;
   BRU BRUModule;
   LQ LQModule;
   SQ SQModule;
@@ -74,6 +75,7 @@ private:
   FetchUnit FetchUnitModule;
   aluCDB cdbOfALU;
   lqCDB cdbOfLQ;
+  mulCDB cdbOfMul; // MUL 专用结果总线（cdbOfALU/cdbOfLQ/cdbOfMul 三路，各源独立、无跨单元仲裁）
   uint64_t statAluOnly = 0;   // cycles with only an ALU CDB candidate
   uint64_t statLqOnly = 0;    // cycles with only an LQ CDB candidate
   uint64_t statBoth = 0;      // cycles both valid (dual-CDB parallel grant)
@@ -82,6 +84,7 @@ private:
   IssuePacket issuePacket;
   AGUInput aguInput{RSModule, PRFModule};
   ALUInput aluInput{RSModule, PRFModule};
+  MULInput mulInput{RSModule, PRFModule};
   BRUInput bruInput{ROBModule, RSModule, PRFModule};
   BPUInput bpuInput{BRUModule, ROBModule};
   DMEMInput dmemInput{};
@@ -110,5 +113,3 @@ public:
   void comb();
   void run();
 };
-
-#endif // CPU_HPP

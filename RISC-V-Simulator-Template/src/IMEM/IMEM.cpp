@@ -1,4 +1,5 @@
 #include "../include/IMEM.hpp"
+#include "common.h"
 #include <cassert>
 #include <cstdint>
 void IMEM::work() {
@@ -26,7 +27,7 @@ void IMEM::work() {
     auto occ = occupancy();
     assert(occ < static_cast<uint32_t>(IMEM_CAP));
     auto idx = (static_cast<uint32_t>(head) + occ) & (IMEM_CAP - 1);
-    IMEMreqs[idx].remainCycle <= 3;
+    IMEMreqs[idx].remainCycle <= MEM_LATENCY;
     IMEMreqs[idx].lineAddr <= fetchPC;
     IMEMreqs[idx].valid <= 1; // setting this bit IS the occupancy increment
   }

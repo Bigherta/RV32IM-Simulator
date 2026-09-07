@@ -7,7 +7,8 @@
 
 // 64KB 4-way 16B-line data cache: tree-PLRU (3 bit/set) / write-back +
 // write-allocate / parked-request FSM / dual-port line-granular DMEM behind it
-// (the DCache is DMEM's only client; DMEM never sees sub-word accesses anymore).
+// (the DCache is DMEM's only client; DMEM never sees sub-word accesses
+// anymore).
 //
 // Hard constraints (mirror main tree):
 //  * isBusy == "a request is in flight" -- MemArbiter never issues while busy.
@@ -30,7 +31,7 @@ struct DCacheInput {
   Wire<8> squashCkptId;
   // MemDispatchDecision, split field-by-field (MemArbiter Output wires)
   Wire<1> decisionValid;
-  Wire<5> decisionOp;     // Operation encoding (Load/Store)
+  Wire<5> decisionOp; // Operation encoding (Load/Store)
   Wire<32> decisionValue;
   Wire<32> decisionAddr;
   Wire<1> decisionIsSigned;
@@ -44,7 +45,8 @@ struct DCacheInput {
   std::array<Wire<8>, DCACHE_BLOCK_CAP> dmemLineData;
 };
 struct DCacheOutput {
-  Wire<1> isBusy; // -> MemArbiter (busy._M_old)
+  Wire<1> busyOut; // -> MemArbiter (busy._M_old); named busyOut so the
+                   // bridge method DCache::isBusy() does not shadow it
   // loadResp -> LQ (squash guard inlined: valid && (!needSquash || isOlder))
   Wire<1> loadRespValid;
   Wire<7> loadRespMemIndex;
@@ -77,13 +79,14 @@ struct CacheSet {
   std::array<Cacheline, NUM_OF_WAYS> lines;
   Register<3> PLRU_bit;
   void sync() {
-    for (auto &l : lines) dark::Visitor::sync(l);
+    for (auto &l : lines)
+      dark::Visitor::sync(l);
     dark::Visitor::sync(PLRU_bit);
   }
 };
 struct DCacheInner {
   Register<1> busy;
-  Register<1> phase;      // READY=0, WAIT=1
+  Register<1> phase; // READY=0, WAIT=1
   // parked decision (the miss that waits for its fill); "a request is
   // parked" == phase==WAIT, no separate valid bit is needed
   Register<5> parkOp;
@@ -112,6 +115,7 @@ struct DCacheInner {
 struct DCache : dark::Module<DCacheInput, DCacheOutput, DCacheInner> {
   DCache() { wire_output(); }
   void work() override;
+  bool isBusy() const { return static_cast<bool>(busy); }
   // Hit/miss/writeback accumulators (VERBOSE=dcache summary). Software
   // counters: plain members, never visited by Module::sync().
   uint64_t statHits = 0;
@@ -129,5 +133,6 @@ private:
   uint32_t allocateWay(uint32_t set_index) const; // victim assert in _DEBUG
   static int decodeNBytes(uint32_t enc);
   // sign-extended sub-word load (mask branch identical to DMEM::load_n_bytes)
-  static int32_t extractValue(const uint8_t *datas, int off, int n, bool isSigned);
+  static int32_t extractValue(const uint8_t *datas, int off, int n,
+                              bool isSigned);
 };

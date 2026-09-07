@@ -58,11 +58,13 @@ private:
 
 public:
   ReservationStation integerRS[INTEGERRS_CAP];
+  ReservationStation multiplyRS[MULTIPLYRS_CAP];
   LoadAddressRS loadRS[LOADRS_CAP];
   StoreAddressRS storeAddressRS[STORERS_CAP];
   StoreValueReservationStation storeValueRS[STORERS_CAP];
   BranchReservationStation branchRS[BRANCHRS_CAP];
   int tryAllocInteger() const;
+  int tryAllocMultiply() const;
   int tryAllocLoad() const;
   int tryAllocStoreAddress() const;
   int tryAllocStoreValue() const;

@@ -1,5 +1,5 @@
 #include "../include/DMEM.hpp"
-#include "ROB.hpp"
+#include "common.h"
 #include <cstdint>
 
 int32_t DMEM::load_n_bytes(uint32_t address, int n, bool isSigned) const {
@@ -33,12 +33,12 @@ void DMEM::work() {
   // ---- claim: one pulse per port, only when that port is drained ----
   if (static_cast<bool>(readValid) && !readBusyOld) {
     execReadAddress <= static_cast<uint32_t>(readAddress);
-    execReadRemainCycle <= DMEM_LINE_LATENCY;
+    execReadRemainCycle <= MEM_LATENCY;
     readBusy <= true;
   }
   if (static_cast<bool>(writeValid) && !writeBusyOld) {
     execWriteAddress <= static_cast<uint32_t>(writeAddress);
-    execWriteRemainCycle <= DMEM_LINE_LATENCY;
+    execWriteRemainCycle <= MEM_LATENCY;
     for (int i = 0; i < DCACHE_BLOCK_CAP; ++i)
       execWriteLineData[i] <= static_cast<uint32_t>(writeLineData[i]);
     writeBusy <= true;

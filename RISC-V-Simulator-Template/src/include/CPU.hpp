@@ -7,6 +7,7 @@
 #include "StaticArbiter.hpp"
 #include "BRU.hpp"
 #include "BPU.hpp"
+#include "CDB.hpp"
 #include "DCache.hpp"
 #include "DMEM.hpp"
 #include "Decoder.hpp"
@@ -15,6 +16,7 @@
 #include "ICache.hpp"
 #include "IMEM.hpp"
 #include "LQ.hpp"
+#include "MUL.hpp"
 #include "SQ.hpp"
 #include "Memory.hpp"
 #include "PRF.hpp"
@@ -37,6 +39,7 @@ private:
   RAT RATModule;
   ROB ROBModule;
   ALU ALUModule;
+  MUL MULModule;
   AGU AGUModule;
   BRU BRUModule;
   LQ LQModule;
@@ -50,8 +53,9 @@ private:
   IMEM IMEMModule;
   BPU BPUModule;
   FlushArbiter flushArbiter;
-  AluCDBArbiter AluCDBArbiterModule;
-  LqCDBArbiter LqCDBArbiterModule;
+  AluCDB AluCDBArbiterModule;
+  LqCDB LqCDBArbiterModule;
+  MulCDB MulCDBModule;
   MemArbiter MemArbiterModule;
   DispatchArbiter DispatchArbiterModule;
   IssueArbiter IssueArbiterModule;

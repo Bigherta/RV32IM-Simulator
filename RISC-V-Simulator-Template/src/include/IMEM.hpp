@@ -21,9 +21,9 @@ struct IMEMInner {
   struct IMEMRequest {
     // line stored as 4x32-bit words (RTL: one 128-bit SRAM read port),
     // not as 16 individual bytes
-    std::array<Register<32>, CACHE_BLOCK_CAP / 4> Data;
+    std::array<Register<32>, (CACHE_BLOCK_CAP >> 2)> Data;
     Register<32> lineAddr;
-    Register<2> remainCycle;
+    Register<6> remainCycle;
     Register<1> valid;
   };
   std::array<IMEMRequest, IMEM_CAP> IMEMreqs;

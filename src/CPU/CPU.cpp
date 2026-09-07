@@ -57,6 +57,7 @@ void CPU::comb() {
   memcpy(&RATModule, &CPUstate.RATModule, sizeof(RATModule));
   memcpy(&ROBModule, &CPUstate.ROBModule, sizeof(ROBModule));
   memcpy(&ALUModule, &CPUstate.ALUModule, sizeof(ALUModule));
+  memcpy(&MULModule, &CPUstate.MULModule, sizeof(MULModule));
   memcpy(&AGUModule, &CPUstate.AGUModule, sizeof(AGUModule));
   memcpy(&BRUModule, &CPUstate.BRUModule, sizeof(BRUModule));
   memcpy(&LQModule, &CPUstate.LQModule, sizeof(LQModule));
@@ -113,6 +114,7 @@ void CPU::comb() {
   bpuInput.fetchDecision = fetchDecision;
   cdbOfALU = aluCDB::build(ALUModule, squashDetect);
   cdbOfLQ = lqCDB::build(LQModule, squashDetect);
+  cdbOfMul = mulCDB::build(MULModule, squashDetect);
   // dual-CDB contention stats: count cycles where both buses have a grant,
   // and which side a single-CDB arbiter would have preferred (older tag).
   if (cdbOfALU.valid && cdbOfLQ.valid) {
@@ -127,12 +129,15 @@ void CPU::comb() {
     ++statLqOnly;
   }
   DispatchBus dispatchBus = DispatchArbiter::arbitrate(
-      RSModule, ALUModule, AGUModule, BRUModule, ROBModule, PRFModule,
+      RSModule, ALUModule, AGUModule, BRUModule, MULModule, ROBModule, PRFModule,
       squashDetect);
   aguInput.squashDetect = squashDetect;
   aluInput.squashDetect = squashDetect;
   aluInput.cdbOutput = cdbOfALU;
   aluInput.dispatch = dispatchBus.alu;
+  mulInput.squashDetect = squashDetect;
+  mulInput.cdbOutput = cdbOfMul;
+  mulInput.dispatch = dispatchBus.mul;
   aguInput.dispatch = dispatchBus.agu;
   bruInput.dispatch = dispatchBus.bru;
   rsInput.dispatchBus = dispatchBus;
@@ -181,9 +186,11 @@ void CPU::comb() {
   robInput.squashDetect = squashDetect;
   robInput.cdbOfALU = cdbOfALU;
   robInput.cdbOfLQ = cdbOfLQ;
+  robInput.cdbOfMul = cdbOfMul;
   prfInput.squashDetect = squashDetect;
   prfInput.cdbOfALU = cdbOfALU;
   prfInput.cdbOfLQ = cdbOfLQ;
+  prfInput.cdbOfMul = cdbOfMul;
   ratInput.squashDetect = squashDetect;
   flarbInput.squashDetect = squashDetect;
   flarbInput.cdbOut = cdbOfALU;
@@ -213,6 +220,7 @@ void CPU::run() {
     ROBModule.tick(robInput, CPUstate);
     PRFModule.tick(prfInput, CPUstate);
     ALUModule.tick(aluInput, CPUstate);
+    MULModule.tick(mulInput, CPUstate);
     AGUModule.tick(aguInput, CPUstate);
     BRUModule.tick(bruInput, CPUstate);
     BPUModule.tick(bpuInput, CPUstate);
@@ -223,12 +231,24 @@ void CPU::run() {
     flushArbiter.tick(flarbInput, CPUstate);
     DecodeUnitModule.tick(decodeInput, CPUstate);
     ++clock;
+    // Halt drain: once halt has committed and the pipeline is empty, the
+    // machine must still wait for every committed store to leave the SQ and
+    // reach the DCache (SQ empty), and for any in-flight cache refill /
+    // writeback to finish (DCache idle, DMEM both ports idle). Without this,
+    // a store committed right before halt could be truncated when the tail
+    // fills span the halt window (SQ/park store never lands).
     finish = ROBModule.isHaltCommitted() && FQModule.isEmpty() &&
-             DecodeUnitModule.isEmpty() && ROBModule.isEmpty();
+             DecodeUnitModule.isEmpty() && ROBModule.isEmpty() &&
+             SQModule.isEmpty() && !DCacheModule.isBusy() &&
+             !DMEMModule.isReadBusy() && !DMEMModule.isWriteBusy();
   }
   if (debug::enabled(debug::TOPIC_CLOCK))
     debug::print("clock: %llu\n", clock);
-  if (debug::enabled(debug::TOPIC_BRANCH))
+  if (debug::enabled(debug::TOPIC_BRANCH)) {
+    // Summary line format is load-bearing: test.sh parses "branch: x/y
+    // correct (p%)" ($2 = x/y, $4 = (p%)), so it MUST stay as-is. The
+    // per-class breakdown is a separate line prefixed "branch-type:" which
+    // test.sh's `^branch:` grep deliberately does not match.
     debug::print("branch: %llu/%llu correct (%.2f%%)\n",
                  CPUstate.BPUModule.getBranchCorrect(),
                  CPUstate.BPUModule.getBranchTotal(),
@@ -236,6 +256,19 @@ void CPU::run() {
                      ? 100.0 * CPUstate.BPUModule.getBranchCorrect() /
                            CPUstate.BPUModule.getBranchTotal()
                      : 0.0);
+    const auto &bp = CPUstate.BPUModule;
+    auto pct = [](uint64_t c, uint64_t t) {
+      return t ? 100.0 * static_cast<double>(c) / static_cast<double>(t) : 0.0;
+    };
+    debug::print(
+        "branch-type: cond=%llu/%llu(%.2f%%) jal=%llu/%llu(%.2f%%) "
+        "jalr=%llu/%llu(%.2f%%)\n",
+        bp.getCondCorrect(), bp.getCondTotal(),
+        pct(bp.getCondCorrect(), bp.getCondTotal()), bp.getJalCorrect(),
+        bp.getJalTotal(), pct(bp.getJalCorrect(), bp.getJalTotal()),
+        bp.getJalrCorrect(), bp.getJalrTotal(),
+        pct(bp.getJalrCorrect(), bp.getJalrTotal()));
+  }
   if (debug::enabled(debug::TOPIC_BPMISS))
     CPUstate.BPUModule.dumpBpMiss();
   if (debug::enabled(debug::TOPIC_ICACHE)) {
@@ -244,6 +277,13 @@ void CPU::run() {
     uint32_t t = h + m;
     debug::print("icache: hits=%u misses=%u total=%u hit-rate=%.2f%%\n", h, m, t,
                  t ? 100.0 * h / t : 0.0);
+    uint64_t dh = CPUstate.DCacheModule.getHitCount();
+    uint64_t dm = CPUstate.DCacheModule.getMissCount();
+    uint64_t dt = dh + dm;
+    debug::print("dcache: hits=%llu misses=%llu total=%llu hit-rate=%.2f%%\n",
+                 dh, dm, dt, dt ? 100.0 * static_cast<double>(dh) /
+                                      static_cast<double>(dt)
+                                : 0.0);
   }
   if (debug::enabled(debug::TOPIC_CDB)) {
     debug::print("cdb: both=%llu aluOnly=%llu lqOnly=%llu "

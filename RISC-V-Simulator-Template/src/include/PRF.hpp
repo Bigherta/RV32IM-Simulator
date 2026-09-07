@@ -12,10 +12,10 @@ struct PRFInputSquash {
   Wire<7> SquashTag;
   Wire<8> CkptId;
 };
-// Dual-CDB write ports (mirrors the main tree's PRFInput.cdbOfALU/cdbOfLQ):
-// the ALU group gates on cdbIsControl (control results never write PRF); the
-// LQ group has no isControl wire -- loads are never control ops, saving a
-// port.
+// Triple-CDB write ports (mirrors the main tree's
+// PRFInput.cdbOfALU/cdbOfLQ/cdbOfMul): the ALU group gates on cdbIsControl
+// (control results never write PRF); the LQ/MUL groups have no isControl
+// wire -- loads and multiplies are never control ops, saving two ports.
 struct PRFInputCDBAlu {
   Wire<1> cdbValid;
   Wire<32> cdbValue;
@@ -24,6 +24,12 @@ struct PRFInputCDBAlu {
   Wire<7> cdbNewPhy;
 };
 struct PRFInputCDBLq {
+  Wire<1> cdbValid;
+  Wire<32> cdbValue;
+  Wire<7> cdbRobTag;
+  Wire<7> cdbNewPhy;
+};
+struct PRFInputCDBMul {
   Wire<1> cdbValid;
   Wire<32> cdbValue;
   Wire<7> cdbRobTag;
@@ -49,6 +55,7 @@ struct PRFInput {
   PRFInputSquash squash;
   PRFInputCDBAlu cdbOfALU;
   PRFInputCDBLq cdbOfLQ;
+  PRFInputCDBMul cdbOfMUL;
   PRFInputIssue issue;
   PRFInputROB rob;
 };

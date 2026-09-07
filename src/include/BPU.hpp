@@ -124,6 +124,17 @@ private:
   uint8_t nextCkptId = 0;
   uint64_t branchTotal = 0;
   uint64_t branchCorrect = 0;
+  // Per-class prediction counters. Class split:
+  //   cond = BRU-resolved conditional branches (site 1 in BPU::tick),
+  //   jal  = direct JAL transfers on the ALU CDB (ROB isIndirect == false),
+  //   jalr = indirect JALR transfers on the ALU CDB (ROB isIndirect == true).
+  // Invariant: branch{Total,Correct} == the sum of the three classes.
+  uint64_t condTotal = 0;
+  uint64_t condCorrect = 0;
+  uint64_t jalTotal = 0;
+  uint64_t jalCorrect = 0;
+  uint64_t jalrTotal = 0;
+  uint64_t jalrCorrect = 0;
   // Debug-only per-PC misprediction counters (direct-mapped by pc[11:2]).
   // Synthesis strips these along with the VERBOSE topic.
   uint64_t missCnt[BTB_CAP] = {};
@@ -143,6 +154,12 @@ private:
 public:
   uint64_t getBranchTotal() const { return branchTotal; }
   uint64_t getBranchCorrect() const { return branchCorrect; }
+  uint64_t getCondTotal() const { return condTotal; }
+  uint64_t getCondCorrect() const { return condCorrect; }
+  uint64_t getJalTotal() const { return jalTotal; }
+  uint64_t getJalCorrect() const { return jalCorrect; }
+  uint64_t getJalrTotal() const { return jalrTotal; }
+  uint64_t getJalrCorrect() const { return jalrCorrect; }
   void dumpBpMiss() const;
   PredictInfo predict(int32_t pc) const;
 

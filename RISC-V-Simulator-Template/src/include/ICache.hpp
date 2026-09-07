@@ -8,11 +8,11 @@
 #include <cstring>
 
 static_assert(REQUEST_CAP == 4); // head is a 2-bit ring pointer
-static_assert(MEM_SIZE == (1u << 17)); // tag = addr[17:14] must fit Register<3>
+static_assert(MEM_SIZE == (1u << 17)); // tag = addr[17:13] must fit Register<4>
 
 struct CacheLine {
   Register<1> valid;
-  Register<3> tag; // addr[17:14] -- 128KB memory has 8 line frames
+  Register<4> tag; // addr[17:13] -- 8KB cache in 128KB space leaves 4 tag bits
   std::array<Register<32>, CACHE_BLOCK_CAP / 4> Data; // 4 words per line
 };
 

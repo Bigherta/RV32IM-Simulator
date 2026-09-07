@@ -19,6 +19,8 @@ constexpr int IQ_CAP = 16;
 constexpr int REGISTER_CAP = 32;
 constexpr int FLUSHARBITER_CAP = 4;
 constexpr int ALU_CAP = 4;
+constexpr int MUL_CAP = 4;
+constexpr int MULTIPLYRS_CAP = 4; // dedicated RS for the M-extension multiply ops
 constexpr int AGU_CAP = 4;
 constexpr int BRU_CAP = 4;
 constexpr int BTB_CAP = 256;
@@ -42,7 +44,7 @@ inline constexpr int InvalidPhy = 0;
 constexpr int IMEM_CAP = 16;
 constexpr int CKPT_CAP = 64;
 constexpr int CACHE_BLOCK_CAP = 16;
-constexpr int CACHE_CAP = 1024;
+constexpr int CACHE_CAP = 512; // 8KB direct-mapped (512x16B), mirrors main tree
 constexpr int REQUEST_CAP = 4;
 // ---- DCache geometry (mirrors main tree common.hpp) ----
 // 64KB / 4-way / 16B lines. All constexpr: to shrink the cache for stress
@@ -53,6 +55,7 @@ constexpr int NUM_OF_SETS = 1024;
 constexpr int DCACHE_INDEX_BITS = 10;              // log2(NUM_OF_SETS)
 constexpr int DCACHE_TAG_SHIFT = 4 + DCACHE_INDEX_BITS; // 16B block + set idx
 constexpr int NUM_OF_WAYS = 4;
+constexpr int MEM_LATENCY = 50;
 static_assert(NUM_OF_SETS == (1 << DCACHE_INDEX_BITS),
               "NUM_OF_SETS must be 2^DCACHE_INDEX_BITS");
 static_assert(DCACHE_BLOCK_CAP == 16, "16B lines assumed by DCACHE_TAG_SHIFT");
@@ -63,8 +66,13 @@ enum class ValueState : uint32_t{
 };
 
 enum class Operation {
+  OP_INVALID,
   ADD,
   SUB,
+  MUL,
+  MULH,
+  MULHU,
+  MULHSU,
   AND,
   OR,
   XOR,
@@ -84,12 +92,12 @@ enum class Operation {
   Load,
   Store,
   JALR,
-  OP_INVALID,
 };
 constexpr bool isControlOp(Operation op) { return op == Operation::JALR; }
 enum class RISC_V {
   R,
   I,
+  M, // M-extension (opcode 0x33, funct7 == 1); values match the main tree
   Istar,
   S,
   B,
@@ -161,7 +169,7 @@ struct Uop {
   int32_t predictedPC = 0;
   uint8_t ckptId = 0;
 };
-enum class RSType { Integer, Branch, Load, StoreAddr };
+enum class RSType { Integer, Multiply, Branch, Load, StoreAddr };
 class ROB;
 class PRF;
 struct BPU;

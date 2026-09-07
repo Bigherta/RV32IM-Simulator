@@ -41,8 +41,12 @@ Uop Decoder::decode(int32_t raw_inst) {
 
   switch (opcode) {
   case 0b0110011: {
-    inst.type = RISC_V::R;
     inst.funct7 = (raw >> 25) & 0x7F;
+    if (inst.funct7 == 0b0000001) {
+      inst.type = RISC_V::M;
+    } else {
+      inst.type = RISC_V::R;
+    }
     break;
   }
   case 0b0010011: {
@@ -98,25 +102,19 @@ bool UopQueue::isEmpty() const { return head == tail; }
 
 bool UopQueue::isFull() const { return ((tail + 1) & (IQ_CAP - 1)) == head; }
 
-void UopQueue::push(Uop inst){
+void UopQueue::push(Uop inst) {
   uopQueueEntries[tail] = inst;
   tail = (tail + 1) & (IQ_CAP - 1);
 }
-void UopQueue::pop(){
-  head = (head + 1) & (IQ_CAP - 1);
-}
-uint8_t UopQueue::getHead() const{
-  return head;
-}
-uint8_t UopQueue::getTail() const{
-  return tail;
-}
-void UopQueue::clear(){
+void UopQueue::pop() { head = (head + 1) & (IQ_CAP - 1); }
+uint8_t UopQueue::getHead() const { return head; }
+uint8_t UopQueue::getTail() const { return tail; }
+void UopQueue::clear() {
   std::memset(this, 0, sizeof(*this));
   head = tail = 0;
 }
 
-void DecodeUnit::tick(const DecodeInput &input, systemState &CPUstate){
+void DecodeUnit::tick(const DecodeInput &input, systemState &CPUstate) {
   if (input.squashDetect.needSquash) {
     CPUstate.DecodeUnitModule.clear();
     return;

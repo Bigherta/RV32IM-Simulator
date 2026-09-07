@@ -1,6 +1,4 @@
 #pragma once
-#ifndef ALU_HPP
-#define ALU_HPP
 #include "RS.hpp"
 #include "common.hpp"
 struct systemState;
@@ -38,4 +36,3 @@ public:
   bool isValid(int index) const { return slotValid[index]; }
   void tick(const ALUInput &, systemState &);
 };
-#endif // ALU_HPP

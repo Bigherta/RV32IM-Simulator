@@ -370,11 +370,14 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
     int pcFrom = input.BRUModule.headPCFrom();
     {
       ++CPUstate.BPUModule.branchTotal;
+      // BRU resolves conditional branches only -> class = cond.
+      ++CPUstate.BPUModule.condTotal;
       bool correct = pcResult == input.ROBModule.getPredictedPC(
                                      ((brRobTag) & 0x3F));
-      if (correct)
+      if (correct) {
         ++CPUstate.BPUModule.branchCorrect;
-      else
+        ++CPUstate.BPUModule.condCorrect;
+      } else
         CPUstate.BPUModule.noteMiss(static_cast<uint32_t>(pcFrom));
       if (!input.squashDetect.needSquash ||
           (input.squashDetect.needSquash &&
@@ -399,10 +402,22 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
         (input.squashDetect.needSquash &&
          ROB::isOlder(cdbOut.robTag, input.squashDetect.SquashTag))) {
       ++CPUstate.BPUModule.branchTotal;
-      bool correct = pc == input.ROBModule.getPredictedPC(robIdx);
-      if (correct)
-        ++CPUstate.BPUModule.branchCorrect;
+      // CDB control transfers are JAL/JALR (both decode to Operation::JALR;
+      // the ROB distinguishes them): direct JAL has isIndirect == false,
+      // register-driven JALR has isIndirect == true.
+      const bool isJalr = input.ROBModule.isIndirect(robIdx);
+      if (isJalr)
+        ++CPUstate.BPUModule.jalrTotal;
       else
+        ++CPUstate.BPUModule.jalTotal;
+      bool correct = pc == input.ROBModule.getPredictedPC(robIdx);
+      if (correct) {
+        ++CPUstate.BPUModule.branchCorrect;
+        if (isJalr)
+          ++CPUstate.BPUModule.jalrCorrect;
+        else
+          ++CPUstate.BPUModule.jalCorrect;
+      } else
         // record the jump SITE, not its target: targets are arbitrary
         // addresses that would poison the per-PC miss profile.
         CPUstate.BPUModule.noteMiss(

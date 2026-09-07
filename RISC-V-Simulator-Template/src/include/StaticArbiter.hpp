@@ -1,11 +1,11 @@
 #pragma once
-// StaticArbiter: the stateless arbiter/bus-source family (pure combinational,
-// zero flip-flops in RTL). AluCDBArbiter / LqCDBArbiter / MemArbiter /
-// DispatchArbiter / IssueArbiter share one form: work() is empty, every port
-// is a lazy Wire, and the whole always_comb cloud is wired once in
-// wire_output(). The stateful FlushArbiter lives separately in
-// DynamicArbiter.hpp (registered queue vs always_comb is the stateful/
-// stateless hardware boundary).
+// StaticArbiter: the stateless arbiter family (pure combinational, zero
+// flip-flops in RTL). MemArbiter / DispatchArbiter / IssueArbiter share one
+// form: work() is empty, every port is a lazy Wire, and the whole always_comb
+// cloud is wired once in wire_output(). The dual-CDB bus sources
+// (AluCDBArbiter / LqCDBArbiter) live in CDB.hpp. The stateful FlushArbiter
+// lives separately in DynamicArbiter.hpp (registered queue vs always_comb is
+// the stateful/stateless hardware boundary).
 #include "AGU.hpp"
 #include "ALU.hpp"
 #include "BRU.hpp"
@@ -19,58 +19,6 @@
 #include "module.h"
 #include <array>
 #include <cstdint>
-// Dual-CDB bus sources (pure combinational, zero flip-flops): the retired
-// CDBArbiter arbitrated ALU vs LQ on one shared bus; each source now drives
-// its own bus (aluCDB / lqCDB), so there is no cross-unit arbitration left --
-// every source has a single candidate (ALU oldest head / LQ::CDBDetect hit)
-// that is squash-guarded and passed straight through. This mirrors the main
-// tree's aluCDB::build / lqCDB::build factories (dual CDB, validated 19/19).
-struct AluCDBArbInput {
-  Wire<1> aluEmpty;     // ALUModule.isEmpty()
-  Wire<32> aluValue;    // ALUModule.headValue()
-  Wire<7> aluRobTag;    // ALUModule.headRobTag()
-  Wire<1> aluIsControl; // ALUModule.headIsControl()
-  Wire<1> squashNeed;   // squashDetect.needSquash
-  Wire<7> squashTag;    // squashDetect.SquashTag
-};
-struct AluCDBArbOutput {
-  Wire<1> valid;
-  Wire<32> value;
-  Wire<7> robTag;
-  Wire<1> isControl;
-};
-struct AluCDBArbiter : dark::Module<AluCDBArbInput, AluCDBArbOutput> {
-  AluCDBArbiter() { wire_output(); }
-  void work() override {} // pure combinational: outputs are lazy Wires
-private:
-  void wire_output();
-  // ALU head candidate surviving the squash guard (verbatim from CDBArbiter).
-  bool aluLive() const;
-};
-struct LqCDBArbInput {
-  Wire<1> lsqValid;     // LQModule.CDBDetect() != -1
-  Wire<7> lsqMemIndex;  // CDBDetect() hit ? LQ index : 0
-  Wire<7> lsqRobTag;    // hit ? LQModule.getRobTag(idx) : 0
-  Wire<32> lsqValue;    // hit ? LQModule.getValue(idx) : 0 (gated here so the
-                        // invalid index never reaches getValue's throw)
-  Wire<1> squashNeed;   // squashDetect.needSquash
-  Wire<7> squashTag;    // squashDetect.SquashTag
-};
-struct LqCDBArbOutput {
-  Wire<1> valid;
-  Wire<32> value;
-  Wire<7> robTag;
-  Wire<7> memIndex;
-};
-struct LqCDBArbiter : dark::Module<LqCDBArbInput, LqCDBArbOutput> {
-  LqCDBArbiter() { wire_output(); }
-  void work() override {} // pure combinational: outputs are lazy Wires
-private:
-  void wire_output();
-  // LSQ load candidate surviving the squash guard (verbatim from CDBArbiter).
-  bool lsqLive() const;
-};
-
 // Stateless memory-request arbiter (pure combinational, zero flip-flops):
 // one request per cycle -- a commit-permitted store (SQ head) has priority,
 // otherwise the oldest address-resolved load flagged by LQ::LoadDetect goes
@@ -78,7 +26,11 @@ private:
 // store branch carries no squash guard, verbatim from the inlined
 // MemRequestArbiter).
 struct MemArbInput {
-  Wire<1> dmemBusy;           // DMEMModule.isBusy()
+  Wire<1> dmemBusy; // DCache busy (DCacheModule.isBusy(), busy._M_old): the
+                    // arbiter never issues while the DCache has a request in
+                    // flight (DCache is the arbiter's single mem client; it
+                    // only accepts a decision at READY with both DMEM ports
+                    // drained, so DCache idle implies DMEM idle)
   // store side (SQ head payload; addr/value gated at the wiring site so the
   // un-ready throw paths are never reached)
   Wire<1> sqEmpty;            // SQModule.isEmpty()
@@ -128,16 +80,18 @@ private:
 // Stateless dispatch arbiter (pure combinational, zero flip-flops), written
 // in RTL style: ports are the RS slot-field buses plus the PRF ready bitmap
 // (prd_ready[127:0]); the arbiter indexes the bitmap with the per-slot source
-// tags itself. Three independent grants (ALU/AGU/BRU), each = oldest-ready
+// tags itself. Four independent grants (ALU/MUL/AGU/BRU), each = oldest-ready
 // folded priority chain over its pool, gated by destination-isFull and the
 // squash point (squash suppresses valid only -- the selected idx/tag stay
 // driven, consumers gate on valid). AGU pool = LoadRS ++ StoreAddrRS
 // concatenated into a single 12-entry selection tree (verbatim iteration
-// order of the former software double loop).
+// order of the former software double loop). The MUL channel mirrors the ALU
+// channel over the dedicated multiplyRS pool.
 struct DispatchArbInput {
   Wire<1> aluFull; // ALUModule.isFull()
   Wire<1> aguFull; // AGUModule.isFull()
   Wire<1> bruFull; // BRUModule.isFull()
+  Wire<1> mulFull; // MULModule.isFull()
   // RS slot-field buses (raw; src tags are Wire<7> -- the 8th sentinel bit of
   // the Register<8> is clipped at the wiring site, so a tag always indexes
   // prdReady in-bounds; stale free-slot tags are killed by busy=0)
@@ -149,6 +103,8 @@ struct DispatchArbInput {
   std::array<Wire<7>, STORERS_CAP> saSrc1Tag, saRobTag;
   std::array<Wire<1>, BRANCHRS_CAP> brBusy;
   std::array<Wire<7>, BRANCHRS_CAP> brSrc1Tag, brSrc2Tag, brRobTag;
+  std::array<Wire<1>, MULTIPLYRS_CAP> mulBusy;
+  std::array<Wire<7>, MULTIPLYRS_CAP> mulSrc1Tag, mulSrc2Tag, mulRobTag;
   std::array<Wire<1>, PRF_CAP> prdReady; // PRF ready bitmap bus
   Wire<1> squashNeed;
   Wire<7> squashTag;
@@ -159,10 +115,10 @@ struct DispArbOutInfo {
   Wire<4> rsIndex; // RS slot (0 when !valid; the -1 sentinel dies -- every
                    // consumer gates on valid)
   Wire<7> robTag;  // winner slot tag (0 when !valid, verbatim default)
-  Wire<2> rsType;  // RSType encoding
+  Wire<3> rsType;  // RSType encoding (Integer..StoreAddr, 5 values)
 };
 struct DispatchArbOutput {
-  DispArbOutInfo alu, agu, bru;
+  DispArbOutInfo alu, agu, bru, mul;
 };
 struct DispatchArbiter : dark::Module<DispatchArbInput, DispatchArbOutput> {
   DispatchArbiter() { wire_output(); }
@@ -186,6 +142,7 @@ private:
                          const std::array<Wire<7>, N> &tags) const;
   WinResult aluSelect() const;
   WinResult bruSelect() const;
+  WinResult mulSelect() const; // multiplyRS pool, same shape as aluSelect
   WinResult aguSelect() const; // load[0..3] ++ sa[0..7] single 12-slot pass
 };
 // ---- width/encoding guards for the wire-ized issue packet ----
@@ -204,7 +161,7 @@ static_assert(MEM_STORE_BIT == 0x40 && SQ_CAP <= 16,
 // same-source same-cycle by construction. ----
 struct IssueArbInputDec {
   Wire<1> isEmpty;
-  Wire<3> type;       // RISC_V enum (R..RV_INVALID, 8 values)
+  Wire<4> type;       // RISC_V enum (R..RV_INVALID, 9 values)
   Wire<7> opcode;
   Wire<3> funct3;
   Wire<7> funct7;
@@ -228,6 +185,7 @@ struct IssueArbInputRs {
   std::array<Wire<1>, STORERS_CAP> saBusy;
   std::array<Wire<1>, STORERS_CAP> svBusy;
   std::array<Wire<1>, BRANCHRS_CAP> brBusy;
+  std::array<Wire<1>, MULTIPLYRS_CAP> mulBusy;
 };
 // Port = value: the free-list head slot is resolved wiring-side
 // (getFreeListSlot(getHeadSeq()), a pure read) so the module needs no
@@ -268,9 +226,9 @@ struct IssueArbInput {
 // which branch's packet claims the single issue port this cycle -- every
 // Output field is a small mux keyed on it:
 //   0 none (guard fail / branch resource fail / unhandled opcode)
-//   1 INT  2 HALT  3 LOAD  4 STORE  5 BR  6 UJ  7 RV_INVALID
+//   1 INT  2 HALT  3 LOAD  4 STORE  5 BR  6 UJ  7 RV_INVALID  8 MUL
 struct IssueArbInner {
-  Wire<3> win;
+  Wire<4> win;
   // branch parameters (pure functions of dec.type/opcode)
   Wire<1> intHasRs2, intImmAsVk, intIsControl;
   Wire<1> ujHasPC, ujIsControl;
@@ -281,6 +239,7 @@ struct IssueArbInner {
   Wire<1> saFree;   Wire<3> saSlot;
   Wire<1> svFree;   Wire<3> svSlot;
   Wire<1> brFree;   Wire<2> brSlot;
+  Wire<1> mulFree;  Wire<2> mulSlot;
 };
 
 // ---- Output: per-consumer field groups. Field names match the retired
@@ -299,11 +258,12 @@ struct IssueArbOutputCore {
   Wire<32> pc;    // driven only for control transfers (JALR/JAL), else 0
 };
 struct IssueArbOutputSelect {
-  Wire<1> hasInteger, hasLoad, hasStore, hasBranch;
+  Wire<1> hasInteger, hasLoad, hasStore, hasBranch, hasMultiply;
   Wire<4> integerSlot;
   Wire<2> loadSlot;
   Wire<3> storeAddrSlot, storeValueSlot;
   Wire<2> branchSlot;
+  Wire<2> multiplySlot;
 };
 struct IssueArbOutIntP {
   Wire<5> op;
@@ -338,6 +298,12 @@ struct IssueArbOutBrP {
   Wire<8> robTag;
   Wire<32> imm, pc;
 };
+struct IssueArbOutMulP {
+  Wire<5> op;
+  Wire<7> s1Tag, s2Tag;
+  Wire<32> s1Imm, s2Imm;
+  Wire<8> robTag;
+};
 struct IssueArbOutRobEntry {
   Wire<2> type;
   Wire<1> isCommitReady;
@@ -357,6 +323,7 @@ struct IssueArbOutput {
   IssueArbOutSaP saP;
   IssueArbOutSvP svP;
   IssueArbOutBrP brP;
+  IssueArbOutMulP mulP;
   IssueArbOutRobEntry robEntry;
 };
 

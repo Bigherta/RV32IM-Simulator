@@ -12,7 +12,7 @@ enum DCachePhase : uint32_t { DCACHE_READY = 0, DCACHE_WAIT = 1 };
 
 void DCache::wire_output() {
   // ---- Output Wires read the committed _M_old registers (single point) ----
-  isBusy = [this]() -> uint32_t { return static_cast<uint32_t>(busy); };
+  busyOut = [this]() -> uint32_t { return static_cast<uint32_t>(busy); };
   // loadResp squash guard inlined: valid && (!needSquash || isOlder)
   loadRespValid = [this]() -> uint32_t {
     return (static_cast<bool>(lbValid) &&

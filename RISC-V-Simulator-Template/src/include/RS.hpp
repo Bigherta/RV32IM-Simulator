@@ -49,14 +49,15 @@ struct BranchRS {
 };
 
 // --- Input wires: nested groups stay within the reflect 14-member limit ---
-// Issue selection: valid + one-of-four type flags + target slots
+// Issue selection: valid + one-of-five type flags + target slots
 struct RSInputIssueSel {
   Wire<1> valid;
-  Wire<1> hasInteger, hasLoad, hasStore, hasBranch;
+  Wire<1> hasInteger, hasLoad, hasStore, hasBranch, hasMultiply;
   Wire<4> integerSlot;
   Wire<2> loadSlot;
   Wire<3> storeAddrSlot, storeValueSlot;
   Wire<2> branchSlot;
+  Wire<2> multiplySlot; // MULTIPLYRS_CAP == 4
 };
 // Issue push payloads (flattened from IssuePacket; free is not carried --
 // push always allocates). One payload group per RS array.
@@ -93,18 +94,26 @@ struct RSInputBranchPayload {
   Wire<8> robTag;
   Wire<32> imm, pc;
 };
+struct RSInputMulPayload {
+  Wire<5> op;
+  Wire<7> s1Tag, s2Tag;
+  Wire<32> s1Imm, s2Imm;
+  Wire<8> robTag;
+};
 struct RSInputIssueData {
   RSInputIntPayload intP;
   RSInputLoadPayload loadP;
   RSInputStoreAddrPayload saP;
   RSInputStoreValuePayload svP;
   RSInputBranchPayload brP;
+  RSInputMulPayload mulP;
 };
 // Dispatch release ports (readiness itself is judged by DispatchArbiter over
 // PRF state; RS only needs the granted slot + the AGU load/store split)
 struct RSInputDispatch {
-  Wire<1> aluValid, aguValid, bruValid;
+  Wire<1> aluValid, aguValid, bruValid, mulValid;
   Wire<4> aluIdx, aguIdx, bruIdx;
+  Wire<2> mulIdx; // MULTIPLYRS_CAP == 4
   Wire<1> aguIsLoad;
 };
 struct RSInputSquash {
@@ -131,7 +140,11 @@ struct RSInner {
   std::array<StoreAddrRS, STORERS_CAP> storeAddressRS;
   std::array<StoreValueRS, STORERS_CAP> storeValueRS;
   std::array<BranchRS, BRANCHRS_CAP> branchRS;
+  // Dedicated multiply pool (mirror of IntRS: busy/op/srcs/robTag). M-ops
+  // never share the integer RS, so a mul-heavy stream cannot starve ALU ops.
+  std::array<IntRS, MULTIPLYRS_CAP> multiplyRS;
 };
+static_assert(MULTIPLYRS_CAP == 4, "multiply slot scans are fixed-length");
 
 struct RSUnit : public dark::Module<RSInput, RSOutput, RSInner> {
 public:
@@ -233,6 +246,23 @@ public:
   }
   uint32_t getBrPc(int i) const {
     return static_cast<uint32_t>(branchRS[i].pc);
+  }
+  bool isMulFree(int i) const {
+    return !static_cast<bool>(multiplyRS[i].busy);
+  }
+  Operation getMulOp(int i) const {
+    return static_cast<Operation>(static_cast<uint32_t>(multiplyRS[i].op));
+  }
+  Operand getMulSrc1(int i) const {
+    return {static_cast<int>(static_cast<uint32_t>(multiplyRS[i].src1.tag)),
+            static_cast<int32_t>(static_cast<uint32_t>(multiplyRS[i].src1.imm))};
+  }
+  Operand getMulSrc2(int i) const {
+    return {static_cast<int>(static_cast<uint32_t>(multiplyRS[i].src2.tag)),
+            static_cast<int32_t>(static_cast<uint32_t>(multiplyRS[i].src2.imm))};
+  }
+  RobTag getMulRobTag(int i) const {
+    return static_cast<RobTag>(static_cast<uint32_t>(multiplyRS[i].robTag));
   }
   void work() override;
 };

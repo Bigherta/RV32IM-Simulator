@@ -12,6 +12,7 @@ struct PRFInput {
   SquashInfo squashDetect;
   aluCDB cdbOfALU;
   lqCDB cdbOfLQ;
+  mulCDB cdbOfMul;
   const ROB &ROBModule;
   PRFInput(const ROB &rob, const IssuePacket &pkt)
       : ROBModule(rob), issuePacket(pkt) {}

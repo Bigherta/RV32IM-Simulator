@@ -1,6 +1,6 @@
 #pragma once
 #include "../include/Memory.hpp"
-#include "../include/common.h"
+#include "common.h"
 #include "module.h"
 #include "tools.h"
 #include <array>
@@ -16,7 +16,6 @@
 // Line latency is a property of this module (not a field travelling on the
 // request bus), so the request carries {valid, address} / {valid, address,
 // lineData} only.
-constexpr int DMEM_LINE_LATENCY = 3; // cycles from claim to reply/landing
 
 // DCache -> DMEM, one pulse per port per cycle (claimed on !busy).
 struct DMEMInput {
@@ -29,10 +28,10 @@ struct DMEMInput {
 // Registered execution pipelines (one per port) + the reply buffer.
 struct DMEMInner {
   Register<1> readBusy;
-  Register<3> execReadRemainCycle;
+  Register<6> execReadRemainCycle;
   Register<32> execReadAddress;
   Register<1> writeBusy;
-  Register<3> execWriteRemainCycle;
+  Register<6> execWriteRemainCycle;
   Register<32> execWriteAddress;
   std::array<Register<8>, DCACHE_BLOCK_CAP> execWriteLineData;
 };

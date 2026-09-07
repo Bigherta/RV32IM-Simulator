@@ -54,11 +54,13 @@ void RSUnit::work() {
   const bool hasLoad = issueValid && static_cast<bool>(sel.hasLoad);
   const bool hasStore = issueValid && static_cast<bool>(sel.hasStore);
   const bool hasBranch = issueValid && static_cast<bool>(sel.hasBranch);
+  const bool hasMul = issueValid && static_cast<bool>(sel.hasMultiply);
   const uint32_t intSlot = static_cast<uint32_t>(sel.integerSlot);
   const uint32_t loadSlotV = static_cast<uint32_t>(sel.loadSlot);
   const uint32_t saSlot = static_cast<uint32_t>(sel.storeAddrSlot);
   const uint32_t svSlot = static_cast<uint32_t>(sel.storeValueSlot);
   const uint32_t brSlot = static_cast<uint32_t>(sel.branchSlot);
+  const uint32_t mulSlot = static_cast<uint32_t>(sel.multiplySlot);
 
   const bool needSquash = static_cast<bool>(squash.needSquash);
   const uint32_t sqTag = static_cast<uint32_t>(squash.SquashTag);
@@ -70,6 +72,8 @@ void RSUnit::work() {
   const bool aguIsLoadV = static_cast<bool>(dispatch.aguIsLoad);
   const bool bruRel = static_cast<bool>(dispatch.bruValid);
   const uint32_t bruIdx = static_cast<uint32_t>(dispatch.bruIdx);
+  const bool mulRel = static_cast<bool>(dispatch.mulValid);
+  const uint32_t mulIdx = static_cast<uint32_t>(dispatch.mulIdx);
 
   // ---- integerRS: push / release / flush ----
   for (int i = 0; i < INTEGERRS_CAP; ++i) {
@@ -193,6 +197,31 @@ void RSUnit::work() {
       branchRS[i].src1.imm <= 0;
       branchRS[i].src2.tag <= 0;
       branchRS[i].src2.imm <= 0;
+    }
+  }
+
+  // ---- multiplyRS: push / release / flush (same shape as integerRS) ----
+  for (int i = 0; i < MULTIPLYRS_CAP; ++i) {
+    const bool busyOld = static_cast<bool>(multiplyRS[i].busy);
+    const uint32_t tagOld = static_cast<uint32_t>(multiplyRS[i].robTag);
+    const bool pushHit = hasMul && mulSlot == static_cast<uint32_t>(i);
+    const bool relHit = mulRel && mulIdx == static_cast<uint32_t>(i);
+    const bool flushHit =
+        needSquash && busyOld && ROB::isOlder(sqTag, tagOld);
+    if (pushHit) {
+      multiplyRS[i].busy <= 1;
+      multiplyRS[i].op <= static_cast<uint32_t>(data.mulP.op);
+      multiplyRS[i].src1.tag <= static_cast<uint32_t>(data.mulP.s1Tag);
+      multiplyRS[i].src1.imm <= static_cast<uint32_t>(data.mulP.s1Imm);
+      multiplyRS[i].src2.tag <= static_cast<uint32_t>(data.mulP.s2Tag);
+      multiplyRS[i].src2.imm <= static_cast<uint32_t>(data.mulP.s2Imm);
+      multiplyRS[i].robTag <= static_cast<uint32_t>(data.mulP.robTag);
+    } else if (relHit || flushHit) {
+      multiplyRS[i].busy <= 0;
+      multiplyRS[i].src1.tag <= 0;
+      multiplyRS[i].src1.imm <= 0;
+      multiplyRS[i].src2.tag <= 0;
+      multiplyRS[i].src2.imm <= 0;
     }
   }
 }

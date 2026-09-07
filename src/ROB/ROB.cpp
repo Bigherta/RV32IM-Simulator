@@ -1,5 +1,6 @@
 #include "../include/ROB.hpp"
 #include "../include/CPU.hpp"
+#include "../include/util.hpp"
 #include <cassert>
 #include <cstdint>
 
@@ -142,6 +143,17 @@ void ROB::tick(const ROBInput &input, systemState &CPUstate) {
       }
     }
   }
+  if (input.cdbOfMul.valid) {
+    if (!input.squashDetect.needSquash ||
+        ROB::isOlder(input.cdbOfMul.robTag, input.squashDetect.SquashTag)) {
+      auto robIdx = ((input.cdbOfMul.robTag) & 0x3F);
+      if (!isEmpty() && !ROB::isOlder(input.cdbOfMul.robTag, getHead())) {
+        CPUstate.ROBModule.setROBCommitReady(robIdx);
+        if (debug::enabled(debug::TOPIC_EXEC))
+          debug::print("rob mul-ready rob=%u\n", input.cdbOfMul.robTag);
+      }
+    }
+  }
   // ROB squash
   if (input.squashDetect.needSquash) {
     CPUstate.ROBModule.flush(input.squashDetect.SquashTag);
@@ -150,6 +162,8 @@ void ROB::tick(const ROBInput &input, systemState &CPUstate) {
   if (isEmpty() || !isHeadCommitReady())
     return;
   int headIdx = (getHead() & 0x3F);
+  if (debug::enabled(debug::TOPIC_EXEC))
+    debug::print("rob commit rob=%u halt=%d\n", getHead(), isHeadHalt() ? 1 : 0);
   CPUstate.ROBModule.pop();
   if (isHeadHalt()) {
     CPUstate.ROBModule.haltCommitted = true;

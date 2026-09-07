@@ -32,6 +32,7 @@ struct ROBInput {
   SquashInfo squashDetect;
   aluCDB cdbOfALU;
   lqCDB cdbOfLQ;
+  mulCDB cdbOfMul;
   const BRU &BRUModule;
   const SQ &SQModule;
   const IssuePacket &issuePacket;

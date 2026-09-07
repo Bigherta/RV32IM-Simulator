@@ -9,23 +9,19 @@ static_assert(static_cast<uint32_t>(Operation::OP_INVALID) < 32); // op fits Wir
 
 struct ALUInput {
   Wire<1> needSquash;
-  Wire<8> SquashTag;
-  // dispatch payload from the DispatchArbiter's alu grant (wired with lambdas
-  // that guard on dispatch.valid)
+  Wire<7> SquashTag;
   Wire<1> dispatchValid;
   Wire<32> src1Value;
   Wire<32> src2Value;
   Wire<5> op;
-  Wire<8> dispatchRobTag;
-  // this unit's own result bus (dual-CDB: ALU is the sole source of the
-  // aluCDB, so no aluGranted bit survives -- valid implies granted)
+  Wire<7> dispatchRobTag;
   Wire<1> cdbValid;
-  Wire<8> cdbRobTag;
+  Wire<7> cdbRobTag;
 };
 
 struct ALUEntry {
   Register<32> value;
-  Register<8> robTag;
+  Register<7> robTag;
   Register<1> isControl;
 };
 

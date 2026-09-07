@@ -3,9 +3,9 @@
 #include <cstdint>
 
 bool ICache::hit(uint32_t addr) const {
-  auto index = (addr >> 4) & 0x3FF;
+  auto index = (addr >> 4) & (CACHE_CAP - 1);
   return static_cast<bool>(blocks[index].valid) &&
-         static_cast<uint32_t>(blocks[index].tag) == (addr >> 14);
+         static_cast<uint32_t>(blocks[index].tag) == (addr >> 13);
 }
 
 void ICache::work() {
@@ -33,9 +33,9 @@ void ICache::work() {
   // and backfill the placeholder entry
   if (static_cast<bool>(lineReturn.valid)) {
     const uint32_t la = static_cast<uint32_t>(lineReturn.lineAddr);
-    auto cachelineIndex = (la >> 4) & 0x3FF;
+    auto cachelineIndex = (la >> 4) & (CACHE_CAP - 1);
     blocks[cachelineIndex].valid <= true;
-    blocks[cachelineIndex].tag <= la >> 14;
+    blocks[cachelineIndex].tag <= la >> 13;
     for (int k = 0; k < CACHE_BLOCK_CAP / 4; ++k)
       blocks[cachelineIndex].Data[k] <= static_cast<uint32_t>(lineReturn.data[k]);
     // backfill placeholder: only when the post-pop queue is non-empty and the
@@ -56,7 +56,7 @@ void ICache::work() {
     bool isHit = hit(pc);
     uint32_t raw_inst = 0;
     if (isHit)
-      raw_inst = lineWord((pc >> 4) & 0x3FF, (pc >> 2) & 3);
+      raw_inst = lineWord((pc >> 4) & (CACHE_CAP - 1), (pc >> 2) & 3);
     assert(occ < static_cast<uint32_t>(REQUEST_CAP));
     auto index = (oh + occ) & (REQUEST_CAP - 1);
     requestBuffer[index].raw_inst <= raw_inst;
