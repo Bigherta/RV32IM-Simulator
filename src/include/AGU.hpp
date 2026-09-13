@@ -14,7 +14,6 @@ struct AGUInput {
       : RSModule(rs), PRFModule(prf) {}
 };
 class AGU {
-  friend struct ReorderTester;
 private:
   AddressCalculateResult outputBuffer[AGU_CAP];
   bool slotValid[AGU_CAP] = {};

@@ -13,14 +13,13 @@ struct PRFInput {
   aluCDB cdbOfALU;
   lqCDB cdbOfLQ;
   mulCDB cdbOfMul;
+  divCDB cdbOfDiv;
   const ROB &ROBModule;
   PRFInput(const ROB &rob, const IssuePacket &pkt)
       : ROBModule(rob), issuePacket(pkt) {}
 };
 struct systemState;
 class PRF {
-  friend struct ReorderTester;
-
 private:
   PRFEntry PhysicalRegs[PRF_CAP];
   uint8_t freeList[PRF_CAP];

@@ -52,12 +52,13 @@ struct BranchRS {
 // Issue selection: valid + one-of-five type flags + target slots
 struct RSInputIssueSel {
   Wire<1> valid;
-  Wire<1> hasInteger, hasLoad, hasStore, hasBranch, hasMultiply;
+  Wire<1> hasInteger, hasLoad, hasStore, hasBranch, hasMultiply, hasDivide;
   Wire<4> integerSlot;
   Wire<2> loadSlot;
   Wire<3> storeAddrSlot, storeValueSlot;
   Wire<2> branchSlot;
   Wire<2> multiplySlot; // MULTIPLYRS_CAP == 4
+  Wire<2> divideSlot;   // DIVIDERS_CAP == 4
 };
 // Issue push payloads (flattened from IssuePacket; free is not carried --
 // push always allocates). One payload group per RS array.
@@ -100,6 +101,16 @@ struct RSInputMulPayload {
   Wire<32> s1Imm, s2Imm;
   Wire<8> robTag;
 };
+// DIV/REM push payload. Shape-identical to RSInputMulPayload (both are
+// two-register-source ops with an optional dest rename), but kept as its own
+// group so the divideRS push reads a bus of its own kind (issue_Divide in the
+// reference drives a separate divideRS payload).
+struct RSInputDivPayload {
+  Wire<5> op;
+  Wire<7> s1Tag, s2Tag;
+  Wire<32> s1Imm, s2Imm;
+  Wire<8> robTag;
+};
 struct RSInputIssueData {
   RSInputIntPayload intP;
   RSInputLoadPayload loadP;
@@ -107,13 +118,15 @@ struct RSInputIssueData {
   RSInputStoreValuePayload svP;
   RSInputBranchPayload brP;
   RSInputMulPayload mulP;
+  RSInputDivPayload divP;
 };
 // Dispatch release ports (readiness itself is judged by DispatchArbiter over
 // PRF state; RS only needs the granted slot + the AGU load/store split)
 struct RSInputDispatch {
-  Wire<1> aluValid, aguValid, bruValid, mulValid;
+  Wire<1> aluValid, aguValid, bruValid, mulValid, divValid;
   Wire<4> aluIdx, aguIdx, bruIdx;
-  Wire<2> mulIdx; // MULTIPLYRS_CAP == 4
+  Wire<2> mulIdx;  // MULTIPLYRS_CAP == 4
+  Wire<2> divIdx;  // DIVIDERS_CAP == 4
   Wire<1> aguIsLoad;
 };
 struct RSInputSquash {
@@ -143,8 +156,12 @@ struct RSInner {
   // Dedicated multiply pool (mirror of IntRS: busy/op/srcs/robTag). M-ops
   // never share the integer RS, so a mul-heavy stream cannot starve ALU ops.
   std::array<IntRS, MULTIPLYRS_CAP> multiplyRS;
+  // Dedicated divide pool (mirror of multiplyRS): DIV/REM ops never share
+  // the multiply or integer RS, so a div-heavy stream cannot starve either.
+  std::array<IntRS, DIVIDERS_CAP> divideRS;
 };
 static_assert(MULTIPLYRS_CAP == 4, "multiply slot scans are fixed-length");
+static_assert(DIVIDERS_CAP == 4, "divide slot scans are fixed-length");
 
 struct RSUnit : public dark::Module<RSInput, RSOutput, RSInner> {
 public:
@@ -155,6 +172,7 @@ public:
   int tryAllocStoreAddress() const;
   int tryAllocStoreValue() const;
   int tryAllocBranch() const;
+  int tryAllocDivide() const;
   // field bridge accessors (Register is non-copyable: consumers read fields,
   // never whole entries)
   bool isIntFree(int i) const {
@@ -263,6 +281,23 @@ public:
   }
   RobTag getMulRobTag(int i) const {
     return static_cast<RobTag>(static_cast<uint32_t>(multiplyRS[i].robTag));
+  }
+  bool isDivFree(int i) const {
+    return !static_cast<bool>(divideRS[i].busy);
+  }
+  Operation getDivOp(int i) const {
+    return static_cast<Operation>(static_cast<uint32_t>(divideRS[i].op));
+  }
+  Operand getDivSrc1(int i) const {
+    return {static_cast<int>(static_cast<uint32_t>(divideRS[i].src1.tag)),
+            static_cast<int32_t>(static_cast<uint32_t>(divideRS[i].src1.imm))};
+  }
+  Operand getDivSrc2(int i) const {
+    return {static_cast<int>(static_cast<uint32_t>(divideRS[i].src2.tag)),
+            static_cast<int32_t>(static_cast<uint32_t>(divideRS[i].src2.imm))};
+  }
+  RobTag getDivRobTag(int i) const {
+    return static_cast<RobTag>(static_cast<uint32_t>(divideRS[i].robTag));
   }
   void work() override;
 };

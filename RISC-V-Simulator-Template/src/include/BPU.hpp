@@ -6,6 +6,12 @@
 #include <cstdint>
 #include <cstring>
 constexpr int TAGE_NTABLES = 4;
+// Power-of-two guard: the mispredict allocator indexes the table set with
+// `& (TAGE_NTABLES - 1)` (hardware semantics -- no divider in the datapath).
+// Changing the table count to a non-power-of-two must be a compile error here,
+// not a silently synthesized modulo.
+static_assert((TAGE_NTABLES & (TAGE_NTABLES - 1)) == 0,
+              "TAGE_NTABLES must be a power of two (allocation uses & (N-1))");
 constexpr int TAGE_HIST[TAGE_NTABLES] = {6, 12, 24, 48};
 constexpr int TAGE_IDX_BIT = 10; // 1024 entries per table
 constexpr int TAGE_TAG_BIT = 8;

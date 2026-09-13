@@ -1,0 +1,77 @@
+
+/home/hhslx/rv32im_course/array_test2.rv32im.elf:     file format elf32-littleriscv
+
+
+Disassembly of section .text.start:
+
+00000000 <_start>:
+   0:	00020137          	lui	sp,0x20
+   4:	040010ef          	jal	1044 <main>
+   8:	0ff00513          	li	a0,255
+   c:	000306b7          	lui	a3,0x30
+  10:	00a68223          	sb	a0,4(a3) # 30004 <judgeResult+0x2ef0c>
+  14:	ff9ff06f          	j	c <_start+0xc>
+
+Disassembly of section .text:
+
+00001000 <printInt>:
+    1000:	000017b7          	lui	a5,0x1
+    1004:	0f87a703          	lw	a4,248(a5) # 10f8 <judgeResult>
+    1008:	00e54533          	xor	a0,a0,a4
+    100c:	0ad50513          	addi	a0,a0,173
+    1010:	0ea7ac23          	sw	a0,248(a5)
+    1014:	00008067          	ret
+
+00001018 <printStr>:
+    1018:	00054703          	lbu	a4,0(a0)
+    101c:	02070263          	beqz	a4,1040 <printStr+0x28>
+    1020:	000016b7          	lui	a3,0x1
+    1024:	0f86a783          	lw	a5,248(a3) # 10f8 <judgeResult>
+    1028:	00f747b3          	xor	a5,a4,a5
+    102c:	20978793          	addi	a5,a5,521
+    1030:	0ef6ac23          	sw	a5,248(a3)
+    1034:	00154703          	lbu	a4,1(a0)
+    1038:	00150513          	addi	a0,a0,1
+    103c:	fe0716e3          	bnez	a4,1028 <printStr+0x10>
+    1040:	00008067          	ret
+
+00001044 <main>:
+    1044:	00001637          	lui	a2,0x1
+    1048:	0f862783          	lw	a5,248(a2) # 10f8 <judgeResult>
+    104c:	00001737          	lui	a4,0x1
+    1050:	0e472583          	lw	a1,228(a4) # 10e4 <pa>
+    1054:	0047c793          	xori	a5,a5,4
+    1058:	0ad78793          	addi	a5,a5,173
+    105c:	0ef62c23          	sw	a5,248(a2)
+    1060:	00100793          	li	a5,1
+    1064:	00200713          	li	a4,2
+    1068:	00f5a023          	sw	a5,0(a1)
+    106c:	00e5a223          	sw	a4,4(a1)
+    1070:	0f862783          	lw	a5,248(a2)
+    1074:	00300713          	li	a4,3
+    1078:	00e5a423          	sw	a4,8(a1)
+    107c:	00400713          	li	a4,4
+    1080:	00e5a623          	sw	a4,12(a1)
+    1084:	01058813          	addi	a6,a1,16
+    1088:	00058713          	mv	a4,a1
+    108c:	00058693          	mv	a3,a1
+    1090:	0006a503          	lw	a0,0(a3)
+    1094:	00468693          	addi	a3,a3,4
+    1098:	00a7c7b3          	xor	a5,a5,a0
+    109c:	0ad78793          	addi	a5,a5,173
+    10a0:	0ef62c23          	sw	a5,248(a2)
+    10a4:	ff0696e3          	bne	a3,a6,1090 <main+0x4c>
+    10a8:	0005a023          	sw	zero,0(a1)
+    10ac:	0f862503          	lw	a0,248(a2)
+    10b0:	0005a223          	sw	zero,4(a1)
+    10b4:	0005a423          	sw	zero,8(a1)
+    10b8:	0005a623          	sw	zero,12(a1)
+    10bc:	00072783          	lw	a5,0(a4)
+    10c0:	00470713          	addi	a4,a4,4
+    10c4:	00f54533          	xor	a0,a0,a5
+    10c8:	0ad50513          	addi	a0,a0,173
+    10cc:	0ea62c23          	sw	a0,248(a2)
+    10d0:	ff0716e3          	bne	a4,a6,10bc <main+0x78>
+    10d4:	0fd00793          	li	a5,253
+    10d8:	02f56533          	rem	a0,a0,a5
+    10dc:	00008067          	ret

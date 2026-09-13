@@ -154,6 +154,17 @@ void ROB::tick(const ROBInput &input, systemState &CPUstate) {
       }
     }
   }
+  if (input.cdbOfDiv.valid) {
+    if (!input.squashDetect.needSquash ||
+        ROB::isOlder(input.cdbOfDiv.robTag, input.squashDetect.SquashTag)) {
+      auto robIdx = ((input.cdbOfDiv.robTag) & 0x3F);
+      if (!isEmpty() && !ROB::isOlder(input.cdbOfDiv.robTag, getHead())) {
+        CPUstate.ROBModule.setROBCommitReady(robIdx);
+        if (debug::enabled(debug::TOPIC_EXEC))
+          debug::print("rob div-ready rob=%u\n", input.cdbOfDiv.robTag);
+      }
+    }
+  }
   // ROB squash
   if (input.squashDetect.needSquash) {
     CPUstate.ROBModule.flush(input.squashDetect.SquashTag);

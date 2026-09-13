@@ -34,6 +34,12 @@ int RSUnit::tryAllocBranch() const {
       return i;
   return -1;
 }
+int RSUnit::tryAllocDivide() const {
+  for (int i = 0; i < DIVIDERS_CAP; i++)
+    if (!static_cast<bool>(divideRS[i].busy))
+      return i;
+  return -1;
+}
 
 // Per-slot single-write-point structure (RTL discipline: one driver per
 // Register per cycle, no early returns):
@@ -55,12 +61,14 @@ void RSUnit::work() {
   const bool hasStore = issueValid && static_cast<bool>(sel.hasStore);
   const bool hasBranch = issueValid && static_cast<bool>(sel.hasBranch);
   const bool hasMul = issueValid && static_cast<bool>(sel.hasMultiply);
+  const bool hasDiv = issueValid && static_cast<bool>(sel.hasDivide);
   const uint32_t intSlot = static_cast<uint32_t>(sel.integerSlot);
   const uint32_t loadSlotV = static_cast<uint32_t>(sel.loadSlot);
   const uint32_t saSlot = static_cast<uint32_t>(sel.storeAddrSlot);
   const uint32_t svSlot = static_cast<uint32_t>(sel.storeValueSlot);
   const uint32_t brSlot = static_cast<uint32_t>(sel.branchSlot);
   const uint32_t mulSlot = static_cast<uint32_t>(sel.multiplySlot);
+  const uint32_t divSlotV = static_cast<uint32_t>(sel.divideSlot);
 
   const bool needSquash = static_cast<bool>(squash.needSquash);
   const uint32_t sqTag = static_cast<uint32_t>(squash.SquashTag);
@@ -74,6 +82,8 @@ void RSUnit::work() {
   const uint32_t bruIdx = static_cast<uint32_t>(dispatch.bruIdx);
   const bool mulRel = static_cast<bool>(dispatch.mulValid);
   const uint32_t mulIdx = static_cast<uint32_t>(dispatch.mulIdx);
+  const bool divRel = static_cast<bool>(dispatch.divValid);
+  const uint32_t divIdx = static_cast<uint32_t>(dispatch.divIdx);
 
   // ---- integerRS: push / release / flush ----
   for (int i = 0; i < INTEGERRS_CAP; ++i) {
@@ -222,6 +232,33 @@ void RSUnit::work() {
       multiplyRS[i].src1.imm <= 0;
       multiplyRS[i].src2.tag <= 0;
       multiplyRS[i].src2.imm <= 0;
+    }
+  }
+
+  // ---- divideRS: push / release / flush (same shape as multiplyRS; the
+  // release port is the DispatchArbiter's div grant, which the arbiter only
+  // raises while DIV::canAccept() holds) ----
+  for (int i = 0; i < DIVIDERS_CAP; ++i) {
+    const bool busyOld = static_cast<bool>(divideRS[i].busy);
+    const uint32_t tagOld = static_cast<uint32_t>(divideRS[i].robTag);
+    const bool pushHit = hasDiv && divSlotV == static_cast<uint32_t>(i);
+    const bool relHit = divRel && divIdx == static_cast<uint32_t>(i);
+    const bool flushHit =
+        needSquash && busyOld && ROB::isOlder(sqTag, tagOld);
+    if (pushHit) {
+      divideRS[i].busy <= 1;
+      divideRS[i].op <= static_cast<uint32_t>(data.divP.op);
+      divideRS[i].src1.tag <= static_cast<uint32_t>(data.divP.s1Tag);
+      divideRS[i].src1.imm <= static_cast<uint32_t>(data.divP.s1Imm);
+      divideRS[i].src2.tag <= static_cast<uint32_t>(data.divP.s2Tag);
+      divideRS[i].src2.imm <= static_cast<uint32_t>(data.divP.s2Imm);
+      divideRS[i].robTag <= static_cast<uint32_t>(data.divP.robTag);
+    } else if (relHit || flushHit) {
+      divideRS[i].busy <= 0;
+      divideRS[i].src1.tag <= 0;
+      divideRS[i].src1.imm <= 0;
+      divideRS[i].src2.tag <= 0;
+      divideRS[i].src2.imm <= 0;
     }
   }
 }

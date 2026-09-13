@@ -1,6 +1,5 @@
 #include "../include/BPU.hpp"
 #include "../include/ROB.hpp"
-#include "../include/util.hpp"
 #include <cassert>
 #include <cstdint>
 #include <cstring>
@@ -217,7 +216,11 @@ Plan updatePlan(const Snap &s, const TrainReq &req) {
     // 内只步进一次）
     uint8_t lp = l;
     for (int k = 0; k < TAGE_NTABLES && !allocated; ++k) {
-      int i = start + ((lp >> (k * 2)) % TAGE_NTABLES);
+      // &(N-1), NOT modulo: TAGE_NTABLES is a power of two (guarded by the
+      // static_assert next to its definition). A `%` here would put a real
+      // divider on the mispredict-allocation path; the assert turns any
+      // non-power-of-two table count into a compile error instead.
+      int i = start + ((lp >> (k << 1)) & (TAGE_NTABLES - 1));
       if (i < 0)
         i = 0;
       if (i >= TAGE_NTABLES)

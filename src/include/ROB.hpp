@@ -33,6 +33,7 @@ struct ROBInput {
   aluCDB cdbOfALU;
   lqCDB cdbOfLQ;
   mulCDB cdbOfMul;
+  divCDB cdbOfDiv;
   const BRU &BRUModule;
   const SQ &SQModule;
   const IssuePacket &issuePacket;
@@ -40,8 +41,6 @@ struct ROBInput {
       : BRUModule(bru), SQModule(sq), issuePacket(pkt) {}
 };
 class ROB {
-  friend struct ReorderTester;
-
 private:
   ROBEntry ROBqueue[ROB_CAP];
   uint8_t head = 0;

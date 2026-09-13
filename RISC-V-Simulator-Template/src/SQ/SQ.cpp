@@ -195,22 +195,6 @@ bool SQ::canDispatchLoad(uint32_t addr, RobTag loadTag) const {
   return !hasSameAddressStore;
 }
 
-bool SQ::hasOlderUnresolvedAddressStore(RobTag loadTag) const {
-  bool hasUnresolvedAddressStore = false;
-  for (int k = 0; k < SQ_CAP; k++) {
-    if (hasUnresolvedAddressStore)
-      continue;
-    uint8_t cur = static_cast<uint32_t>((head + k) & 0xF);
-    if (!isActive(cur))
-      continue;
-    if (!ROB::isOlder(static_cast<uint32_t>(SQqueue[cur].robTag), loadTag))
-      continue;
-    if (SQqueue[cur].isAddressReady == 0)
-      hasUnresolvedAddressStore = true;
-  }
-  return hasUnresolvedAddressStore;
-}
-
 bool SQ::isReadyToCommit(int index) const {
   return SQqueue[index].isAddressReady && SQqueue[index].isValueReady;
 }

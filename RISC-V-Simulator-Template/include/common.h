@@ -21,6 +21,7 @@ constexpr int FLUSHARBITER_CAP = 4;
 constexpr int ALU_CAP = 4;
 constexpr int MUL_CAP = 4;
 constexpr int MULTIPLYRS_CAP = 4; // dedicated RS for the M-extension multiply ops
+constexpr int DIVIDERS_CAP = 4;    // dedicated RS for the M-extension divide ops
 constexpr int AGU_CAP = 4;
 constexpr int BRU_CAP = 4;
 constexpr int BTB_CAP = 256;
@@ -73,6 +74,10 @@ enum class Operation {
   MULH,
   MULHU,
   MULHSU,
+  DIV,
+  DIVU,
+  REM,
+  REMU,
   AND,
   OR,
   XOR,
@@ -169,7 +174,7 @@ struct Uop {
   int32_t predictedPC = 0;
   uint8_t ckptId = 0;
 };
-enum class RSType { Integer, Multiply, Branch, Load, StoreAddr };
+enum class RSType { Integer, Multiply, Divide, Branch, Load, StoreAddr };
 class ROB;
 class PRF;
 struct BPU;
@@ -182,7 +187,7 @@ struct BPU;
 struct LineReturn {
   Wire<1> valid;
   Wire<32> lineAddr;
-  std::array<Wire<32>, CACHE_BLOCK_CAP / 4> data;
+  std::array<Wire<32>, (CACHE_BLOCK_CAP >> 2)> data;
 };
 
 // Pre-decode scan result carried from the FQ push to the BPU. Used for RAS

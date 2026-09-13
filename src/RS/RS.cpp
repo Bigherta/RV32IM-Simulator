@@ -37,6 +37,12 @@ int RSUnit::tryAllocMultiply() const {
       return i;
   return -1;
 }
+int RSUnit::tryAllocDivide() const {
+  for (int i = 0; i < DIVIDERS_CAP; i++)
+    if (divideRS[i].free)
+      return i;
+  return -1;
+}
 void RSUnit::tick(const RSInput &input, systemState &CPUstate) {
   const auto &p = input.issuePacket;
   if (p.valid) {
@@ -44,6 +50,8 @@ void RSUnit::tick(const RSInput &input, systemState &CPUstate) {
       CPUstate.RSModule.integerRS[p.integerSlot] = p.integerRS;
     } else if (p.hasMultiply) {
       CPUstate.RSModule.multiplyRS[p.multiplySlot] = p.multiplyRS;
+    } else if (p.hasDivide) {
+      CPUstate.RSModule.divideRS[p.divideSlot] = p.divideRS;
     } else if (p.hasLoad) {
       CPUstate.RSModule.loadRS[p.loadSlot] = p.loadRS;
     } else if (p.hasStore) {
@@ -64,6 +72,12 @@ void RSUnit::tick(const RSInput &input, systemState &CPUstate) {
     CPUstate.RSModule.multiplyRS[idx].free = true;
     CPUstate.RSModule.multiplyRS[idx].src1 = {};
     CPUstate.RSModule.multiplyRS[idx].src2 = {};
+  }
+  if (input.dispatchBus.div.valid) {
+    int idx = input.dispatchBus.div.rsIndex;
+    CPUstate.RSModule.divideRS[idx].free = true;
+    CPUstate.RSModule.divideRS[idx].src1 = {};
+    CPUstate.RSModule.divideRS[idx].src2 = {};
   }
   if (input.dispatchBus.agu.valid) {
     int idx = input.dispatchBus.agu.rsIndex;
@@ -107,6 +121,13 @@ void RSUnit::tick(const RSInput &input, systemState &CPUstate) {
         CPUstate.RSModule.multiplyRS[i].free = true;
         CPUstate.RSModule.multiplyRS[i].src1 = {};
         CPUstate.RSModule.multiplyRS[i].src2 = {};
+      }
+    }
+    for (int i = 0; i < DIVIDERS_CAP; i++) {
+      if (!divideRS[i].free && ROB::isOlder(sqTag, divideRS[i].robTag)) {
+        CPUstate.RSModule.divideRS[i].free = true;
+        CPUstate.RSModule.divideRS[i].src1 = {};
+        CPUstate.RSModule.divideRS[i].src2 = {};
       }
     }
     for (int i = 0; i < LOADRS_CAP; i++) {

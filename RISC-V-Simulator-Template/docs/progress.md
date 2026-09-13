@@ -3,7 +3,7 @@
 > 目标：把 `src/`（memcpy 快照 + comb()/tick()）逐模块迁移到模板框架
 > （`Register`/`Wire`/`Bit` + `Module<In,Out,Inner>` + `sync_member`）。
 > 配套文档：`docs/output.md`（全模块 Output 清单 / 总线归属表，已含 RS 去值化修订）。
-> 每步完成 = **golden(x10+clock) 严格一致 + reorder 全排列一致**；pi 约 8 分钟可放里程碑跑。
+> 每步完成 = **golden(x10+clock，取自 `docs/benchmarks.md`) 严格一致 + reorder 全排列一致**；pi 约 8 分钟可放里程碑跑。
 
 ## 核心等价（迁移前提）
 
@@ -65,52 +65,55 @@
 ### 阶段 2 — 取指侧生产模块
 - [x] FetchQueue（entries/head/tail → Register；headRaw/pc/PredictedPC/CkptId/full/empty → Output Wire）
 - [x] DecodeUnit / InstructQueue（head* 字段 → Output Wire；消费方 FQ/IssueArbiter；实际定版：合并单一模块，InstructQueue 类删除，head* 以 const 桥接访问器输出，IssueArbiter 零改动）
-- [ ] ICache（blocks 保持普通数组或 Register 数组？；requestBuffer/head/count → Register；hit/return* → Output Wire）
+- [x] ICache（blocks 保持普通数组或 Register 数组？；requestBuffer/head/count → Register；hit/return* → Output Wire）
 - [x] IMEM（IMEMreqs/head → Register；getReturn/isReturnReady/isRequestFull → Output Wire；Memory 保持外部；实际定版：data 全 Register、head:4bit、remainCycle:2bit；**count 寄存器删除**（手法 #10）——occupancy 由 valid[] popcount 派生、full=AND、isReturnReady 用首槽位，squash 清全槽 valid，周期首 `assert(windowContiguous())` 兜底）
 - 验证：每模块 golden + reorder
 
 ### 阶段 3 — 执行单元
-- [ ] ALU（outputBuffer/slotValid → Register 数组；headValue/headRobTag/headIsControl/isFull/isEmpty/isValid → Output Wire）
-- [ ] AGU（同 ALU；headMemIndex → Output Wire）
-- [ ] BRU（同 ALU；headPCFrom/headPCResult → Output Wire）
+- [x] ALU（outputBuffer/slotValid → Register 数组；headValue/headRobTag/headIsControl/isFull/isEmpty/isValid → Output Wire）
+- [x] AGU（同 ALU；headMemIndex → Output Wire）
+- [x] BRU（同 ALU；headPCFrom/headPCResult → Output Wire）
 - 验证：每模块 golden + reorder（CDB 候选/转发源就绪）
 
 ### 阶段 4 — 值通路核心
-- [ ] PRF（PhysicalRegs/freeList/headSeq/tailSeq → Register；isReady/getValue/isOperandReady/getOperandValue/freeList* → Output Wire，扇出最广）
-- [ ] RS（槽数组 → Register；src1/src2/data（Operand）字段；tryAlloc* → Output Wire；RS 去值化后值一律经 PRF）
+- [x] PRF（PhysicalRegs/freeList/headSeq/tailSeq → Register；isReady/getValue/isOperandReady/getOperandValue/freeList* → Output Wire，扇出最广）
+- [x] RS（槽数组 → Register；src1/src2/data（Operand）字段；tryAlloc* → Output Wire；RS 去值化后值一律经 PRF）
 - 验证：每模块 golden + reorder
 
 ### 阶段 5 — 存储顺序
-- [ ] DMEM（busy/bufferValid/MemExecution/MemOutputBuffer → Register；isBusy/isReady/LoadReturn → Output Wire；Memory 外部）
-- [ ] LQ（LQqueue/head/tail → Register；CDBDetect/LoadDetect/isReadyToCommit/getAddress/getValue/... → Output Wire/数组）
-- [ ] SQ（SQqueue/head/tail → Register；planDataForward/planAddressForward/replyToLoadRequest/canDispatchLoad/hasOlderUnresolvedAddressStore → Output Wire）
+- [x] DMEM（busy/bufferValid/MemExecution/MemOutputBuffer → Register；isBusy/isReady/LoadReturn → Output Wire；Memory 外部）
+- [x] LQ（LQqueue/head/tail → Register；CDBDetect/LoadDetect/isReadyToCommit/getAddress/getValue/... → Output Wire/数组）
+- [x] SQ（SQqueue/head/tail → Register；planDataForward/planAddressForward/replyToLoadRequest/canDispatchLoad/hasOlderUnresolvedAddressStore → Output Wire）
 - 验证：每模块 golden + reorder
 
 ### 阶段 6 — 核心：ROB
-- [ ] ROBEntry[64]（多字段）→ Register 数组；head/next_tag/haltCommitted/haltRd → Register
-- [ ] 全部 get* / isHead* / headType / getIndexByTag → Output Wire/数组；**一次性重指所有消费方 Input**
+- [x] ROBEntry[64]（多字段）→ Register 数组；head/next_tag/haltCommitted/haltRd → Register
+- [x] 全部 get* / isHead* / headType / getIndexByTag → Output Wire/数组；**一次性重指所有消费方 Input**
 - 验证：golden + reorder（读方最广，改动面最大）
 
 ### 阶段 7 — 双 hub
-- [ ] FlushArbiter（requests → Register；arbitResult → SquashInfoWire 广播总线；receive/clear 保持状态内部）
-- [ ] BPU（大表 globalPHT/LHT/localPHT/selector/BTB/RAS/alignQueue → Register 数组；predict/getNextCkptId → Output Wire；GHR/RAS 推进与恢复保持状态内部）
+- [x] FlushArbiter（requests → Register；arbitResult → SquashInfoWire 广播总线；receive/clear 保持状态内部）
+- [x] BPU（大表 globalPHT/LHT/localPHT/selector/BTB/RAS/alignQueue → Register 数组；predict/getNextCkptId → Output Wire；GHR/RAS 推进与恢复保持状态内部）
 - 验证：每模块 golden + reorder
 
 ### 阶段 8 — 无状态仲裁/总线 Wire 化
-- [ ] FetchDecision（BPU.predict + FetchUnit/FQ/ICache/IMEM Output 组合）
-- [ ] CDBArbiter → cdbOut（ALU/LQ Output 组合）
-- [ ] CDBBus（cdbOut 派生，`{lsqSetCDB, memIndex}` 仅 LQ）
-- [ ] DispatchArbiter（RS/ALU/AGU/BRU/ROB/PRF Output 组合，PRF.isOperandReady 判就绪）
-- [ ] MemRequestArbiter → MemDispatchDecision（LQ/SQ/ROB/DMEM Output 组合）
-- [ ] IssueArbiter → issuePacket（Decode/ROB/RS/RAT/PRF/LQ/SQ Output 组合；多字段超 32bit 拆逐字段 Wire）
+- [x] FetchDecision（BPU.predict + FetchUnit/FQ/ICache/IMEM Output 组合）
+- [x] CDBArbiter → cdbOut（ALU/LQ Output 组合）
+- [x] CDBBus（cdbOut 派生，`{lsqSetCDB, memIndex}` 仅 LQ）
+- [x] DispatchArbiter（RS/ALU/AGU/BRU/ROB/PRF Output 组合，PRF.isOperandReady 判就绪）
+- [x] MemRequestArbiter → MemDispatchDecision（LQ/SQ/ROB/DMEM Output 组合）
+- [x] IssueArbiter → issuePacket（Decode/ROB/RS/RAT/PRF/LQ/SQ Output 组合；多字段超 32bit 拆逐字段 Wire）
 - 验证：golden + reorder；comb() 总线从"读快照"整体切到"Wire 引用"
 
 ### 阶段 9 — 收尾
-- [ ] 删 comb()；删全部快照成员；Input 引用全部重指单一实例
-- [ ] tick() → work()；CPU::run() → `run_once`/`run_once_shuffle` 风格
-- [ ] reorder_test 切换为模板乱序验证
-- [ ] 全量 18 用例 + reorder；更新 `AGENTS.md` / `docs/output.md` / README
+- [x] 删 comb()；删全部快照成员；Input 引用全部重指单一实例
+- [x] tick() → work()；CPU::run() → `run_once`/`run_once_shuffle` 风格
+- [x] reorder_test 切换为模板乱序验证
+- [x] 全量 18 用例 + reorder；更新 `AGENTS.md` / `docs/output.md` / README
 - 验证：18/18 golden + reorder 全排列一致
+
+> ⚠️ 上列阶段 2–9 的"reorder / reorder_test"验证项已随 2026-09-10 `test/` 清理退役；
+> 现行验证闭环 = 双树 x10+clock 逐位一致 + `docs/benchmarks.md`（`result`/`cycles`）。
 
 ## 关键风险与注意
 
@@ -272,3 +275,57 @@ FlushArbiter（DynamicArbiter）AGU store-load 违例处理段，重定向目标
   非死代码，不可单删）；`RSType` 入枚举致 `StoreAddr=4`，`rsType` 线同步扩 3 位。
   改后 9 用例双树逐位零漂移 + build-assert 零触发（符合“无人消费故零行为差异”预期）。
 
+
+## DIV 迁移落地（2026-09-12，模板树接线 + 全量验证）
+
+**背景**：`src/DIV/DIV.cpp` + `src/include/DIV.hpp` 此前只是**孤立编译**——CMakeLists 收了源文件，
+但 CPU 里没有 `DIVModule` / `DivCDB` / `divideRS`，Stage A 把 `funct3 4..7` 解码成 `OP_INVALID`
+后直接 stall head。后果：M 语料里任何含 div/rem 的程序**卡死**，`register.h:38` 的双写断言也
+永远触发不到（模块不跑）。本轮照 MUL 范式 + 主树参考实现把 DIV 接进模板流水线，并完成全量验证。
+
+### 接线范围（12 文件）
+
+| 文件 | 改动 |
+|---|---|
+| `include/common.h` | `DIVIDERS_CAP=4`；`RSType` 插入 `Divide`（`StoreAddr` 4→5，`rsType` 仍 3bit） |
+| `src/include/RS.hpp` `src/RS/RS.cpp` | `divideRS` 池（`std::array<IntRS,4>`）+ `tryAllocDivide` + `isDivFree/getDiv{Op,Src1,Src2,RobTag}`；`sel.hasDivide/divideSlot`、`data.divP.*`、`dispatch.divValid/divIdx`；push/release/flush 单写口循环 |
+| `src/include/StaticArbiter.hpp` `.cpp` | DispatchArbiter：`divAccept`（= `DIV::canAccept()`，**非 isFull**）+ `divBusy/divSrc1Tag/divSrc2Tag/divRobTag` + `divSelect()` + `div` 通道；IssueArbiter：`divBusy` 扫描、`divFree/divSlot`、win=**9**、`select.hasDivide/divideSlot`、`divP` 载荷组；`decodeOp` 的 M 族补齐 funct3 4..7；`issueClass` 按 op 拆 MUL(8)/DIV(9)；win=9 与 MUL 同构，在 robEntry 全部 9 处门控里登记 |
+| `src/include/CDB.hpp` `src/CDB/CDB.cpp` | 新增 `DivCDB`：`divEmpty = !isReady`，无输出缓冲 ⇒ 直接抽结果寄存器；`divValue` 在接线层用 `isReady` 门控（`getValue()` 对陈旧 `operationType` 会 throw）；**不加** `VERBOSE=exec` 打印（参考实现的 `divCDB::build` 也没有，避免双树 exec 计数漂移） |
+| `src/include/PRF.hpp` `src/PRF/PRF.cpp`、`src/include/ROB.hpp` `src/ROB/ROB.cpp` | 第四路写口/提交就绪口 `cdbOfDIV`（三路 → 四路）；PRF 侧保留 `prf div-write` exec 打印（与模板既有 `prf mul-write` 同风格） |
+| `src/include/CPU.hpp` `src/CPU/CPU.cpp` | `DIVModule`/`DivCDBModule` 成员 + `add_module` + 全部 Input Wire 接线（DIV 六项入线、DispatchArbiter div 通道、IssueArbiter `divBusy`、PRF/ROB `cdbOfDIV`、RS `sel/data/dispatch`） |
+| `test/CMakeLists.txt` | **补 `MUL.cpp`/`CDB.cpp`/`DIV.cpp`**：该列表自 MUL 落地起就漏了 `MUL.cpp` 与 `CDB.cpp`，reorder_test 一直链接不过（本轮实测确认） |
+
+### 验证结果（全部当日实测）
+
+| 门禁 | 结果 |
+|---|---|
+| 编译（MSYS g++ 15.2 `-O2`） | 通过；`-D_DEBUG` 版同样通过 |
+| 编译（WSL gcc 13.3 + cmake 官方路径） | 通过。⚠️ 模板树 `build/` 缓存当时是 **Debug**（AGENTS 点名的坑），已按项目规则 `-DCMAKE_BUILD_TYPE=Release` 重配 + `rm code` 强制重链 |
+| **M 语料 18/18**（`data/testcases_rv32im/M`） | x10 + clock 与主树**逐位一致**，并等于 `docs/benchmarks.md` M 臂表：TOTAL_CLOCK **12,150,300**（含 pi **7,844,594**，主树同值复核过） |
+| **rv32i 语料 17/17（非 pi）** | x10 + clock 与主表逐位一致，TOTAL **5,628,277**；DIV 接线对 rv32i 镜像零漂移（镜像里无 M-ops ⇒ 不产生 div 事件）。rv32i pi（137.6M 拍）未重跑 |
+| **WSL Release ELF 交叉复核 pi** | 根目录 code 二进制（gcc 13.3 / `-O2` / ELF）跑 M-pi：clock **7,844,594**，branch 283986/284202（=99.924%），与 MSYS g++ 15.2 构建**同值**——时钟数不是编译器产物 |
+| **_DEBUG 跑 M 语料 17/17** | `register.h:38` 双写断言 **零触发**（覆盖 DIV 全部 FSM 支路：prepare / loop 五分支 / calculateResult / drain / flush） |
+| **DIV 单元差分测试**（新增，直驱模块 + DivCDB） | **1,601,791 项检查 0 失败**（Release + `_DEBUG` 各一轮）= 21×21 边界集×4 op + 40 万随机向量×4 op（稀疏/大数/全随机三档）+ 15 条手写 corner（`INT_MIN/-1`、`d==0` 四种、`|x|<|d|`、`|x|==|d|`、符号组合）+ flush 三分支 + effective-tag 同拍替换子句；oracle 直接写自 RISC-V ISA 定义 |
+| **reorder_test**（`run_once_shuffle`） | M/gcd 20/20、M/lvalue2 20/20 全同 |
+| **DIV 动态事件计数**（`VERBOSE=exec`） | `prf div-write` gcd 7/7、bulgarian 18/18、statement_test 6/6 双树一致（`mul cdb` / `prf mul-write` 同步一致） |
+
+### 等价性论证（模板 DIV 的"重写"不是转录）
+
+模板 `DIV.cpp` 与参考实现**逐段对齐**（特例前段 / prepare / loop / calculateResult / flush），
+差异只在两处**有证明的表示变换**：
+
+1. **>32bit 状态拆 lo/hi**：P 域 PW = 35+shiftD ≤ 36bit，`regSLo/regSHi(4b)`、`regCLo/regCHi(4b)`、
+   D_dp `unsignedDivisorLo/Hi(1b)`。消费方一律先 `& mask`（mask ≤ 36bit）⇒ 截断无损：
+   `(X<<2)&mask` 只看 X 低 34 位；`Pk = regS+regC` 的低 36 位与全宽一致且随后 `Pk &= mask`；
+   `Pk>>63` 的符号判据在 mask **之后**，故不依赖高位一的补垃圾。
+2. **work() 单写口优先链**（flush > drain > fullAdder > loop > prepare > receive）替代参考的级联 if：
+   参考 `tick` 里 `receive` 写在 `flush` 之前（flush 用**已写入的新 tag** 判 `isOlder`），
+   模板用 `effTag = dispatchValid ? dispatchTag : robTagOld` 精确复现该语义（已单测覆盖两个方向）。
+
+### 遗留 / 文档债
+
+- `docs/output.md`（"全模块 Output 清单 + 中央总线归属表"）自 MUL 落地起未同步：缺 `MulCDB`/`DivCDB`、
+  `mulP`/`divP`、`multiplyRS`/`divideRS`、win 码 8/9。它是迁移期计划文档，需一次专门的对齐 revision。
+- 模板树 `code`（根目录 ELF）本轮被重编过，已按 Release 重建；旧二进制备份在 `.cache/code.bak_before_div_test`。
+- 验证脚手架（未入库，均在 `.cache/`）：`div_unit_test.cpp`（DIV 单元差分测试）、`build_sim.py`（直驱 g++ 构建）、
+  `simrun.py`（语料批量跑）、`reorder_run.py`（乱序一致性）。若需纳入仓库建议放 `test/`。

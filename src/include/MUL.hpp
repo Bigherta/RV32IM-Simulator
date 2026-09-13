@@ -6,7 +6,6 @@
 struct systemState;
 struct PRF;
 struct MULTester;
-struct ReorderTester;
 struct MULInput {
   SquashInfo squashDetect;
   const RSUnit &RSModule;
@@ -16,7 +15,6 @@ struct MULInput {
   MULInput(const RSUnit &rs, const PRF &prf) : RSModule(rs), PRFModule(prf) {}
 };
 class MUL {
-  friend struct ReorderTester;
   friend struct MULTester;
 
 private:
@@ -35,7 +33,6 @@ private:
     // In the full 64-bit domain the one's complement already carries its own
     // sign extension, so no truncated-field repayment row is required.
     uint64_t partialProduct[19] = {};
-    uint64_t expected = 0;
     uint8_t robTag = 0;
     Operation op = Operation::MUL;
     bool partialProductValid = false;
@@ -60,13 +57,8 @@ private:
 public:
   bool isFull() const;
   bool isEmpty() const;
-  int32_t headValue() const;
+  uint32_t headValue() const;
   uint8_t headRobTag() const;
   bool isValid(int index) const { return slotValid[index]; }
-  // MUL_CAP=4 > in-flight (<=3 in the 3-stage pipeline) + cdbOfMul drains the
-  // dedicated result bus every cycle (squash-cleared head aside), so the unit
-  // never back-pressures dispatch. Any change that could violate this
-  // invariant must keep the no-free-slot assert in calculateMulRes first.
-  bool canAccept() const { return true; }
   void tick(const MULInput &, systemState &);
 };

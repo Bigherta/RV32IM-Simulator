@@ -51,8 +51,6 @@ struct StoreResponse {
 };
 
 class SQ {
-  friend struct ReorderTester;
-
 private:
   SQEntry SQqueue[SQ_CAP];
   uint8_t head = 0;
@@ -85,6 +83,5 @@ public:
   auto replyToLoadRequest(uint32_t addr,
                           uint8_t loadTag) const -> StoreResponse;
   bool canDispatchLoad(uint32_t addr, RobTag loadTag) const;
-  bool hasOlderUnresolvedAddressStore(RobTag loadTag) const;
   void tick(const SQInput &, systemState &);
 };

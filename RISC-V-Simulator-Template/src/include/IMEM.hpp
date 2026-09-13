@@ -38,7 +38,7 @@ struct IMEM : public Memory, dark::Module<IMEMInput, IMEMOutput, IMEMInner> {
     uint32_t w = 0;
     for (int b = 0; b < 4; ++b)
       w |= static_cast<uint32_t>(read_data(addr + static_cast<uint32_t>(b)))
-           << (b * 8);
+           << (b << 3);
     return w;
   }
   // Window invariant: valid[i]==1 iff slot i lies in [head, head+occupancy)

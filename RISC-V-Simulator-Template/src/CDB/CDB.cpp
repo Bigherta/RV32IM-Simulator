@@ -52,6 +52,25 @@ void MulCDB::wire_output() {
 }
 
 
+bool DivCDB::divLive() const {
+  return !static_cast<bool>(divEmpty) &&
+         (!static_cast<bool>(squashNeed) ||
+          ROB::isOlder(static_cast<uint32_t>(divRobTag),
+                       static_cast<uint32_t>(squashTag)));
+}
+
+// No VERBOSE=exec print here: the reference's divCDB::build has none (unlike
+// mulCDB::build), so both trees keep identical exec-topic output.
+void DivCDB::wire_output() {
+  valid = [this]() -> uint32_t { return divLive() ? 1u : 0u; };
+  value = [this]() -> uint32_t {
+    return divLive() ? static_cast<uint32_t>(divValue) : 0u;
+  };
+  robTag = [this]() -> uint32_t {
+    return divLive() ? static_cast<uint32_t>(divRobTag) : 0u;
+  };
+}
+
 bool LqCDB::lsqLive() const {
   return static_cast<bool>(lsqValid) &&
          (!static_cast<bool>(squashNeed) ||

@@ -244,8 +244,11 @@ void BPU::update(int32_t pc, bool taken, int32_t target, uint64_t ghr,
     dir.lfsr = l;
 
     for (int k = 0; k < TAGE_NTABLES && !allocated; ++k) {
-      // modulo, not &(N-1): the table count is no longer a power of two
-      int i = start + ((l >> (k * 2)) % TAGE_NTABLES);
+      // &(N-1), NOT modulo: TAGE_NTABLES is a power of two (guarded by the
+      // static_assert next to its definition). A `%` here would put a real
+      // divider on the mispredict-allocation path; the assert turns any
+      // non-power-of-two table count into a compile error instead.
+      int i = start + ((l >> (k << 1)) & (TAGE_NTABLES - 1));
       if (i < 0)
         i = 0;
       if (i >= TAGE_NTABLES)

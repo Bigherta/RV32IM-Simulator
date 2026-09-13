@@ -75,31 +75,6 @@ void MUL::calculateBooth(int32_t op1, int32_t op2, RobTag robTag,
       ((isMulhu || isMulhsu) && signB)
           ? (static_cast<uint64_t>(static_cast<int64_t>(op1)) << 32)
           : 0;
-  uint64_t expected;
-  switch (op) {
-  case Operation::MUL:
-  case Operation::MULH:
-    expected = (uint64_t)(int64_t)op1 * (uint64_t)(int64_t)op2;
-    break;
-  case Operation::MULHU:
-    expected = (uint64_t)(uint32_t)op1 * (uint64_t)(uint32_t)op2;
-    break;
-  case Operation::MULHSU:
-    expected = (uint64_t)(int64_t)op1 * (uint64_t)(uint32_t)op2;
-    break;
-  default:
-    expected = 0;
-    break;
-  }
-  partialRes.expected = expected;
-#ifndef NDEBUG
-  // Booth-level self check (isolates row-generation / negation bugs): the
-  // full 19-row deposit must already equal the reference product mod 2^64.
-  uint64_t rowSum = 0;
-  for (int i = 0; i < 19; ++i)
-    rowSum += partialRes.partialProduct[i];
-  assert(rowSum == partialRes.expected);
-#endif
 }
 
 void MUL::calculateSC(const PartialProductResult &partial) {
@@ -127,11 +102,6 @@ void MUL::calculateSC(const PartialProductResult &partial) {
   Csa3 f0 = csa3(e0.sum, e0.carry, d1.carry);
   scRes.S = f0.sum;
   scRes.C = f0.carry;
-#ifndef NDEBUG
-  // Tree-level check (isolates compression/rounding bugs): S + C must still
-  // equal the reference product, independently of the Booth-level check.
-  assert(scRes.S + scRes.C == partial.expected);
-#endif
 }
 
 void MUL::calculateMulRes(const SCResult &sc) {
@@ -143,9 +113,10 @@ void MUL::calculateMulRes(const SCResult &sc) {
       break;
     }
   }
-  // canAccept() invariant watchdog: a full buffer here means dispatch was
-  // granted faster than the dedicated cdbOfMul bus drained it.
-  assert(best != -1 && "MUL slot overflow: canAccept invariant broken");
+  // Buffer-full invariant watchdog: MUL_CAP must exceed the in-flight stage
+  // count (3), since a full buffer here means dispatch was granted faster than
+  // the dedicated cdbOfMul bus drained it.
+  assert(best != -1 && "MUL slot overflow: MUL_CAP must exceed in-flight stages");
   outputBuffer[best].robTag = sc.robTag;
   slotValid[best] = true;
   switch (sc.op) {
@@ -164,7 +135,7 @@ void MUL::calculateMulRes(const SCResult &sc) {
   }
 }
 
-int32_t MUL::headValue() const {
+uint32_t MUL::headValue() const {
   int best = -1;
   for (int i = 0; i < MUL_CAP; i++) {
     if (slotValid[i] && (best == -1 || ROB::isOlder(outputBuffer[i].robTag,

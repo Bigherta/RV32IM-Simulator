@@ -39,8 +39,6 @@ struct DCacheInput {
 //    store was already popped from the SQ in this cycle.
 //  * The line array NEVER lives in the comb snapshot; comb only reads isBusy()/forwardRequest().
 class DCache {
-  friend struct ReorderTester;
-
 private:
   enum class Phase : uint8_t { READY, WAIT };
   bool busy = false;

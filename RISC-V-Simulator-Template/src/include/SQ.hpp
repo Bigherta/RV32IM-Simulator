@@ -142,6 +142,5 @@ public:
   auto replyToLoadRequest(uint32_t addr, uint8_t loadTag) const
       -> StoreResponse;
   bool canDispatchLoad(uint32_t addr, RobTag loadTag) const;
-  bool hasOlderUnresolvedAddressStore(RobTag loadTag) const;
   void work() override;
 };

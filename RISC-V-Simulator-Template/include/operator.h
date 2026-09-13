@@ -39,19 +39,20 @@ constexpr auto operator-(const _Tp &lhs, const _Up &rhs) {
 	return Bit<_Len>(cast(lhs) - cast(rhs));
 }
 
+// Hardware semantics: there is no multiplier/divider in the datapath.
+// Bit<>/Register<> must never be combined with `*` `/` `%`; a real product is
+// produced by the MUL unit (Booth rows + CSA tree) and a real quotient by the
+// future DIV unit (SRT recurrence). These two overloads are therefore deleted
+// so that any accidental use is a hard compile error instead of a silently
+// synthesized multiplier/divider showing up only at RTL-generation time.
+// Legal arithmetic set: + - << >> & | ^ ~ (plus comparisons).
 template<typename _Tp, typename _Up>
 	requires bit_match<_Tp, _Up>
-constexpr auto operator*(const _Tp &lhs, const _Up &rhs) {
-	constexpr auto _Len = get_common_length<_Tp, _Up>();
-	return Bit<_Len>(cast(lhs) * cast(rhs));
-}
+void operator*(const _Tp &lhs, const _Up &rhs) = delete;
 
 template<typename _Tp, typename _Up>
 	requires bit_match<_Tp, _Up>
-constexpr auto operator/(const _Tp &lhs, const _Up &rhs) {
-	constexpr auto _Len = get_common_length<_Tp, _Up>();
-	return Bit<_Len>(cast(lhs) / cast(rhs));
-}
+void operator/(const _Tp &lhs, const _Up &rhs) = delete;
 
 template<typename _Tp, typename _Up>
 	requires bit_match<_Tp, _Up>

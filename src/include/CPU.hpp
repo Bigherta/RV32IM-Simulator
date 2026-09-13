@@ -5,6 +5,7 @@
 #include "StaticArbiter.hpp"
 #include "BRU.hpp"
 #include "MUL.hpp"
+#include "DIV.hpp"
 #include "BPU.hpp"
 #include "DCache.hpp"
 #include "DMEM.hpp"
@@ -30,6 +31,7 @@ struct systemState {
   ALU ALUModule;
   AGU AGUModule;
   MUL MULModule;
+  DIV DIVModule;
   BRU BRUModule;
   LQ LQModule;
   SQ SQModule;
@@ -53,13 +55,13 @@ class CPU {
 private:
   systemState CPUstate;
   IMEM InstructMem;
-  friend struct ReorderTester;
   RSUnit RSModule;
   RAT RATModule;
   ROB ROBModule;
   ALU ALUModule;
   AGU AGUModule;
   MUL MULModule;
+  DIV DIVModule;
   BRU BRUModule;
   LQ LQModule;
   SQ SQModule;
@@ -76,6 +78,7 @@ private:
   aluCDB cdbOfALU;
   lqCDB cdbOfLQ;
   mulCDB cdbOfMul; // MUL 专用结果总线（cdbOfALU/cdbOfLQ/cdbOfMul 三路，各源独立、无跨单元仲裁）
+  divCDB cdbOfDiv; // fourth independent result bus (ALU/LQ/MUL/DIV)
   uint64_t statAluOnly = 0;   // cycles with only an ALU CDB candidate
   uint64_t statLqOnly = 0;    // cycles with only an LQ CDB candidate
   uint64_t statBoth = 0;      // cycles both valid (dual-CDB parallel grant)
@@ -85,6 +88,7 @@ private:
   AGUInput aguInput{RSModule, PRFModule};
   ALUInput aluInput{RSModule, PRFModule};
   MULInput mulInput{RSModule, PRFModule};
+  DIVInput divInput{RSModule, PRFModule};
   BRUInput bruInput{ROBModule, RSModule, PRFModule};
   BPUInput bpuInput{BRUModule, ROBModule};
   DMEMInput dmemInput{};

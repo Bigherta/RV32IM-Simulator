@@ -80,9 +80,10 @@ void MUL::work() {
         found = true;
       }
     }
-    // canAccept() invariant watchdog: a full buffer here means dispatch was
-    // granted faster than the dedicated cdbOfMul bus drained it.
-    assert(filled != -1 && "MUL slot overflow: canAccept invariant broken");
+    // Buffer-full invariant watchdog: MUL_CAP must exceed the in-flight stage
+    // count (3), since a full buffer here means dispatch was granted faster
+    // than the dedicated cdbOfMul bus drained it.
+    assert(filled != -1 && "MUL slot overflow: MUL_CAP must exceed in-flight stages");
     slots[filled].robTag <= static_cast<uint32_t>(scTag);
     slots[filled].value <= ((scOp == Operation::MUL)
                                 ? static_cast<uint32_t>(res)

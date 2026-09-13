@@ -9,10 +9,10 @@
 | | |
 |---|---|
 | **架构** | Tomasulo 乱序执行 · 按序提交（取指/提交有序，执行/写回/访存乱序） |
-| **ISA** | RV32I 全集 + RV32M 乘法族（`mul/mulh/mulhu/mulhsu`，硬件 Booth 乘法器） |
+| **ISA** | RV32I 全集 + RV32M（乘法 `mul/mulh/...` Booth 乘法器、除法 `div/divu/rem/remu` SRT radix-4 除法器） |
 | **语义** | 逐周期双相模型：`comb()` 组合求值 + `tick()` 沿采样，19 级顺序无关 |
 | **实现** | 单体 C++20，无外部依赖；Linux / WSL / MSYS 均可构建 |
-| **验证** | 行为回归（golden）+ 19 级重排一致性 + MUL 直驱对拍 + RV32M 双臂 A/B |
+| **验证** | 行为回归（对 `docs/benchmarks.md`）+ 双树 x10+clock 逐位一致 + RV32M 双臂 A/B（reorder / MUL 直驱已于 2026-09-10 退役） |
 
 ---
 
@@ -34,12 +34,12 @@
 ### 1.1 设计目标
 
 1. **逐周期、可重排的硬件语义**。每个硬件模块有且仅有一个写口，只写自己的状态；
-   跨模块总线全部在组合阶段（快照边）求值。由此，流水级调用顺序可任意交换，
-   `reorder_test` 把这一性质作为硬约束回归（含 DMEM 镜像与 DCache 行阵指纹）。
+   跨模块总线全部在组合阶段（快照边）求值。由此，流水级调用顺序可任意交换
+   （曾由 `reorder_test` 作硬约束回归；该测试已于 2026-09-10 随 `test/` 清理退役）。
 2. **面向 RTL 移植的参考模型**。`Phase` 状态机、双口读/写通道、单写端口、寄存器级
    流水（Booth 乘法器）、回写总线冲突等均以 Verilog 习惯的 C++ 呈现，并有独立的
    `RISC-V-Simulator-Template/` 重建线把同一架构逐步改写为可综合风格。
-3. **可量化对比的研究平台**。三总线写回 vs 单总线、DCache 命中自答、M 扩展硬件
+3. **可量化对比的研究平台**。多路结果总线写回 vs 单总线、DCache 命中自答、M 扩展硬件
    乘法等方案的收益都落在同一套回归体系上，用 clock 逐位对拍作结论依据。
 
 ### 1.2 特性一览
@@ -47,7 +47,7 @@
 | 特性 | 说明 |
 |------|------|
 | 乱序执行核心 | ROB 64 / PRF 128 / RAT；issue 侧完成 rename，commit 按序释放 |
-| 三路结果总线 | `aluCDB` / `lqCDB` / `mulCDB`，各源独立、无跨单元仲裁 |
+| 四路结果总线 | `aluCDB` / `lqCDB` / `mulCDB` / `divCDB`，各源独立、无跨单元仲裁 |
 | 指令前端 | 8 KB 直映 ICache + 50 周期主存；FQ/IQ 双缓冲 + 预译码 + TAGE 预测 |
 | 访存系统 | LQ/SQ（store→load 转发、MDP 违例）+ 64 KB 4 路回写 DCache + 双口 DMEM |
 | 专用乘法 | radix-4 Booth + CSA 进位保存，3 级寄存器流水 |
@@ -92,14 +92,14 @@
 每个周期两个阶段，对应硬件时钟语义：
 
 1. **`comb()`（组合求值）**——全部模块 memcpy 进**快照**，在快照边计算跨模块
-   组合总线：`FetchDecision`（取指决策 + GHR 移位标记）、三条结果总线候选（每源
+   组合总线：`FetchDecision`（取指决策 + GHR 移位标记）、四条结果总线候选（每源
    `build()` 取唯一队首并过 squash 门）、`DispatchArbiter` 派发、`IssueArbiter::build`
    （发射包：rename + 各队 push 载荷）、`MemArbiter` 访存准入（store 优先互斥）、
    store 就绪广播、DCache 应答线等。
 2. **`tick()`（沿采样）**——19 个模块各自 tick。总线信号在 comb 中打包进对应
    `Input`；模块 tick **只读快照、只写自己（活体）状态**，跨模块写为零。
 
-因此阶段调用顺序可任意交换（由 `reorder_test` 19 级乱序验证）；停机条件 = halt
+因此阶段调用顺序可任意交换（曾由 `reorder_test` 19 级乱序验证，现该环节已退役）；停机条件 = halt
 已提交 且 FQ/IQ/ROB 全空，并做**访存 drain**：SQ 空、DCache 空闲、DMEM 读/写口
 空闲——保证停机瞬间不存在"已提交但未写达缓存"的在途 store。
 
@@ -125,14 +125,15 @@ Cache 128（BHR 256×8b）、RAS 8 + SARAS 16；ckptId 池 64（≥ ROB 64）。
 #### 后端 Back-End — 发射 · 乱序执行 · 写回 · 提交 · 恢复
 
 **功能**：从 IQ 头发射（RAT rename + PRF 分配 + ROB/RS/LQ/SQ 入队）；保留站
-操作数就绪即乱序派发到 ALU/MUL/AGU/BRU；结果经三根独立总线并行写回 PRF/ROB；
+操作数就绪即乱序派发到 ALU/MUL/DIV/AGU/BRU；结果经四根独立总线并行写回 PRF/ROB；
 ROB 头按序提交。误预测与记忆违例统一进 `FlushArbiter` 排队（最老优先），各模块
 从 ROB 条目 checkpoint 恢复。
 
 **关键规格**：ROB 64 / PRF 128 / RAT 32；保留站 Integer 8 · Multiply 4 · Load
 4 · StoreAddr 4 · StoreValue 4 · Branch 4；每周期至多 1 次发射；执行队列各 4 槽、
-每源每周期 1 个队首结果；结果总线 3 根（`aluCDB`/`lqCDB`/`mulCDB`，无仲裁）；
-MUL = Booth radix-4 + CSA 三级流水（`mul/mulh/mulhu/mulhsu`）；FlushArbiter 4 项。
+每源每周期 1 个队首结果；结果总线 4 根（`aluCDB`/`lqCDB`/`mulCDB`/`divCDB`，无仲裁）；
+MUL = Booth radix-4 + CSA 三级流水（`mul/mulh/mulhu/mulhsu`）；DIV = SRT radix-4 迭代
+（单实例，`canAccept()` 背压）；FlushArbiter 4 项。
 
 → 详细设计见 [`docs/backend.md`](docs/backend.md)
 
@@ -168,8 +169,9 @@ store"存在性）；DCache busy 时停发（store 已弹出不反悔）；store
 - **RV32M 乘法族**：`mul/mulh/mulhu/mulhsu` 内联执行（Booth + CSA 三级流水，
   见 [`docs/backend.md`](docs/backend.md)）；收益用同工具链双臂 A/B 语料量化
   （见 [§6.4](#64-rv32m-扩展评测)）。
-- **DIV/REM 族**：译码表按 funct3 预留完整空间，单元未实现——对 funct3 4..7
-  显式停发（宁可 stall 不静默错算），程序中 `/` `%` 走编译器软例程。
+- **DIV/REM 族**：`div/divu/rem/remu` **已内联执行**（SRT radix-4 迭代除法器，见
+  [§8](#8-开发状态与路线图)）——专用 `divideRS` + **第四路独立结果总线 `cdbOfDiv`**，
+  与 ALU/LQ/MUL 各源独立、无跨单元仲裁。验证见 [§6.5](#65-divrem-硬件除法验证)。
 
 ---
 
@@ -183,7 +185,8 @@ RISC-V-Tomasulo-CPU-Simulator/
 ├── README.md                         # 本文档（总览 + 子系统精简简介）
 ├── issue.pdf                         # 题目与评测说明（ISA 约束 / 口径 / 数据来源）
 ├── AGENTS.md                         # 开发账本：架构决策 / 模块归属 / 验证流程
-├── test.sh                           # 行为回归脚本（x10 vs golden + 分支/时钟统计）
+├── test.sh                           # 行为回归脚本（x10 vs docs/benchmarks.md + 分支/时钟统计）
+├── test_M.sh                         # RV32M 双臂 A/B（M vs I：clock / 运行时间 / 分支 / 收益）
 ├── code                              # 构建产物：Release 可执行（WSL/Linux ELF）
 │
 ├── src/                              # 模拟器源码（comb()/tick() 逐周期快照双缓冲）
@@ -211,6 +214,7 @@ RISC-V-Tomasulo-CPU-Simulator/
 │   │   │
 │   │   ├── ALU.hpp                   # 算术逻辑执行单元（含 JALR 控制类载荷）
 │   │   ├── MUL.hpp                   # M 扩展乘法单元（Booth→CSA→加法，3 级流水）
+│   │   ├── DIV.hpp                   # M 扩展除法单元（SRT radix-4，已接入流水线）
 │   │   ├── AGU.hpp                   # load/store 地址计算单元
 │   │   ├── BRU.hpp                   # 条件分支执行单元
 │   │   │
@@ -222,35 +226,27 @@ RISC-V-Tomasulo-CPU-Simulator/
 │   │   ├── BPU.hpp                   # 分支预测器（TAGE + BTB/TargetCache + SARAS）
 │   │   ├── StaticArbiter.hpp         # 无状态仲裁器族（Dispatch/Mem/Issue + 发射包）
 │   │   ├── DynamicArbiter.hpp        # FlushArbiter：squash 请求队列（四阶段检测）
-│   │   └── CDB.hpp                   # 三路结果总线载荷（aluCDB/lqCDB/mulCDB）+ build 工厂
+│   │   └── CDB.hpp                   # 结果总线载荷（aluCDB/lqCDB/mulCDB/divCDB）+ build 工厂
 │   │
 │   ├── FetchUnit/  InstructBuffer/   # 各模块 tick 实现（与 include/*.hpp 一一对应）
 │   ├── Decoder/  ICache/  IMEM/
 │   ├── RS/  PRF/  RAT/  ROB/
-│   ├── ALU/  MUL/  AGU/  BRU/
+│   ├── ALU/  MUL/  DIV/  AGU/  BRU/
 │   ├── LQ/  SQ/  DCache/  DMEM/
 │   ├── BPU/  StaticArbiter/  DynamicArbiter/  CDB/
 │   └── ...
 │
-├── data/                            # 镜像 / 语料 / 回归基线
-│   ├── sample/                      # 最小可运行示例（sample.{c,data,dump}）
+├── data/                            # 镜像 / 语料
 │   ├── testcases/                   # 18 个基准（.data 镜像 + .dump 反汇编；多含 .c 源码）
 │   │   └── io.inc                   # 18 个 .c 共享的校验头（x10 语义来源，勿删）
-│   ├── testcases_rv32im/            # RV32M 扩展 A/B 双臂语料（M=rv32i_zmmul / I=rv32i）
-│   │   ├── M/                       # 4 用例：bulgarian / statement_test / pi / multiarray
-│   │   ├── I/                       # 同用例 rv32i（软乘 __mulsi3）对照臂
-│   │   └── test_m.sh                # 双臂对拍脚本（x10 / 跨臂 / 收益）
-│   └── golden/                      # 回归基线：18 个 {case}.golden，每行 <x10> <clock>
+│   ├── testcases_rv32im/            # RV32M 扩展 A/B 双臂语料（M = rv32im 硬乘+硬除 / I = rv32i + libdiv.S 软乘软除）
+│   │   ├── M/                       # 18 用例：rv32im 重编译（硬件 mul/div/rem 内联，链接行去 libdiv.S）
+│   │   └── I/                       # 同用例 rv32i + libdiv.S（软乘 __mulsi3 / 软除 libdiv.S）对照臂
 │
-├── test/                            # 一致性 / 单元测试（独立构建，不影响根目标）
-│   ├── CMakeLists.txt
-│   ├── reorder_test.cpp             # 19 级任意顺序一致性测试（含内存/缓存指纹）
-│   ├── mul_unit_test.cpp            # MUL 单元直驱自测（Booth/CSA/结果级对拍）
-│   ├── test_reorder.sh              # 乱序一致性运行脚本
-│   └── patch_mul.py                 # （已废弃）M 扩展补丁法 → 被 rv32im 重编译管线取代
+├── test/                            # （2026-09-10 整体清理删除；reorder_test / mul_unit_test 等均已移除）
 │
 ├── docs/                            # 设计文档（子系统详析，见 §2.3）
-│   ├── benchmarks.md                # 性能画像与逐用例实测（cycles / 命中率 / 准确率）
+│   ├── benchmarks.md                # 逐用例实测 + 行为回归 golden 数据源（x10 / clock / 命中率 / 准确率）
 │   ├── frontend.md                  # 前端：取指 / 预译码 / 译码 / 分支预测
 │   ├── backend.md                   # 后端：发射 / 乱序执行 / 写回 / 提交 / squash 恢复
 │   ├── memory.md                    # 访存：LQ/SQ / 转发 / MDP / 请求准入
@@ -286,6 +282,7 @@ RISC-V-Tomasulo-CPU-Simulator/
 | `RS` | 五类保留站（Integer/Multiply/Load/StoreAddr/StoreValue/Branch） |
 | `ALU` | 算术/逻辑/移位 + JALR 目标（控制类载荷） |
 | `MUL` | 专用乘法单元：Booth → CSA → 最终加（3 级流水） |
+| `DIV` | 专用除法单元：SRT radix-4 迭代递推（单实例，`canAccept()` 背压；第四路 CDB） |
 | `AGU` | load/store 地址计算（含队首 store 地址广播） |
 | `BRU` | 条件分支执行（pcFrom/pcResult） |
 | `LQ` | 加载队列：store→load 转发、违例报告、load 完成总线 |
@@ -295,7 +292,7 @@ RISC-V-Tomasulo-CPU-Simulator/
 | `BPU` | TAGE 方向 + BTB/TargetCache 目标 + SARAS，双口训练 |
 | `StaticArbiter` | 无状态仲裁器族：Dispatch/MemArbiter/IssueArbiter + 发射包 |
 | `DynamicArbiter` | `FlushArbiter`：squash 请求队列 + 检测/恢复 |
-| `CDB` | 三路结果总线载荷的 build 工厂 |
+| `CDB` | 结果总线载荷的 build 工厂（alu / lq / mul / div 四路） |
 | `Memory` | 字节存储基类（128 KB + 镜像流式解析） |
 | `common.hpp` | 容量常量与公共结构（SquashInfo/MemRequest/Uop/…） |
 | `util.hpp` | VERBOSE 主题调试 |
@@ -313,7 +310,7 @@ cmake -S . -B build && cmake --build build
 # 或直编（无 CMake 依赖）
 g++ -std=c++20 -O2 -Isrc/include src/main/main.cpp src/CPU/CPU.cpp \
   src/Decoder/Decoder.cpp src/DMEM/DMEM.cpp src/DCache/DCache.cpp src/ROB/ROB.cpp \
-  src/RS/RS.cpp src/ALU/ALU.cpp src/MUL/MUL.cpp src/AGU/AGU.cpp src/BRU/BRU.cpp \
+  src/RS/RS.cpp src/ALU/ALU.cpp src/MUL/MUL.cpp src/DIV/DIV.cpp src/AGU/AGU.cpp src/BRU/BRU.cpp \
   src/DynamicArbiter/DynamicArbiter.cpp src/StaticArbiter/StaticArbiter.cpp \
   src/CDB/CDB.cpp src/IMEM/IMEM.cpp src/ICache/ICache.cpp src/FetchUnit/FetchUnit.cpp \
   src/LQ/LQ.cpp src/SQ/SQ.cpp src/RAT/RAT.cpp src/InstructBuffer/InstructBuffer.cpp \
@@ -357,7 +354,7 @@ VERBOSE=branch,clock ./code < data/testcases/gcd.data   # 统计走 stderr
 > 不再在本表重复维护。数据口径与文档一致：**主存延迟固定 50 周期、L1 命中
 > 零延迟、8 KB 指令缓存 + 64 KB 数据缓存（写回 + 写分配）**；每个用例记录
 > cycles、按控制流类型拆分的预测准确率（cond / jal / jalr / branch）以及
-> I$/D$ 命中率。行为回归（退出码 / x10 对照 golden / 崩溃检测）仍由
+> I$/D$ 命中率。行为回归（退出码 / x10 对照本表 / 崩溃检测）仍由
 > [`./test.sh`](#6-验证与回归) 执行。
 
 要点（详见 `docs/benchmarks.md` 表注）：
@@ -371,14 +368,15 @@ VERBOSE=branch,clock ./code < data/testcases/gcd.data   # 统计走 stderr
 
 ## 6. 验证与回归
 
-验证分三层：**行为回归**（x10/分支/clock/golden）、**重排一致性**（19 级任意
-顺序逐位相同）、**单元级对拍**（MUL 直驱 + 扩展双臂 A/B）。
+验证分两层：**行为回归**（x10/分支/clock，基准见 `docs/benchmarks.md`）、
+**扩展双臂 A/B**（rv32im 重编译管线，见 §6.4）。原"重排一致性"（`reorder_test`）
+与"MUL 单元直驱自测"两节已随 2026-09-10 `test/` 清理退役（保留于 §6.2/§6.3 作历史）。
 
 ### 6.1 行为回归 — `test.sh`
 
 以 `data/testcases/*.data` 为输入运行 `./code`，校验退出码（崩溃检测）与
-`x10&0xFF`（对照 golden），汇总分支正确率与总时钟；任一 FAIL/CRASH 非 0 退出
-（pi 排最后）。
+`x10&0xFF`（对照 `docs/benchmarks.md` 的 `result` 列），汇总分支正确率与总时钟；
+任一 FAIL/CRASH 非 0 退出（pi 排最后）。
 
 ```bash
 ./test.sh                 # 全量
@@ -386,83 +384,115 @@ VERBOSE=branch,clock ./code < data/testcases/gcd.data   # 统计走 stderr
 BP_BIN=./code ./test.sh   # 指定二进制
 ```
 
-### 6.2 重排一致性 — `test_reorder.sh`
+### 6.2 重排一致性 — ~~`test_reorder.sh`~~（已退役）
 
-`reorder_test` 以**任意顺序**调用 19 个流水级，要求各排列给出相同的
-`x10&0xFF`、相同时钟，并额外对 **DMEM 最终镜像与 DCache 行阵做指纹比对**
-（这两者刻意不在管线快照里，是全系统一致性的最强约束）。全排列 19! ≈ 1.2×10¹⁷
-不现实，按单位点耗时自动分档：单次 <10 s 一律随机 100 组、>10 s 仅参考序 1 组
-（如 pi）。
+`reorder_test` 曾以**任意顺序**调用 19 个流水级，要求各排列给出相同的 `x10&0xFF`
+与相同时钟，并额外对 DMEM 最终镜像与 DCache 行阵做指纹比对——是全系统一致性的
+最强约束（全排列 19! ≈ 1.2×10¹⁷，按单位点耗时自动分档采样；`diff` 模式逐周期
+打印首个状态分叉点）。
+
+> ⚠️ 该测试与脚本已于 **2026-09-10 随 `test/` 整体清理删除**（`reorder_test.{cpp,exe}`、
+> `test_reorder.sh`、探针脚本与产物一并移除）。现行验证闭环 = ① 双树 x10+clock 逐位
+> 一致 → ② `docs/benchmarks.md` 的 `result`/`cycles` → ③ 仅架构性改动才允许 clock 变差。
+
+### 6.3 MUL 单元自测 — ~~`mul_unit_test`~~（已退役）
+
+曾直驱乘法器内部级（Booth 部分积 → CSA → 结果）与整单元，含 10 万组 LCG 随机
+对拍。该文件（`test/mul_unit_test.cpp`）与配套 `patch_mul.py` 已于 **2026-09-10
+随 `test/` 清理删除**；乘法正确性现由 §6.4 的 rv32im 双臂 A/B 与全量回归覆盖。
+
+### 6.4 RV32M 扩展评测 — `test_M.sh`
+
+为量化 M 扩展（硬件乘+除）收益，用统一双臂语料 `data/testcases_rv32im/` 逐例对拍：
+
+- **M 臂** = `-march=rv32im`（乘法 `mul/mulh/...` 与除法 `div/divu/rem/remu` 全部内联为
+  硬件单元，链接行去掉 `libdiv.S`）；
+- **I 臂** = `-march=rv32i` + `libdiv.S`（软例程 `__mulsi3` 负责 `*`、软除法例程负责 `/` 与 `%`）。
+
+两臂同 `crt0` / 同链接脚本 / 同 `-O1`（避 `magic.c` 的 `-O2` UB），故 clock 差即**纯 M 扩展
+（乘+除）收益**；镜像经 `objcopy -O verilog` 生成，须为 **LF 行尾**（CRLF 残留会被解析为字节
+token，导致第二段起镜像错乱）。
 
 ```bash
-cd test
-cmake -S . -B build && cmake --build build
-./test_reorder.sh                 # 全部测试点
-./test_reorder.sh 'gcd'           # 单点
-./test_reorder.sh --count 1000    # 强制 N 组（调试）
+./test_M.sh                 # 全量：18 用例 × M/I 双臂（含 pi，I 臂约数分钟）
+QUICK=1 ./test_M.sh         # 跳过 pi
+./test_M.sh gcd             # 只跑名字匹配该 glob 的用例
+BP_BIN=/path/to/code ./test_M.sh   # 指定模拟器二进制（默认 ./code）
 ```
 
-`diff` 模式对两种显式顺序逐周期打印首个状态分叉点（cycle/字段/值），用于定位
-重排不一致根源。
-
-### 6.3 MUL 单元自测
-
-直驱乘法器内部级（Booth 部分积 → CSA → 结果）与整单元，含 10 万组 LCG 随机
-对拍（断言默认开启）。构建时把 `src/main/main.cpp` 换成 `test/mul_unit_test.cpp`：
-
-```bash
-./test/mul_unit_test 100000
-```
-
-### 6.4 RV32M 扩展评测
-
-为量化 M 扩展（硬件乘法）收益，另建一套**同工具链、同链接布局**的双臂语料
-`data/testcases_rv32im/`：`M` 臂 = `-march=rv32i_zmmul`（乘法内联为硬件 `mul`），
-`I` 臂 = `-march=rv32i`（软例程 `__mulsi3`）。两臂仅乘法实现不同，clock 差即
-**纯 M 扩展收益**。镜像经 `objcopy -O verilog` 生成，产出须为 **LF 行尾**
-（CRLF 残留会被解析为字节 token，导致第二段起镜像错乱）。
+脚本逐例打印 `Exit / Clock / Time / x10 / Golden / Br% / Cond% / Jal% / Jalr% / I$% / D$% / mul / div`
+（分支四项分型口径与 `docs/benchmarks.md` 一致），并汇总：
 
 | 检查项 | 说明 |
 |------|------|
-| 返回值正确性 | `x10&0xFF` 对照 golden 第一列（第二列为课程布局 clock，与自制镜像不同，不比） |
-| 跨臂一致性 | 同语义两套乘法实现，M/I 结果不同必是 bug |
+| 返回值正确性 | `x10&0xFF` 对照 `docs/benchmarks.md` 的 `result` 列（表中 `cycles` 为课程原镜像口径，自制镜像 layout 不同，不比） |
+| 跨臂一致性 | 同语义两套乘/除实现，M/I 结果不同必是 bug |
 | 崩溃检测 | 退出码非 0 记 `CRASH` |
-| 收益 | `Δclock(M/I)%` 与 speedup，附 `.dump` 静态 `mul` 条数 |
+| 收益 | `Δclock(M/I)%`、speedup 与两臂**实际运行时间**，附 `.dump` 静态 `mul`/`div` 条数 |
+| TOTAL 汇总 | 两臂总 clock、总实际运行时间、**加权分支正确率**（`Σcorrect/Σtotal`）及跨臂差 |
 
-```bash
-./data/testcases_rv32im/test_m.sh          # 全量（pi 双臂各需数分钟）
-QUICK=1 ./data/testcases_rv32im/test_m.sh  # 跳过 pi
-```
-
-实测结果（2026-09-07 · WSL/Release，4/4 通过）：
-
-| 用例 | 臂 | x10 | Clock | 分支正确/总数 | 准确率 | 耗时 | 静态 mul |
-|------|:--:|:---:|------:|--------------:|-------:|-----:|:---:|
-| bulgarian | M | 159 | 250,023 | 73,462/76,279 | 96.31% | 0.54s | 8 |
-| bulgarian | I | 159 | 253,809 | 73,703/76,892 | 95.85% | 0.55s | 0 |
-| statement_test | M | 50 | 1,040 | 108/166 | 65.06% | 0.03s | 3 |
-| statement_test | I | 50 | 1,701 | 187/293 | 63.82% | 0.03s | 0 |
-| pi | M | 137 | 111,687,574 | 32,342,091/37,031,603 | 87.34% | 216.28s | 1 |
-| pi | I | 137 | 137,852,245 | 37,033,569/43,100,792 | 85.92% | 267.01s | 0 |
-
-| 用例 | I 臂 Clock | M 臂 Clock | Δclock | speedup | 静态 mul |
-|------|-----------:|-----------:|-------:|--------:|:---:|
-| bulgarian | 253,809 | 250,023 | −1.49% | 1.015× | 8 |
-| statement_test | 1,701 | 1,040 | **−38.86%** | **1.636×** | 3 |
-| pi | 137,852,245 | 111,687,574 | **−18.98%** | **1.234×** | 1 |
-| **合计** | **138,107,755** | **111,938,637** | **−18.95%** | **1.234×** | — |
-
-- **收益与乘法动态占比正相关**：statement_test −38.86%（乘法集中、省掉整个
-  `__mulsi3`）；bulgarian −1.49%（乘法只是内层循环一步）；pi 仅 1 条静态 `mul`
-  但位于最热收敛循环 → −18.98%（约省 2600 万拍）。
-- **分支准确率同步提升**（pi 85.92→87.34%、statement_test 63.82→65.06%）：
-  `__mulsi3` 的移位-判定循环是数据相关的，硬件乘法把该段整块消除。
-- **multiarray 为阴性对照**：常量乘法被 gcc 优化为移位+加法（静态 `mul`=0），
-  M/I 双臂 clock 逐拍相同（1,073），证明 Δclock 全部来自 `mul` 本身。
-- **口径**：对照用 `zmmul` 子集而非完整 `rv32im`，除法/取模两臂同走软例程，
-  避免 DIV 差异污染；实现 DIV/REM 后可改 `-march=rv32im` 去软例程复测。
+实测 **18/18 跨臂 x10 一致**；逐用例明细、总时钟、总分支正确率与收益见
+[`docs/benchmarks.md`](docs/benchmarks.md) 的 `## RV32M A/B`。
 
 ---
+
+### 6.5 DIV/REM 硬件除法验证
+
+`div/divu/rem/remu` 内联执行后，用`data/testcases_rv32im/M` 臂做端到端验证：
+与 `M`/`I` 臂同 `crt0`、同链接脚本、同选项，仅两处不同 —— `-march=rv32im`，且**链接行去掉
+`libdiv.S`**（软除法例程）。于是程序里的 `/` `%` 直接编译成硬 `div/rem` 指令。
+
+```bash
+# 生成（WSL）
+riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32 -O2 \
+  -fno-tree-loop-distribute-patterns -nostdlib -nostartfiles \
+  -I data/testcases -T ~/rv32im_course/link_course.ld \
+  ~/rv32im_course/crt0_course.S data/testcases/<case>.c -lgcc -o /tmp/<case>.elf
+riscv64-unknown-elf-objdump -d /tmp/<case>.elf > data/testcases_rv32im/M/<case>.dump
+riscv64-unknown-elf-objcopy -O verilog /tmp/<case>.elf data/testcases_rv32im/M/<case>.data
+```
+
+**验收口径**：`x10 & 0xFF` 对 `docs/benchmarks.md` 的 `result` 列（该表的 `cycles` 是课程原
+rv32i 镜像口径，自制镜像不可比）。
+
+| 检查项 | 说明 |
+|------|------|
+| 返回值正确性 | 18/18 全对（2026-09-12 实测，见下表） |
+| 静态 div/rem | `.dump` 中 `div/divu/rem/remu` 条数，证明该臂确实走硬件路径 |
+| 零回归 | 原 `data/testcases/` 18 例 x10 + clock 逐位与 golden 一致 |
+
+| 用例 | x10 | 静态 div/rem | 用例 | x10 | 静态 div/rem |
+|------|-----|------|------|-----|------|
+| array_test1 | 123 | 1 | magic | 106 | 1 |
+| array_test2 | 43 | 1 | manyarguments | 40 | 1 |
+| basicopt1 | 88 | 3 | multiarray | 115 | 1 |
+| bulgarian | 159 | 9 | naive | 94 | 0 |
+| expr | 58 | 1 | pi | 137 | 7 |
+| gcd | 178 | 4 | qsort | 105 | 1 |
+| hanoi | 20 | 1 | queens | 171 | 1 |
+| lvalue2 | 175 | 1 | statement_test | 50 | 2 |
+| — | — | — | superloop | 134 | 1 |
+| — | — | — | tak | 186 | 1 |
+
+**18/18 通过**（`naive` 无 `div/rem`，作阴性对照）。
+
+> ⚠️ `magic.c` 需单独用 `-O1` 编译：其 `make[x-1][j]` 在 `x==0` 时是未定义行为（源码靠
+> `x==0` 的短路保护），gcc 13.2 在 `-O2` 下会优化出非法访存地址（触发 DCache 断言
+> `PrRd(addr=13)`）。`-O0/-O1/-Os` 下均正常（x10=106）。**该崩溃与 DIV 无关** ——
+> `rv32i` 与 `rv32im` 臂同样崩，属既有工具链 UB，不计入 DIV 账。
+
+### 6.6 M 扩展（乘+除）硬件化收益数据
+
+统一 M vs I 双臂的逐用例收益（clock、实际运行时间、分支四项分型、I$/D$ 命中率、
+静态 `mul`/`div` 条数）与 TOTAL 汇总（总时钟、总运行时间、**加权分支正确率**及跨臂
+收益），已全部写入 [`docs/benchmarks.md`](docs/benchmarks.md) 的 `## RV32M A/B`，
+由 §6.4 的 `./test_M.sh` 产出，本文件不再重复维护。
+
+> ⚠️ **跨臂 brAcc 不可直接比较**：两臂编译出的代码不同，软例程会引入大量额外分支
+> （如 `gcd` 的 M 臂仅 7 次分支、I 臂 125 次），差值反映**代码差异**而非预测器退化。
+> 预测器回归判据仍是「同一镜像跨模拟器版本」对 `docs/benchmarks.md` 主表四列
+> （2026-09-12 复核：18/18 逐列零漂移）。
+
 
 ## 7. 参考资料
 
@@ -478,9 +508,13 @@ QUICK=1 ./data/testcases_rv32im/test_m.sh  # 跳过 pi
 
 - **RTL 化重建线**：`RISC-V-Simulator-Template/` 以 `Register<N>/Wire<N>/
   dark::Module` 框架把同一架构逐模块改写为可综合风格（Register 双缓冲 + 周期末
-  sync、Wire 懒求值组合接线）。两树共用同一套 golden，clock 逐位对拍一致是迁移
+  sync、Wire 懒求值组合接线）。两树共用同一套 golden（= `docs/benchmarks.md`），clock 逐位对拍一致是迁移
   硬门禁。
-- **DIV/REM**：译码/发射已预留；实现后启用 `-march=rv32im` 并去掉软除法例程。
+- **DIV/REM（已落地，2026-09-12）**：SRT radix-4 硬件除法器，算法 SSOT = `docs/backend.md` §4.4。
+  `decodeOp` 解出 funct3 4..7 → `issue_Divide` → 专用 `divideRS` → `DispatchArbiter` DIV 通道
+  （`canAccept()` 背压，单实例无输出缓冲）→ `cdbOfDiv` 第四路总线 → ROB/PRF。验收：课程镜像
+  18/18（x10+clock 逐位一致）+ `data/testcases_rv32im/M` 臂 18/18 x10 全对。
+  **待办**：同步回 `RISC-V-Simulator-Template/` 树 + rv32im 第三臂的 clock 收益 A/B。
 - **TAGE-SC**：统计校正器曾试装后移除（简化版全线退化），后续按 Seznec 论文补
   充分历史长度计数器 + 滞回再试。
 - **取舍复核**：`VERBOSE=icache/cdb` 的命中率与总线争用画像长期保留，供缓存

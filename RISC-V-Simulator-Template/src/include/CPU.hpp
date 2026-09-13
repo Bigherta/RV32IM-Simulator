@@ -17,6 +17,7 @@
 #include "IMEM.hpp"
 #include "LQ.hpp"
 #include "MUL.hpp"
+#include "DIV.hpp"
 #include "SQ.hpp"
 #include "Memory.hpp"
 #include "PRF.hpp"
@@ -40,6 +41,7 @@ private:
   ROB ROBModule;
   ALU ALUModule;
   MUL MULModule;
+  DIV DIVModule;
   AGU AGUModule;
   BRU BRUModule;
   LQ LQModule;
@@ -56,6 +58,7 @@ private:
   AluCDB AluCDBArbiterModule;
   LqCDB LqCDBArbiterModule;
   MulCDB MulCDBModule;
+  DivCDB DivCDBModule;
   MemArbiter MemArbiterModule;
   DispatchArbiter DispatchArbiterModule;
   IssueArbiter IssueArbiterModule;

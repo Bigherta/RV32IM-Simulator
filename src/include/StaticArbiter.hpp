@@ -14,6 +14,7 @@
 #include "MUL.hpp"
 #include "BRU.hpp"
 #include "DCache.hpp"
+#include "DIV.hpp"
 #include "Decoder.hpp"
 #include "LQ.hpp"
 #include "PRF.hpp"
@@ -27,7 +28,8 @@
 class DispatchArbiter {
 public:
   static DispatchBus arbitrate(const RSUnit &rs, const ALU &alu, const AGU &agu,
-                               const BRU &bru, const MUL & mul, const ROB &rob, const PRF &prf,
+                               const BRU &bru, const MUL &mul, const DIV &div,
+                               const ROB &rob, const PRF &prf,
                                const SquashInfo &squash);
 };
 
@@ -52,6 +54,9 @@ struct IssuePacket {
   bool hasMultiply = false;
   int multiplySlot = -1;
   ReservationStation multiplyRS; // payload for the dedicated multiply RS
+  bool hasDivide = false;
+  int divideSlot = -1;
+  ReservationStation divideRS; // payload for the dedicated divide RS
   bool hasLoad = false;
   int loadSlot = -1;
   LoadAddressRS loadRS;
@@ -94,6 +99,8 @@ private:
                                      bool isControl);
   static IssuePacket issue_Multiply(const IssueArbiterInput &,
                                     const UopView &inst);
+  static IssuePacket issue_Divide(const IssueArbiterInput &,
+                                  const UopView &inst);
   static IssuePacket issue_UandJ(const IssueArbiterInput &,
                                  const UopView &inst,
                                  bool has_PC, bool isControl = false);

@@ -58,6 +58,7 @@ void CPU::comb() {
   memcpy(&ROBModule, &CPUstate.ROBModule, sizeof(ROBModule));
   memcpy(&ALUModule, &CPUstate.ALUModule, sizeof(ALUModule));
   memcpy(&MULModule, &CPUstate.MULModule, sizeof(MULModule));
+  memcpy(&DIVModule, &CPUstate.DIVModule, sizeof(DIVModule));
   memcpy(&AGUModule, &CPUstate.AGUModule, sizeof(AGUModule));
   memcpy(&BRUModule, &CPUstate.BRUModule, sizeof(BRUModule));
   memcpy(&LQModule, &CPUstate.LQModule, sizeof(LQModule));
@@ -115,6 +116,7 @@ void CPU::comb() {
   cdbOfALU = aluCDB::build(ALUModule, squashDetect);
   cdbOfLQ = lqCDB::build(LQModule, squashDetect);
   cdbOfMul = mulCDB::build(MULModule, squashDetect);
+  cdbOfDiv = divCDB::build(DIVModule, squashDetect);
   // dual-CDB contention stats: count cycles where both buses have a grant,
   // and which side a single-CDB arbiter would have preferred (older tag).
   if (cdbOfALU.valid && cdbOfLQ.valid) {
@@ -129,7 +131,8 @@ void CPU::comb() {
     ++statLqOnly;
   }
   DispatchBus dispatchBus = DispatchArbiter::arbitrate(
-      RSModule, ALUModule, AGUModule, BRUModule, MULModule, ROBModule, PRFModule,
+      RSModule, ALUModule, AGUModule, BRUModule, MULModule, DIVModule,
+      ROBModule, PRFModule,
       squashDetect);
   aguInput.squashDetect = squashDetect;
   aluInput.squashDetect = squashDetect;
@@ -138,6 +141,9 @@ void CPU::comb() {
   mulInput.squashDetect = squashDetect;
   mulInput.cdbOutput = cdbOfMul;
   mulInput.dispatch = dispatchBus.mul;
+  divInput.squashDetect = squashDetect;
+  divInput.cdbOutput = cdbOfDiv;
+  divInput.dispatch = dispatchBus.div;
   aguInput.dispatch = dispatchBus.agu;
   bruInput.dispatch = dispatchBus.bru;
   rsInput.dispatchBus = dispatchBus;
@@ -187,10 +193,12 @@ void CPU::comb() {
   robInput.cdbOfALU = cdbOfALU;
   robInput.cdbOfLQ = cdbOfLQ;
   robInput.cdbOfMul = cdbOfMul;
+  robInput.cdbOfDiv = cdbOfDiv;
   prfInput.squashDetect = squashDetect;
   prfInput.cdbOfALU = cdbOfALU;
   prfInput.cdbOfLQ = cdbOfLQ;
   prfInput.cdbOfMul = cdbOfMul;
+  prfInput.cdbOfDiv = cdbOfDiv;
   ratInput.squashDetect = squashDetect;
   flarbInput.squashDetect = squashDetect;
   flarbInput.cdbOut = cdbOfALU;
@@ -221,6 +229,7 @@ void CPU::run() {
     PRFModule.tick(prfInput, CPUstate);
     ALUModule.tick(aluInput, CPUstate);
     MULModule.tick(mulInput, CPUstate);
+    DIVModule.tick(divInput, CPUstate);
     AGUModule.tick(aguInput, CPUstate);
     BRUModule.tick(bruInput, CPUstate);
     BPUModule.tick(bpuInput, CPUstate);
@@ -245,6 +254,9 @@ void CPU::run() {
   if (debug::enabled(debug::TOPIC_CLOCK))
     debug::print("clock: %llu\n", clock);
   if (debug::enabled(debug::TOPIC_BRANCH)) {
+    // host-only: everything below this block is an end-of-run report for the
+    // human (double percentage math, stdio formatting). It is not part of the
+    // modelled datapath, which is why `*` and `/` are legal here.
     // Summary line format is load-bearing: test.sh parses "branch: x/y
     // correct (p%)" ($2 = x/y, $4 = (p%)), so it MUST stay as-is. The
     // per-class breakdown is a separate line prefixed "branch-type:" which
@@ -271,6 +283,7 @@ void CPU::run() {
   }
   if (debug::enabled(debug::TOPIC_BPMISS))
     CPUstate.BPUModule.dumpBpMiss();
+  // host-only: same end-of-run report as the branch block above.
   if (debug::enabled(debug::TOPIC_ICACHE)) {
     uint32_t h = CPUstate.ICacheModule.getHitCount();
     uint32_t m = CPUstate.ICacheModule.getMissCount();

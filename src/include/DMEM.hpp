@@ -12,7 +12,6 @@ struct DMEMInput {
 
 // Data memory.
 class DMEM : public Memory {
-  friend struct ReorderTester;
   bool readBusy = false;
   bool readBufferValid = false;
   bool writeBusy = false;

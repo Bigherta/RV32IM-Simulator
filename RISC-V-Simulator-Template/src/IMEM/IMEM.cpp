@@ -40,10 +40,10 @@ void IMEM::work() {
       IMEMreqs[i].remainCycle <= next;
       if (next == 0) {
         // line burst fill: one wide read per word (4x32-bit)
-        for (int w = 0; w < CACHE_BLOCK_CAP / 4; ++w) {
+        for (int w = 0; w < (CACHE_BLOCK_CAP >> 2); ++w) {
           IMEMreqs[i].Data[w] <= read_word(
               static_cast<uint32_t>(IMEMreqs[i].lineAddr) +
-              static_cast<uint32_t>(w * 4));
+              static_cast<uint32_t>(w << 2));
         }
       }
     }

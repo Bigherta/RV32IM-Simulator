@@ -10,8 +10,8 @@
 
 DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
                                        const AGU &agu, const BRU &bru,
-                                       const MUL &mul, const ROB &rob,
-                                       const PRF &prf,
+                                       const MUL &mul, const DIV &div,
+                                       const ROB &rob, const PRF &prf,
                                        const SquashInfo &squash) {
   DispatchBus dispatch;
   // ALU channel: oldest operand-ready integerRS entry (I-extension ALU ops).
@@ -68,6 +68,35 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
         dispatch.mul.valid = false;
     }
   }
+  // DIV channel: oldest operand-ready divideRS entry. The divider is a single
+  // iterative unit with no output buffer, so it additionally refuses new work
+  // while a finished result has not been broadcast yet (DIV::canAccept).
+  if (div.canAccept()) {
+    bool foundAny = false;
+    int best = 0;
+    uint8_t bestTag = 0;
+    for (int i = 0; i < DIVIDERS_CAP; ++i) {
+      const auto &rs_ = rs.divideRS[i];
+      if (!rs_.free && prf.isOperandReady(rs_.src1) &&
+          prf.isOperandReady(rs_.src2)) {
+        auto tag = rs_.robTag;
+        if (!foundAny || ROB::isOlder(tag, bestTag)) {
+          foundAny = true;
+          best = i;
+          bestTag = tag;
+        }
+      }
+    }
+    if (foundAny) {
+      dispatch.div.rsIndex = best;
+      dispatch.div.robTag = bestTag;
+      dispatch.div.rsType = RSType::Divide;
+      dispatch.div.valid = true;
+      if (squash.needSquash && !ROB::isOlder(bestTag, squash.SquashTag))
+        dispatch.div.valid = false;
+    }
+  }
+
   // AGU channel: one memory-op dispatch per cycle, oldest first; loads
   // (both sources ready) outrank store-address (single source ready).
   if (!agu.isFull()) {
@@ -289,6 +318,49 @@ IssuePacket IssueArbiter::issue_Multiply(const IssueArbiterInput &input,
   return p;
 }
 
+// DIV/REM ops (funct3 4..7) enter the dedicated divideRS. The payload is
+// identical to issue_Multiply (REGISTER ROB entry, two register sources,
+// optional dest rename) -- only the RS pool and the executing unit differ.
+
+IssuePacket IssueArbiter::issue_Divide(const IssueArbiterInput &input,
+                                         const UopView &inst) {
+  IssuePacket p{};
+  if (input.ROBModule.isFull()) {
+    return p;
+  }
+  int divSlot = input.RSModule.tryAllocDivide();
+  if (divSlot < 0) {
+    return p;
+  }
+  p.valid = true;
+  p.hasDivide = true;
+  p.divideSlot = divSlot;
+  p.robTag = input.ROBModule.getNextTag();
+  p.divideRS.free = false;
+  p.divideRS.op = decodeOp(inst);
+  auto destination = inst.rd;
+  p.divideRS.src1 = resolveSrc(input, inst.rs1);
+  p.divideRS.src2 = resolveSrc(input, inst.rs2);
+  if (inst.allocDest && !input.PRFModule.isFreeListEmpty()) {
+    p.allocDest = true;
+    p.phy = input.PRFModule.getFreeListSlot(input.PRFModule.getHeadSeq());
+  }
+  p.robEntry = ROBEntry(ROBType::REGISTER);
+  p.robEntry.dest = destination;
+  p.robEntry.pc = inst.pc;
+  p.robEntry.predictedPC = inst.predictedPC;
+  p.robEntry.lqtTailSnapshot = input.LQModule.getTail();
+  p.robEntry.sqTailSnapshot = input.SQModule.getTail();
+  p.robEntry.ckptId = inst.ckptId;
+  p.robEntry.oldPhy = inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
+  p.robEntry.newPhy = p.phy;
+  if (debug::enabled(debug::TOPIC_PRF) && inst.allocDest)
+    debug::print("PRF rename x%d <- P%d (old=P%d)\n", destination, p.phy,
+                 p.robEntry.oldPhy);
+  p.divideRS.robTag = p.robTag;
+  return p;
+}
+
 IssuePacket IssueArbiter::issue_UandJ(const IssueArbiterInput &input,
                                       const UopView &inst, bool has_PC,
                                       bool isControl) {
@@ -485,9 +557,8 @@ Operation IssueArbiter::decodeOp(const UopView &inst) {
   }
   if (inst.type == RISC_V::M) {
     // funct7 == 0b0000001 (guaranteed by the decoder's M classification).
-    // Stage A decodes only the four multiply ops; funct3 4..7 (DIV/REM
-    // family) stay undecoded so IssueArbiter::build can stall them instead
-    // of silently producing 0 in the ALU.
+    // funct3 0..3 are the multiply ops, funct3 4..7 the DIV/REM family. The
+    // divider is a real iterative SRT unit now, so all eight are decodable.
     switch (inst.funct3) {
     case 0b000:
       return Operation::MUL;
@@ -497,6 +568,14 @@ Operation IssueArbiter::decodeOp(const UopView &inst) {
       return Operation::MULHSU;
     case 0b011:
       return Operation::MULHU;
+    case 0b100:
+      return Operation::DIV;
+    case 0b101:
+      return Operation::DIVU;
+    case 0b110:
+      return Operation::REM;
+    case 0b111:
+      return Operation::REMU;
     default:
       return Operation::OP_INVALID;
     }
@@ -588,12 +667,18 @@ IssuePacket IssueArbiter::build(const IssueArbiterInput &input) {
     break;
   }
   case RISC_V::M: {
-    // Only the stage-A multiply ops (funct3 0..3) are issuable; DIV/REM
-    // family stays OP_INVALID and is NOT issued -> the decode head blocks
-    // (visible stall), never an ALU-silent-0. M-ops enter the dedicated
-    // multiplyRS so they cannot consume integerRS slots from ALU ops.
-    if (decodeOp(inst) != Operation::OP_INVALID)
+    // funct3 0..3 -> dedicated multiplyRS, funct3 4..7 -> dedicated divideRS.
+    // Both pools are decoupled from integerRS so an M-heavy stream cannot
+    // starve ALU-class I-ops of RS slots.
+    auto mOp = decodeOp(inst);
+    if (mOp == Operation::OP_INVALID)
+      break;
+    if (mOp == Operation::DIV || mOp == Operation::DIVU ||
+        mOp == Operation::REM || mOp == Operation::REMU) {
+      issuePacket = issue_Divide(input, inst);
+    } else {
       issuePacket = issue_Multiply(input, inst);
+    }
     break;
   }
   case RISC_V::I: {

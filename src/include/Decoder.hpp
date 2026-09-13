@@ -11,8 +11,6 @@ public:
 };
 
 class UopQueue {
-  friend struct ReorderTester;
-
 private:
   Uop uopQueueEntries[IQ_CAP];
   uint8_t head = 0;
@@ -52,8 +50,6 @@ struct DecodeInput {
 };
 struct systemState;
 class DecodeUnit {
-  friend struct ReorderTester;
-
 private:
   UopQueue iq;
   void push(Uop inst) { iq.push(inst); }

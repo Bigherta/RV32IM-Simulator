@@ -1,0 +1,102 @@
+
+/home/hhslx/rv32im_course/tak.rv32im.elf:     file format elf32-littleriscv
+
+
+Disassembly of section .text.start:
+
+00000000 <_start>:
+   0:	00020137          	lui	sp,0x20
+   4:	0f8010ef          	jal	10fc <main>
+   8:	0ff00513          	li	a0,255
+   c:	000306b7          	lui	a3,0x30
+  10:	00a68223          	sb	a0,4(a3) # 30004 <judgeResult+0x2eec4>
+  14:	ff9ff06f          	j	c <_start+0xc>
+
+Disassembly of section .text:
+
+00001000 <printInt>:
+    1000:	000017b7          	lui	a5,0x1
+    1004:	1407a703          	lw	a4,320(a5) # 1140 <judgeResult>
+    1008:	00e54533          	xor	a0,a0,a4
+    100c:	0ad50513          	addi	a0,a0,173
+    1010:	14a7a023          	sw	a0,320(a5)
+    1014:	00008067          	ret
+
+00001018 <printStr>:
+    1018:	00054703          	lbu	a4,0(a0)
+    101c:	02070263          	beqz	a4,1040 <printStr+0x28>
+    1020:	000016b7          	lui	a3,0x1
+    1024:	1406a783          	lw	a5,320(a3) # 1140 <judgeResult>
+    1028:	00f747b3          	xor	a5,a4,a5
+    102c:	20978793          	addi	a5,a5,521
+    1030:	14f6a023          	sw	a5,320(a3)
+    1034:	00154703          	lbu	a4,1(a0)
+    1038:	00150513          	addi	a0,a0,1
+    103c:	fe0716e3          	bnez	a4,1028 <printStr+0x10>
+    1040:	00008067          	ret
+
+00001044 <tak>:
+    1044:	fe010113          	addi	sp,sp,-32 # 1ffe0 <judgeResult+0x1eea0>
+    1048:	00912a23          	sw	s1,20(sp)
+    104c:	00112e23          	sw	ra,28(sp)
+    1050:	00060493          	mv	s1,a2
+    1054:	08a5da63          	bge	a1,a0,10e8 <tak+0xa4>
+    1058:	00812c23          	sw	s0,24(sp)
+    105c:	01212823          	sw	s2,16(sp)
+    1060:	01312623          	sw	s3,12(sp)
+    1064:	01412423          	sw	s4,8(sp)
+    1068:	00050913          	mv	s2,a0
+    106c:	00058413          	mv	s0,a1
+    1070:	00100993          	li	s3,1
+    1074:	00048613          	mv	a2,s1
+    1078:	00040593          	mv	a1,s0
+    107c:	fff90513          	addi	a0,s2,-1
+    1080:	fc5ff0ef          	jal	1044 <tak>
+    1084:	00090a13          	mv	s4,s2
+    1088:	00048593          	mv	a1,s1
+    108c:	000a0613          	mv	a2,s4
+    1090:	00050913          	mv	s2,a0
+    1094:	fff40513          	addi	a0,s0,-1
+    1098:	fadff0ef          	jal	1044 <tak>
+    109c:	00050793          	mv	a5,a0
+    10a0:	00040613          	mv	a2,s0
+    10a4:	fff48513          	addi	a0,s1,-1
+    10a8:	000a0593          	mv	a1,s4
+    10ac:	00078413          	mv	s0,a5
+    10b0:	f95ff0ef          	jal	1044 <tak>
+    10b4:	00098793          	mv	a5,s3
+    10b8:	00050493          	mv	s1,a0
+    10bc:	00198993          	addi	s3,s3,1
+    10c0:	fb244ae3          	blt	s0,s2,1074 <tak+0x30>
+    10c4:	01812403          	lw	s0,24(sp)
+    10c8:	01c12083          	lw	ra,28(sp)
+    10cc:	01012903          	lw	s2,16(sp)
+    10d0:	00c12983          	lw	s3,12(sp)
+    10d4:	00812a03          	lw	s4,8(sp)
+    10d8:	01412483          	lw	s1,20(sp)
+    10dc:	00a78533          	add	a0,a5,a0
+    10e0:	02010113          	addi	sp,sp,32
+    10e4:	00008067          	ret
+    10e8:	01c12083          	lw	ra,28(sp)
+    10ec:	01412483          	lw	s1,20(sp)
+    10f0:	00060513          	mv	a0,a2
+    10f4:	02010113          	addi	sp,sp,32
+    10f8:	00008067          	ret
+
+000010fc <main>:
+    10fc:	ff010113          	addi	sp,sp,-16
+    1100:	00600613          	li	a2,6
+    1104:	00c00593          	li	a1,12
+    1108:	01200513          	li	a0,18
+    110c:	00112623          	sw	ra,12(sp)
+    1110:	f35ff0ef          	jal	1044 <tak>
+    1114:	000017b7          	lui	a5,0x1
+    1118:	1407a703          	lw	a4,320(a5) # 1140 <judgeResult>
+    111c:	00c12083          	lw	ra,12(sp)
+    1120:	00e54533          	xor	a0,a0,a4
+    1124:	0ad50513          	addi	a0,a0,173
+    1128:	14a7a023          	sw	a0,320(a5)
+    112c:	0fd00793          	li	a5,253
+    1130:	02f56533          	rem	a0,a0,a5
+    1134:	01010113          	addi	sp,sp,16
+    1138:	00008067          	ret

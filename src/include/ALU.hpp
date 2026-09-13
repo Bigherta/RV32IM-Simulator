@@ -12,8 +12,6 @@ struct ALUInput {
   ALUInput(const RSUnit &rs, const PRF &prf) : RSModule(rs), PRFModule(prf) {}
 };
 class ALU {
-  friend struct ReorderTester;
-
 private:
   struct ArithmeticCalculateResult {
     int32_t value = 0;

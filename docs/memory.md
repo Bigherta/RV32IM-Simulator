@@ -98,7 +98,7 @@ DCache 按两段 FSM 接受请求并回 `loadResp`（组合、过 squash 门）�
 
 LQ 头（按序的 load 完成口）就绪后，`lqCDB.build(LQ, squash)` 每周期最多给出
 一个完成载荷 `{value, robTag, memIndex}`，经 lqCDB 广播到 PRF（完成写口）与
-ROB（置提交就绪）——load 结果与 ALU/MUL 结果在同一周期内三总线并行。
+ROB（置提交就绪）——load 结果与 ALU/MUL/DIV 结果在同一周期内四总线并行。
 
 ## 7. 关键规格
 

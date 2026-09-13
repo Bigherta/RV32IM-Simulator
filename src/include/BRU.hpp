@@ -14,8 +14,6 @@ struct BRUInput {
       : ROBModule(rob), RSModule(rs), PRFModule(prf) {}
 };
 class BRU {
-  friend struct ReorderTester;
-
 private:
   BranchResult outputBuffer[BRU_CAP];
   bool slotValid[BRU_CAP] = {};

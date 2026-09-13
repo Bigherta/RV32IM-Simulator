@@ -36,7 +36,7 @@ void ICache::work() {
     auto cachelineIndex = (la >> 4) & (CACHE_CAP - 1);
     blocks[cachelineIndex].valid <= true;
     blocks[cachelineIndex].tag <= la >> 13;
-    for (int k = 0; k < CACHE_BLOCK_CAP / 4; ++k)
+    for (int k = 0; k < (CACHE_BLOCK_CAP >> 2); ++k)
       blocks[cachelineIndex].Data[k] <= static_cast<uint32_t>(lineReturn.data[k]);
     // backfill placeholder: only when the post-pop queue is non-empty and the
     // new head is still an occupied-but-not-ready entry. The slot already has

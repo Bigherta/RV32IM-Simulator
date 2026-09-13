@@ -54,17 +54,17 @@ struct RSInput {
 };
 class RSUnit {
 private:
-  friend struct ReorderTester;
-
 public:
   ReservationStation integerRS[INTEGERRS_CAP];
   ReservationStation multiplyRS[MULTIPLYRS_CAP];
+  ReservationStation divideRS[DIVIDERS_CAP];
   LoadAddressRS loadRS[LOADRS_CAP];
   StoreAddressRS storeAddressRS[STORERS_CAP];
   StoreValueReservationStation storeValueRS[STORERS_CAP];
   BranchReservationStation branchRS[BRANCHRS_CAP];
   int tryAllocInteger() const;
   int tryAllocMultiply() const;
+  int tryAllocDivide() const;
   int tryAllocLoad() const;
   int tryAllocStoreAddress() const;
   int tryAllocStoreValue() const;

@@ -20,8 +20,6 @@ struct RATInput {
 
 struct systemState;
 class RAT {
-  friend struct ReorderTester;
-
 private:
   int RAT_PRF[REGISTER_CAP];
   RATSnapshot ratCkpt[CKPT_CAP];

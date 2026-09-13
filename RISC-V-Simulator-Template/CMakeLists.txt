@@ -36,6 +36,8 @@ set(CPU_SOURCES
 add_executable(code
 	src/main/main.cpp
 	${CPU_SOURCES}
+	src/include/DIV.hpp
+	src/DIV/DIV.cpp
 )
 
 target_include_directories(code PRIVATE src/include)

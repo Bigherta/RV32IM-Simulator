@@ -38,8 +38,6 @@ struct LQInput {
         SQModule(sq), issuePacket(pkt) {}
 };
 class LQ {
-  friend struct ReorderTester;
-
 private:
   LQEntry LQqueue[LQ_CAP];
   uint8_t head = 0;

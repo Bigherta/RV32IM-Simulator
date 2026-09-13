@@ -25,8 +25,6 @@ struct lastPush {
 };
 struct systemState;
 class InstructBuffer {
-  friend struct ReorderTester;
-
 private:
   InstructBufferEntry InstructBufferEntries[FQ_CAP];
   lastPush pushCache;

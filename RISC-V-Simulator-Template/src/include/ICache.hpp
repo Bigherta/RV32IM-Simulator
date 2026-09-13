@@ -13,7 +13,7 @@ static_assert(MEM_SIZE == (1u << 17)); // tag = addr[17:13] must fit Register<4>
 struct CacheLine {
   Register<1> valid;
   Register<4> tag; // addr[17:13] -- 8KB cache in 128KB space leaves 4 tag bits
-  std::array<Register<32>, CACHE_BLOCK_CAP / 4> Data; // 4 words per line
+  std::array<Register<32>, (CACHE_BLOCK_CAP >> 2)> Data; // 4 words per line
 };
 
 struct ICacheInput {

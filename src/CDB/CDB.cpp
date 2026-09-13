@@ -1,6 +1,7 @@
 #include "../include/CDB.hpp"
 #include "../include/ALU.hpp"
 #include "../include/MUL.hpp"
+#include "../include/DIV.hpp"
 #include "../include/LQ.hpp"
 #include "../include/ROB.hpp"
 #include "../include/common.hpp"
@@ -34,6 +35,18 @@ mulCDB mulCDB::build(const MUL &mul, const SquashInfo &squash) {
     }
   }
   return mulcdb;
+}
+divCDB divCDB::build(const DIV &div, const SquashInfo &squash) {
+  divCDB divcdb{};
+  if (div.isReady()) {
+    uint8_t tag = div.getResultRobtag();
+    if (!squash.needSquash || ROB::isOlder(tag, squash.SquashTag)) {
+      divcdb.valid = true;
+      divcdb.value = div.getValue();
+      divcdb.robTag = tag;
+    }
+  }
+  return divcdb;
 }
 lqCDB lqCDB::build(const LQ &lq, const SquashInfo &squash) {
   lqCDB lqcdb{};

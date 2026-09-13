@@ -92,6 +92,10 @@ struct DispatchArbInput {
   Wire<1> aguFull; // AGUModule.isFull()
   Wire<1> bruFull; // BRUModule.isFull()
   Wire<1> mulFull; // MULModule.isFull()
+  // The divider is a single iterative unit with no output buffer, so its
+  // dispatch gate is the unit's own canAccept() (!busy && !resultValid) rather
+  // than an isFull() (verbatim from the main tree's div channel).
+  Wire<1> divAccept; // DIVModule.canAccept()
   // RS slot-field buses (raw; src tags are Wire<7> -- the 8th sentinel bit of
   // the Register<8> is clipped at the wiring site, so a tag always indexes
   // prdReady in-bounds; stale free-slot tags are killed by busy=0)
@@ -105,6 +109,8 @@ struct DispatchArbInput {
   std::array<Wire<7>, BRANCHRS_CAP> brSrc1Tag, brSrc2Tag, brRobTag;
   std::array<Wire<1>, MULTIPLYRS_CAP> mulBusy;
   std::array<Wire<7>, MULTIPLYRS_CAP> mulSrc1Tag, mulSrc2Tag, mulRobTag;
+  std::array<Wire<1>, DIVIDERS_CAP> divBusy;
+  std::array<Wire<7>, DIVIDERS_CAP> divSrc1Tag, divSrc2Tag, divRobTag;
   std::array<Wire<1>, PRF_CAP> prdReady; // PRF ready bitmap bus
   Wire<1> squashNeed;
   Wire<7> squashTag;
@@ -118,7 +124,7 @@ struct DispArbOutInfo {
   Wire<3> rsType;  // RSType encoding (Integer..StoreAddr, 5 values)
 };
 struct DispatchArbOutput {
-  DispArbOutInfo alu, agu, bru, mul;
+  DispArbOutInfo alu, agu, bru, mul, div;
 };
 struct DispatchArbiter : dark::Module<DispatchArbInput, DispatchArbOutput> {
   DispatchArbiter() { wire_output(); }
@@ -143,6 +149,7 @@ private:
   WinResult aluSelect() const;
   WinResult bruSelect() const;
   WinResult mulSelect() const; // multiplyRS pool, same shape as aluSelect
+  WinResult divSelect() const; // divideRS pool, same shape as mulSelect
   WinResult aguSelect() const; // load[0..3] ++ sa[0..7] single 12-slot pass
 };
 // ---- width/encoding guards for the wire-ized issue packet ----
@@ -186,6 +193,7 @@ struct IssueArbInputRs {
   std::array<Wire<1>, STORERS_CAP> svBusy;
   std::array<Wire<1>, BRANCHRS_CAP> brBusy;
   std::array<Wire<1>, MULTIPLYRS_CAP> mulBusy;
+  std::array<Wire<1>, DIVIDERS_CAP> divBusy;
 };
 // Port = value: the free-list head slot is resolved wiring-side
 // (getFreeListSlot(getHeadSeq()), a pure read) so the module needs no
@@ -226,7 +234,7 @@ struct IssueArbInput {
 // which branch's packet claims the single issue port this cycle -- every
 // Output field is a small mux keyed on it:
 //   0 none (guard fail / branch resource fail / unhandled opcode)
-//   1 INT  2 HALT  3 LOAD  4 STORE  5 BR  6 UJ  7 RV_INVALID  8 MUL
+//   1 INT  2 HALT  3 LOAD  4 STORE  5 BR  6 UJ  7 RV_INVALID  8 MUL  9 DIV
 struct IssueArbInner {
   Wire<4> win;
   // branch parameters (pure functions of dec.type/opcode)
@@ -240,6 +248,7 @@ struct IssueArbInner {
   Wire<1> svFree;   Wire<3> svSlot;
   Wire<1> brFree;   Wire<2> brSlot;
   Wire<1> mulFree;  Wire<2> mulSlot;
+  Wire<1> divFree;  Wire<2> divSlot;
 };
 
 // ---- Output: per-consumer field groups. Field names match the retired
@@ -258,12 +267,13 @@ struct IssueArbOutputCore {
   Wire<32> pc;    // driven only for control transfers (JALR/JAL), else 0
 };
 struct IssueArbOutputSelect {
-  Wire<1> hasInteger, hasLoad, hasStore, hasBranch, hasMultiply;
+  Wire<1> hasInteger, hasLoad, hasStore, hasBranch, hasMultiply, hasDivide;
   Wire<4> integerSlot;
   Wire<2> loadSlot;
   Wire<3> storeAddrSlot, storeValueSlot;
   Wire<2> branchSlot;
   Wire<2> multiplySlot;
+  Wire<2> divideSlot;
 };
 struct IssueArbOutIntP {
   Wire<5> op;
@@ -304,6 +314,14 @@ struct IssueArbOutMulP {
   Wire<32> s1Imm, s2Imm;
   Wire<8> robTag;
 };
+// DIV/REM payload: shape-identical to IssueArbOutMulP; issued into the
+// dedicated divideRS pool by issue_Divide in the reference implementation.
+struct IssueArbOutDivP {
+  Wire<5> op;
+  Wire<7> s1Tag, s2Tag;
+  Wire<32> s1Imm, s2Imm;
+  Wire<8> robTag;
+};
 struct IssueArbOutRobEntry {
   Wire<2> type;
   Wire<1> isCommitReady;
@@ -324,6 +342,7 @@ struct IssueArbOutput {
   IssueArbOutSvP svP;
   IssueArbOutBrP brP;
   IssueArbOutMulP mulP;
+  IssueArbOutDivP divP;
   IssueArbOutRobEntry robEntry;
 };
 

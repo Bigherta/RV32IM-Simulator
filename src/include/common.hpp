@@ -4,7 +4,8 @@
 #include <cstdint>
 using RobTag = uint8_t;
 constexpr int INTEGERRS_CAP = 8;
-constexpr int MULTIPLYRS_CAP = 4; // dedicated RS for the M-extension multiply ops
+constexpr int MULTIPLYRS_CAP = 4;
+constexpr int DIVIDERS_CAP = 4;
 constexpr int STORERS_CAP = 4;
 constexpr int LOADRS_CAP = 4;
 constexpr int BRANCHRS_CAP = 4;
@@ -262,7 +263,7 @@ struct UopView {
   int32_t predictedPC = 0;
   uint8_t ckptId = 0;
 };
-enum class RSType { Integer, Multiply, Branch, Load, StoreAddr };
+enum class RSType { Integer, Multiply, Divide, Branch, Load, StoreAddr };
 struct DispatchInfo {
   bool valid = false;
   int rsIndex = -1;
@@ -270,7 +271,7 @@ struct DispatchInfo {
   RSType rsType = RSType::Integer;
 };
 struct DispatchBus {
-  DispatchInfo alu, agu, bru, mul;
+  DispatchInfo alu, agu, bru, mul, div;
 };
 class ROB;
 class PRF;

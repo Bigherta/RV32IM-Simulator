@@ -57,6 +57,7 @@ CPU::CPU(Memory mem) : IMEMModule(mem), DMEMModule(mem) {
   dcpu.add_module(&PRFModule);
   dcpu.add_module(&ALUModule);
   dcpu.add_module(&MULModule);
+  dcpu.add_module(&DIVModule);
   dcpu.add_module(&AGUModule);
   dcpu.add_module(&BRUModule);
   dcpu.add_module(&BPUModule);
@@ -67,6 +68,7 @@ CPU::CPU(Memory mem) : IMEMModule(mem), DMEMModule(mem) {
   dcpu.add_module(&AluCDBArbiterModule);
   dcpu.add_module(&LqCDBArbiterModule);
   dcpu.add_module(&MulCDBModule);
+  dcpu.add_module(&DivCDBModule);
   dcpu.add_module(&MemArbiterModule);
   dcpu.add_module(&DispatchArbiterModule);
   dcpu.add_module(&IssueArbiterModule);
@@ -178,7 +180,7 @@ void CPU::wire() {
   ICacheModule.lineReturn.lineAddr = [this]() {
     return IMEMModule.retLineAddr();
   };
-  for (int w = 0; w < CACHE_BLOCK_CAP / 4; ++w) {
+  for (int w = 0; w < (CACHE_BLOCK_CAP >> 2); ++w) {
     ICacheModule.lineReturn.data[w] = [this, w]() {
       return IMEMModule.retWord(w);
     };
@@ -241,6 +243,26 @@ void CPU::wire() {
     return static_cast<bool>(flushArbiter.needSquash);
   };
   MulCDBModule.squashTag = [this]() {
+    return static_cast<uint32_t>(static_cast<uint32_t>(flushArbiter.SquashTag));
+  };
+  // DivCDB: the DIV unit's dedicated result bus. The divider has no output
+  // buffer, so the bus is a straight tap on the unit's result registers --
+  // divEmpty = !isReady, and divValue is gated by isReady because
+  // DIV::getValue() throws on a stale operationType (the same guard the
+  // reference's divCDB::build applies before reading it). The squash guard
+  // lives in DivCDB::divLive.
+  DivCDBModule.divEmpty = [this]() { return DIVModule.isReady() ? 0u : 1u; };
+  DivCDBModule.divValue = [this]() {
+    return DIVModule.isReady() ? static_cast<uint32_t>(DIVModule.getValue())
+                               : 0u;
+  };
+  DivCDBModule.divRobTag = [this]() {
+    return static_cast<uint32_t>(DIVModule.getResultRobtag());
+  };
+  DivCDBModule.squashNeed = [this]() {
+    return static_cast<bool>(flushArbiter.needSquash);
+  };
+  DivCDBModule.squashTag = [this]() {
     return static_cast<uint32_t>(static_cast<uint32_t>(flushArbiter.SquashTag));
   };
 
@@ -411,6 +433,26 @@ void CPU::wire() {
       return static_cast<uint32_t>(RSModule.getMulRobTag(i));
     };
   }
+  // DIV channel buses: divideRS slot fields + the unit's own canAccept()
+  // gate (the divider has no output buffer, so it is not an isFull gate --
+  // verbatim from the main tree's div channel).
+  DispatchArbiterModule.divAccept = [this]() {
+    return DIVModule.canAccept() ? 1u : 0u;
+  };
+  for (int i = 0; i < DIVIDERS_CAP; ++i) {
+    DispatchArbiterModule.divBusy[i] = [this, i]() {
+      return RSModule.isDivFree(i) ? 0u : 1u;
+    };
+    DispatchArbiterModule.divSrc1Tag[i] = [this, i]() {
+      return static_cast<uint32_t>(RSModule.getDivSrc1(i).tag);
+    };
+    DispatchArbiterModule.divSrc2Tag[i] = [this, i]() {
+      return static_cast<uint32_t>(RSModule.getDivSrc2(i).tag);
+    };
+    DispatchArbiterModule.divRobTag[i] = [this, i]() {
+      return static_cast<uint32_t>(RSModule.getDivRobTag(i));
+    };
+  }
   for (int i = 0; i < PRF_CAP; ++i) {
     DispatchArbiterModule.prdReady[i] = [this, i]() {
       return PRFModule.isReady(i) ? 1u : 0u;
@@ -500,6 +542,45 @@ void CPU::wire() {
   MULModule.cdbValid = [this]() { return MulCDBModule.valid ? 1u : 0u; };
   MULModule.cdbRobTag = [this]() {
     return static_cast<uint32_t>(MulCDBModule.robTag);
+  };
+
+  // Wire the DIV's input wires once: mirror of the MUL block over the
+  // divideRS grant / the DivCDB drain.
+  DIVModule.needSquash = [this]() {
+    return static_cast<bool>(flushArbiter.needSquash);
+  };
+  DIVModule.SquashTag = [this]() {
+    return static_cast<uint32_t>(flushArbiter.SquashTag);
+  };
+  DIVModule.dispatchValid = [this]() {
+    return static_cast<bool>(DispatchArbiterModule.div.valid);
+  };
+  DIVModule.src1Value = [this]() {
+    const auto &d = DispatchArbiterModule.div;
+    return static_cast<bool>(d.valid)
+               ? static_cast<uint32_t>(PRFModule.getOperandValue(
+                     RSModule.getDivSrc1(static_cast<uint32_t>(d.rsIndex))))
+               : 0u;
+  };
+  DIVModule.src2Value = [this]() {
+    const auto &d = DispatchArbiterModule.div;
+    return static_cast<bool>(d.valid)
+               ? static_cast<uint32_t>(PRFModule.getOperandValue(
+                     RSModule.getDivSrc2(static_cast<uint32_t>(d.rsIndex))))
+               : 0u;
+  };
+  DIVModule.op = [this]() {
+    const auto &d = DispatchArbiterModule.div;
+    return static_cast<bool>(d.valid) ? static_cast<uint32_t>(RSModule.getDivOp(
+                                            static_cast<uint32_t>(d.rsIndex)))
+                                      : 0u;
+  };
+  DIVModule.dispatchRobTag = [this]() {
+    return static_cast<uint32_t>(DispatchArbiterModule.div.robTag);
+  };
+  DIVModule.cdbValid = [this]() { return DivCDBModule.valid ? 1u : 0u; };
+  DIVModule.cdbRobTag = [this]() {
+    return static_cast<uint32_t>(DivCDBModule.robTag);
   };
 
   // Wire the AGU's input wires once: the load/store RS array choice is made
@@ -662,6 +743,22 @@ void CPU::wire() {
         ROBModule.entry.newPhy[static_cast<uint32_t>(MulCDBModule.robTag) &
                                0x3F]);
   };
+  PRFModule.cdbOfDIV.cdbValid = [this]() {
+    return DivCDBModule.valid ? 1u : 0u;
+  };
+  PRFModule.cdbOfDIV.cdbValue = [this]() {
+    return static_cast<uint32_t>(DivCDBModule.value);
+  };
+  PRFModule.cdbOfDIV.cdbRobTag = [this]() {
+    return static_cast<uint32_t>(DivCDBModule.robTag);
+  };
+  PRFModule.cdbOfDIV.cdbNewPhy = [this]() {
+    if (!static_cast<bool>(DivCDBModule.valid))
+      return static_cast<uint32_t>(InvalidPhy);
+    return static_cast<uint32_t>(
+        ROBModule.entry.newPhy[static_cast<uint32_t>(DivCDBModule.robTag) &
+                               0x3F]);
+  };
   PRFModule.issue.issueValid = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.core.valid);
   };
@@ -803,6 +900,11 @@ void CPU::wire() {
       return RSModule.isMulFree(i) ? 0u : 1u;
     };
   }
+  for (int i = 0; i < DIVIDERS_CAP; ++i) {
+    IssueArbiterModule.rs.divBusy[i] = [this, i]() {
+      return RSModule.isDivFree(i) ? 0u : 1u;
+    };
+  }
   IssueArbiterModule.prf.freeListEmpty = [this]() {
     return PRFModule.isFreeListEmpty() ? 1u : 0u;
   };
@@ -876,6 +978,9 @@ void CPU::wire() {
   RSModule.sel.hasMultiply = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.select.hasMultiply);
   };
+  RSModule.sel.hasDivide = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.select.hasDivide);
+  };
   RSModule.sel.integerSlot = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.select.integerSlot);
   };
@@ -893,6 +998,9 @@ void CPU::wire() {
   };
   RSModule.sel.multiplySlot = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.select.multiplySlot);
+  };
+  RSModule.sel.divideSlot = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.select.divideSlot);
   };
   RSModule.data.intP.op = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.intP.op);
@@ -1008,6 +1116,24 @@ void CPU::wire() {
   RSModule.data.mulP.robTag = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.mulP.robTag);
   };
+  RSModule.data.divP.op = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.divP.op);
+  };
+  RSModule.data.divP.s1Tag = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.divP.s1Tag);
+  };
+  RSModule.data.divP.s1Imm = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.divP.s1Imm);
+  };
+  RSModule.data.divP.s2Tag = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.divP.s2Tag);
+  };
+  RSModule.data.divP.s2Imm = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.divP.s2Imm);
+  };
+  RSModule.data.divP.robTag = [this]() {
+    return static_cast<uint32_t>(IssueArbiterModule.divP.robTag);
+  };
   RSModule.dispatch.aluValid = [this]() {
     return static_cast<bool>(DispatchArbiterModule.alu.valid);
   };
@@ -1035,6 +1161,12 @@ void CPU::wire() {
   };
   RSModule.dispatch.mulIdx = [this]() {
     return static_cast<uint32_t>(DispatchArbiterModule.mul.rsIndex);
+  };
+  RSModule.dispatch.divValid = [this]() {
+    return static_cast<bool>(DispatchArbiterModule.div.valid);
+  };
+  RSModule.dispatch.divIdx = [this]() {
+    return static_cast<uint32_t>(DispatchArbiterModule.div.rsIndex);
   };
   RSModule.squash.needSquash = [this]() {
     return static_cast<bool>(flushArbiter.needSquash);
@@ -1348,6 +1480,12 @@ void CPU::wire() {
   ROBModule.cdbOfMUL.cdbRobTag = [this]() {
     return static_cast<uint32_t>(MulCDBModule.robTag);
   };
+  ROBModule.cdbOfDIV.cdbValid = [this]() {
+    return DivCDBModule.valid ? 1u : 0u;
+  };
+  ROBModule.cdbOfDIV.cdbRobTag = [this]() {
+    return static_cast<uint32_t>(DivCDBModule.robTag);
+  };
   ROBModule.bru.isBRUEmpty = [this]() { return BRUModule.isEmpty() ? 1u : 0u; };
   ROBModule.bru.bruHeadRobTag = [this]() {
     return BRUModule.isEmpty() ? 0u
@@ -1367,13 +1505,6 @@ void CPU::wire() {
   ROBModule.sq.sqHead = [this]() {
     return static_cast<uint32_t>(SQModule.getHead());
   };
-  for (int t = 0; t < 128; ++t) {
-    ROBModule.sq.sqHasOlderUnresolvedAddressStore[t] = [this, t]() {
-      return SQModule.hasOlderUnresolvedAddressStore(static_cast<uint8_t>(t))
-                 ? 1u
-                 : 0u;
-    };
-  }
   ROBModule.issue.issueValid = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.core.valid);
   };
@@ -1787,6 +1918,9 @@ void CPU::run(bool shuffle) {
     finish = s_halt && s_fqEmpty && s_decEmpty && s_robEmpty &&
              s_sqEmpty && s_dmemFree && s_dcacheFree;
   }
+  // host-only: the three debug::print blocks below are end-of-run reports for
+  // the human (double percentage math + stdio formatting). They are not part
+  // of the modelled datapath, which is why `*` and `/` are legal here.
   if (debug::enabled(debug::TOPIC_DCACHE))
     debug::print("dcache: hits=%llu misses=%llu total=%llu hit-rate=%.2f%% "
                  "writebacks=%llu\n",

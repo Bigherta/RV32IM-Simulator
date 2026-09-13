@@ -62,7 +62,7 @@ int32_t DCache::extractValue(const uint8_t *datas, int off, int n,
   // reads.
   uint32_t rawData = 0;
   for (int i = 0; i < n; ++i) {
-    rawData |= static_cast<uint32_t>(datas[off + i]) << (i * 8);
+    rawData |= static_cast<uint32_t>(datas[off + i]) << (i << 3);
   }
   if (isSigned && n < 4 && (rawData & (1u << ((n << 3) - 1)))) {
     rawData |= ~((1u << (n << 3)) - 1);
@@ -286,7 +286,7 @@ void DCache::work() {
         for (int i = 0; i < pn; ++i) {
           if (paddr + i < MEM_SIZE) {
             line.datas[(paddr & 0xF) + i] =
-                (static_cast<uint32_t>(parkValue) >> (i * 8)) & 0xFF;
+                (static_cast<uint32_t>(parkValue) >> (i << 3)) & 0xFF;
           }
         }
       }

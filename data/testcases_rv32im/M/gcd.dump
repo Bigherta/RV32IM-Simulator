@@ -1,0 +1,72 @@
+
+/home/hhslx/rv32im_course/gcd.rv32im.elf:     file format elf32-littleriscv
+
+
+Disassembly of section .text.start:
+
+00000000 <_start>:
+   0:	00020137          	lui	sp,0x20
+   4:	054010ef          	jal	1058 <main>
+   8:	0ff00513          	li	a0,255
+   c:	000306b7          	lui	a3,0x30
+  10:	00a68223          	sb	a0,4(a3) # 30004 <judgeResult+0x2ef3c>
+  14:	ff9ff06f          	j	c <_start+0xc>
+
+Disassembly of section .text:
+
+00001000 <printInt>:
+    1000:	000017b7          	lui	a5,0x1
+    1004:	0c87a703          	lw	a4,200(a5) # 10c8 <judgeResult>
+    1008:	00e54533          	xor	a0,a0,a4
+    100c:	0ad50513          	addi	a0,a0,173
+    1010:	0ca7a423          	sw	a0,200(a5)
+    1014:	00008067          	ret
+
+00001018 <printStr>:
+    1018:	00054703          	lbu	a4,0(a0)
+    101c:	02070263          	beqz	a4,1040 <printStr+0x28>
+    1020:	000016b7          	lui	a3,0x1
+    1024:	0c86a783          	lw	a5,200(a3) # 10c8 <judgeResult>
+    1028:	00f747b3          	xor	a5,a4,a5
+    102c:	20978793          	addi	a5,a5,521
+    1030:	0cf6a423          	sw	a5,200(a3)
+    1034:	00154703          	lbu	a4,1(a0)
+    1038:	00150513          	addi	a0,a0,1
+    103c:	fe0716e3          	bnez	a4,1028 <printStr+0x10>
+    1040:	00008067          	ret
+
+00001044 <gcd>:
+    1044:	00058793          	mv	a5,a1
+    1048:	02b565b3          	rem	a1,a0,a1
+    104c:	00078513          	mv	a0,a5
+    1050:	fe059ae3          	bnez	a1,1044 <gcd>
+    1054:	00008067          	ret
+
+00001058 <main>:
+    1058:	000015b7          	lui	a1,0x1
+    105c:	0c85a603          	lw	a2,200(a1) # 10c8 <judgeResult>
+    1060:	000017b7          	lui	a5,0x1
+    1064:	00009737          	lui	a4,0x9
+    1068:	00164613          	xori	a2,a2,1
+    106c:	0ad60613          	addi	a2,a2,173
+    1070:	c0f78793          	addi	a5,a5,-1009 # c0f <_start+0xc0f>
+    1074:	8aa70713          	addi	a4,a4,-1878 # 88aa <judgeResult+0x77e2>
+    1078:	00078693          	mv	a3,a5
+    107c:	02f767b3          	rem	a5,a4,a5
+    1080:	00068713          	mv	a4,a3
+    1084:	fe079ae3          	bnez	a5,1078 <main+0x20>
+    1088:	00c6c733          	xor	a4,a3,a2
+    108c:	00001537          	lui	a0,0x1
+    1090:	0ad70713          	addi	a4,a4,173
+    1094:	60300793          	li	a5,1539
+    1098:	b5b50513          	addi	a0,a0,-1189 # b5b <_start+0xb5b>
+    109c:	00078693          	mv	a3,a5
+    10a0:	02f567b3          	rem	a5,a0,a5
+    10a4:	00068513          	mv	a0,a3
+    10a8:	fe079ae3          	bnez	a5,109c <main+0x44>
+    10ac:	00e6c533          	xor	a0,a3,a4
+    10b0:	0ad50513          	addi	a0,a0,173
+    10b4:	0fd00793          	li	a5,253
+    10b8:	0ca5a423          	sw	a0,200(a1)
+    10bc:	02f56533          	rem	a0,a0,a5
+    10c0:	00008067          	ret

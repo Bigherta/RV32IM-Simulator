@@ -38,7 +38,8 @@ LineReturn IMEM::getReturn() const {
     for (int w = 0; w < 4; ++w) {
       uint32_t word = 0;
       for (int b = 0; b < 4; ++b) {
-        word |= static_cast<uint32_t>(IMEMreqs[head].data[w * 4 + b]) << (b * 8);
+        word |= static_cast<uint32_t>(IMEMreqs[head].data[(w << 2) + b])
+                << (b << 3);
       }
       out.data[w] = word;
     }

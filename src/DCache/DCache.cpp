@@ -58,7 +58,7 @@ bool DCache::PrRd(uint32_t addr, int n_bytes, bool isSigned, int32_t &value) {
     else if (hitIndex == 2) plru |= 0x1; else plru &= ~0x1;
     uint32_t rawData = 0;
     for (int i = 0; i < n_bytes; ++i) {
-      rawData |= cacheSet.lines[hitIndex].datas[(addr & 0xF) + i] << (i * 8);
+      rawData |= cacheSet.lines[hitIndex].datas[(addr & 0xF) + i] << (i << 3);
     }
     // sign-extend sub-word signed loads (mask branch identical to
     // DMEM::load_n_bytes): a bare static_cast<int32_t> would leave the
@@ -130,7 +130,7 @@ bool DCache::PrWr(uint32_t addr, uint32_t val, int n_bytes) {
     for (int i = 0; i < n_bytes; ++i) {
       if (addr + i < MEM_SIZE) {
         cacheSet.lines[hitIndex].datas[(addr & 0xF) + i] =
-            (val >> (i * 8)) & 0xFF;
+            (val >> (i << 3)) & 0xFF;
       }
     }
     return true;
@@ -270,7 +270,7 @@ void DCache::tick(const DCacheInput &input, systemState &CPUstate) {
             CPUstate.DCacheModule.cacheSets[set_index]
                 .lines[targetWay]
                 .datas[(addr & 0xF) + i] =
-                (cacheRequestBuffer.request.value >> (i * 8)) & 0xFF;
+                (cacheRequestBuffer.request.value >> (i << 3)) & 0xFF;
           }
         }
       } else {

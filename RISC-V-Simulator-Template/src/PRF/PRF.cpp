@@ -29,8 +29,8 @@ void PRF::work() {
   bool issueIsCtrl = static_cast<bool>(issue.issueIsControl);
   uint32_t issuePCVal = static_cast<uint32_t>(issue.issuePC);
 
-  // ---- Triple-CDB writeback: three independent write ports
-  // (aluCDB / lqCDB / mulCDB). Register renaming guarantees a distinct
+  // ---- Quad-CDB writeback: four independent write ports
+  // (aluCDB / lqCDB / mulCDB / divCDB). Register renaming guarantees a distinct
   // newPhy per in-flight instruction, so same-cycle writebacks always hit
   // different physical registers (no WAW; the Register array's per-element
   // single write port is naturally satisfied). Each port keeps its own
@@ -82,6 +82,23 @@ void PRF::work() {
     }
   }
 
+  bool cdbWriteDiv = false;
+  uint32_t cdbPhyDiv = 0;
+  uint32_t cdbValDiv = 0;
+  uint32_t cdbTagDiv = 0;
+  if (static_cast<bool>(cdbOfDIV.cdbValid)) {
+    uint32_t cdbTag = static_cast<uint32_t>(cdbOfDIV.cdbRobTag);
+    if (!needSquash || ROB::isOlder(cdbTag, squashTag)) {
+      uint32_t newPhy = static_cast<uint32_t>(cdbOfDIV.cdbNewPhy);
+      if (newPhy != static_cast<uint32_t>(InvalidPhy)) {
+        cdbWriteDiv = true;
+        cdbPhyDiv = newPhy;
+        cdbValDiv = static_cast<uint32_t>(cdbOfDIV.cdbValue);
+        cdbTagDiv = cdbTag;
+      }
+    }
+  }
+
   if (cdbWriteAlu) {
     if (debug::enabled(debug::TOPIC_PRF))
       debug::print("PRF write P%d = %d (aluCDB)\n", cdbPhyAlu, cdbValAlu);
@@ -100,6 +117,14 @@ void PRF::work() {
                    cdbPhyMul, cdbValMul);
     PhysicalRegs[cdbPhyMul].ready <= true;
     PhysicalRegs[cdbPhyMul].value <= cdbValMul;
+  }
+
+  if (cdbWriteDiv) {
+    if (debug::enabled(debug::TOPIC_EXEC))
+      debug::print("prf div-write rob=%u phy=%d val=%08x\n", cdbTagDiv,
+                   cdbPhyDiv, cdbValDiv);
+    PhysicalRegs[cdbPhyDiv].ready <= true;
+    PhysicalRegs[cdbPhyDiv].value <= cdbValDiv;
   }
 
   // ---- Issue: PRFHeadCkpt snapshot + free-list pop ----
