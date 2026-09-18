@@ -66,6 +66,11 @@ void ICache::work() {
     requestBuffer[index].ckptId <= static_cast<uint32_t>(fetchCkptId);
     requestBuffer[index].valid <= true;
     requestBuffer[index].ready <= isHit;
+    // host-only profile counters (never read by the datapath)
+    if (isHit)
+      ++statHits;
+    else
+      ++statMisses;
   }
   }
 }

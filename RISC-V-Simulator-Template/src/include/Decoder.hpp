@@ -62,12 +62,6 @@ struct DecodeUnit : dark::Module<DecodeInput, IQOutput, IQInner> {
     return ((static_cast<uint32_t>(tail) + 1) & (IQ_CAP - 1)) ==
            static_cast<uint32_t>(head);
   }
-  uint8_t getHead() const {
-    return static_cast<uint8_t>(static_cast<uint32_t>(head));
-  }
-  uint8_t getTail() const {
-    return static_cast<uint8_t>(static_cast<uint32_t>(tail));
-  }
   RISC_V headType() const {
     return static_cast<RISC_V>(
         static_cast<uint32_t>(entries[static_cast<uint32_t>(head)].type));

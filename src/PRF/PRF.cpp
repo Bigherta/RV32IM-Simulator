@@ -137,7 +137,6 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
   if (!input.ROBModule.isHeadHalt() &&
       (input.ROBModule.headType() == ROBType::REGISTER ||
        input.ROBModule.headType() == ROBType::LINK)) {
-    int newPhy = input.ROBModule.getNewPhy(headIdx);
     int oldPhy = input.ROBModule.getOldPhy(headIdx);
     if (oldPhy != InvalidPhy)
       CPUstate.PRFModule.push(oldPhy);

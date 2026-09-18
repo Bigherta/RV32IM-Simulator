@@ -1,8 +1,7 @@
 #include "../include/AGU.hpp"
 #include "../include/CPU.hpp"
 #include <cstdint>
-void AGU::push(int32_t op1, int32_t op2, Operation op, RobTag robTag,
-               uint8_t memIndex) {
+void AGU::push(int32_t op1, int32_t op2, RobTag robTag, uint8_t memIndex) {
   int32_t value;
   value = op1 + op2;
   AddressCalculateResult result{value, robTag, memIndex};
@@ -81,12 +80,12 @@ void AGU::tick(const AGUInput &input, systemState &CPUstate) {
       auto &rs = input.RSModule.loadRS[input.dispatch.rsIndex];
       CPUstate.AGUModule.push(input.PRFModule.getOperandValue(rs.src1),
                               input.PRFModule.getOperandValue(rs.src2),
-                              rs.op, input.dispatch.robTag, rs.memIndex);
+                              input.dispatch.robTag, rs.memIndex);
     } else {
       auto &rs = input.RSModule.storeAddressRS[input.dispatch.rsIndex];
       CPUstate.AGUModule.push(input.PRFModule.getOperandValue(rs.src1),
                               input.PRFModule.getOperandValue(rs.src2),
-                              rs.op, input.dispatch.robTag, rs.memIndex);
+                              input.dispatch.robTag, rs.memIndex);
     }
   }
   // AGU remove the first entry every cycle

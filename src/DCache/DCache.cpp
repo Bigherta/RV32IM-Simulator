@@ -16,7 +16,7 @@ void DCache::snapshotFrom(const DCache &other) {
   cacheRequestBuffer = other.cacheRequestBuffer;
 }
 
-uint8_t DCache::AllocateLine(int set_idx, uint32_t tag) const {
+uint8_t DCache::AllocateLine(int set_idx) const {
   int invalidIndex = -1;
   for (int i = 0; i < (int)cacheSets[set_idx].lines.size(); i++) {
     if (!cacheSets[set_idx].lines[i].valid && invalidIndex == -1) {
@@ -57,20 +57,24 @@ bool DCache::PrRd(uint32_t addr, int n_bytes, bool isSigned, int32_t &value) {
     if (hitIndex == 0) plru |= 0x2; else if (hitIndex == 1) plru &= ~0x2;
     else if (hitIndex == 2) plru |= 0x1; else plru &= ~0x1;
     uint32_t rawData = 0;
-    for (int i = 0; i < n_bytes; ++i) {
-      rawData |= cacheSet.lines[hitIndex].datas[(addr & 0xF) + i] << (i << 3);
+    for (int i = 0; i < 4; ++i) {
+      if (i < n_bytes) {
+        rawData |= static_cast<uint32_t>(
+                       cacheSet.lines[hitIndex].datas[(addr & 0xF) + i])
+                   << (i << 3);
+      }
     }
     // sign-extend sub-word signed loads (mask branch identical to
     // DMEM::load_n_bytes): a bare static_cast<int32_t> would leave the
     // high bits zero for n<4 signed reads.
-    if (isSigned && n_bytes < 4 &&
-        (rawData & (1 << ((n_bytes << 3) - 1)))) {
-      rawData |= ~((1 << (n_bytes << 3)) - 1);
-    }
+    if (isSigned && n_bytes == 1 && (rawData & 0x80u))
+      rawData |= 0xFFFFFF00u;
+    else if (isSigned && n_bytes == 2 && (rawData & 0x8000u))
+      rawData |= 0xFFFF0000u;
     value = static_cast<int32_t>(rawData);
     return true;
   } else {
-    auto distributeWay = AllocateLine(set_index, tag);
+    auto distributeWay = AllocateLine(set_index);
     if (!cacheRequestBuffer.valid) {
       cacheRequestBuffer.request.address = addr;
       cacheRequestBuffer.request.isSigned = isSigned;
@@ -81,7 +85,7 @@ bool DCache::PrRd(uint32_t addr, int n_bytes, bool isSigned, int32_t &value) {
     }
     request.readValid = true;
     request.read.address = (addr >> 4) << 4;
-    request.read.remainCycle = 50; // main-memory latency (benchmarks.md)
+    request.read.remainCycle = MEM_LATENCY;
     if (cacheSet.lines[distributeWay].dirty) {
       request.writeValid = true;
       // Victim base address must be rebuilt from the VICTIM line's own tag,
@@ -93,7 +97,7 @@ bool DCache::PrRd(uint32_t addr, int n_bytes, bool isSigned, int32_t &value) {
           << 4;
       std::memcpy(request.write.lineData, cacheSet.lines[distributeWay].datas,
                   DCACHE_BLOCK_CAP);
-      request.write.remainCycle = 50; // write port latency, mirrors read
+      request.write.remainCycle = MEM_LATENCY;
     }
     return false;
   }
@@ -119,7 +123,6 @@ bool DCache::PrWr(uint32_t addr, uint32_t val, int n_bytes) {
       hitIndex = i;
     }
   }
-  int targetIndex;
   if (hit && cacheSet.lines[hitIndex].valid) {
     // tree-PLRU update: 0=left,1=right, invert to root
     uint8_t &plru = cacheSet.plru;
@@ -127,15 +130,15 @@ bool DCache::PrWr(uint32_t addr, uint32_t val, int n_bytes) {
     if (hitIndex == 0) plru |= 0x2; else if (hitIndex == 1) plru &= ~0x2;
     else if (hitIndex == 2) plru |= 0x1; else plru &= ~0x1;
     cacheSet.lines[hitIndex].dirty = true;
-    for (int i = 0; i < n_bytes; ++i) {
-      if (addr + i < MEM_SIZE) {
+    for (int i = 0; i < 4; ++i) {
+      if (i < n_bytes && addr + i < MEM_SIZE) {
         cacheSet.lines[hitIndex].datas[(addr & 0xF) + i] =
             (val >> (i << 3)) & 0xFF;
       }
     }
     return true;
   } else {
-    auto distributeWay = AllocateLine(set_index, tag);
+    auto distributeWay = AllocateLine(set_index);
     if (!cacheRequestBuffer.valid) {
       cacheRequestBuffer.request.address = addr;
       cacheRequestBuffer.request.n_bytes = n_bytes;
@@ -146,7 +149,7 @@ bool DCache::PrWr(uint32_t addr, uint32_t val, int n_bytes) {
     }
     request.readValid = true;
     request.read.address = (addr >> 4) << 4;
-    request.read.remainCycle = 50; // main-memory latency (benchmarks.md)
+    request.read.remainCycle = MEM_LATENCY;
     if (cacheSet.lines[distributeWay].dirty) {
       request.writeValid = true;
       // Victim base address must be rebuilt from the VICTIM line's own tag,
@@ -158,7 +161,7 @@ bool DCache::PrWr(uint32_t addr, uint32_t val, int n_bytes) {
           << 4;
       std::memcpy(request.write.lineData, cacheSet.lines[distributeWay].datas,
                   DCACHE_BLOCK_CAP);
-      request.write.remainCycle = 50; // write port latency, mirrors read
+      request.write.remainCycle = MEM_LATENCY;
     }
     return false;
   }
@@ -265,33 +268,37 @@ void DCache::tick(const DCacheInput &input, systemState &CPUstate) {
       if (cacheRequestBuffer.request.op == Operation::Store) {
         CPUstate.DCacheModule.cacheSets[set_index].lines[targetWay].dirty =
             true;
-        for (int i = 0; i < cacheRequestBuffer.request.n_bytes; ++i) {
-          if (addr + i < MEM_SIZE) {
+        const auto rawValue =
+            static_cast<uint32_t>(cacheRequestBuffer.request.value);
+        for (int i = 0; i < 4; ++i) {
+          if (i < cacheRequestBuffer.request.n_bytes &&
+              addr + i < MEM_SIZE) {
             CPUstate.DCacheModule.cacheSets[set_index]
                 .lines[targetWay]
                 .datas[(addr & 0xF) + i] =
-                (cacheRequestBuffer.request.value >> (i << 3)) & 0xFF;
+                (rawValue >> (i << 3)) & 0xFF;
           }
         }
       } else {
-        int32_t result = 0;
-        for (int i = 0; i < cacheRequestBuffer.request.n_bytes; ++i) {
-          auto byte_data = output.lineData[(addr & 0xF) + i];
-          result |= (byte_data << (i << 3));
-          if (i == cacheRequestBuffer.request.n_bytes - 1 &&
-              cacheRequestBuffer.request.n_bytes < 4 &&
-              cacheRequestBuffer.request.isSigned) {
-            if (result &
-                (1 << ((cacheRequestBuffer.request.n_bytes << 3) - 1))) {
-              auto mask =
-                  ~((1 << (cacheRequestBuffer.request.n_bytes << 3)) - 1);
-              result |= mask;
-            }
+        uint32_t rawData = 0;
+        for (int i = 0; i < 4; ++i) {
+          if (i < cacheRequestBuffer.request.n_bytes) {
+            rawData |= static_cast<uint32_t>(
+                           output.lineData[(addr & 0xF) + i])
+                       << (i << 3);
           }
         }
+        if (cacheRequestBuffer.request.isSigned &&
+            cacheRequestBuffer.request.n_bytes == 1 && (rawData & 0x80u))
+          rawData |= 0xFFFFFF00u;
+        else if (cacheRequestBuffer.request.isSigned &&
+                 cacheRequestBuffer.request.n_bytes == 2 &&
+                 (rawData & 0x8000u))
+          rawData |= 0xFFFF0000u;
         // 写自有纪律：loadBuffer 是 DCache 自己的状态，写活值
         // CPUstate.DCacheModule（tick 开头已默认清空，此处覆盖为有效）。
-        CPUstate.DCacheModule.loadBuffer.value = result;
+        CPUstate.DCacheModule.loadBuffer.value =
+            static_cast<int32_t>(rawData);
         CPUstate.DCacheModule.loadBuffer.memIndex =
             cacheRequestBuffer.request.memIndex;
         CPUstate.DCacheModule.loadBuffer.robTag =

@@ -36,15 +36,11 @@ int ROB::push(ROBEntry entry) {
 
 void ROB::pop() { head = (head + 1) & 0x7F; }
 
-uint8_t ROB::getTag(int index) const { return ROBqueue[index].tag; }
-
 bool ROB::isCommitReadyAt(int index) const {
   return ROBqueue[index].isCommitReady;
 }
 
 ROBType ROB::getType(int index) const { return ROBqueue[index].type; }
-
-int ROB::getDest(int index) const { return ROBqueue[index].dest; }
 
 int32_t ROB::getPC(int index) const { return ROBqueue[index].pc; }
 
@@ -172,11 +168,11 @@ void ROB::tick(const ROBInput &input, systemState &CPUstate) {
   }
   if (isEmpty() || !isHeadCommitReady())
     return;
-  int headIdx = (getHead() & 0x3F);
+  const bool halt = isHeadHalt();
   if (debug::enabled(debug::TOPIC_EXEC))
-    debug::print("rob commit rob=%u halt=%d\n", getHead(), isHeadHalt() ? 1 : 0);
+    debug::print("rob commit rob=%u halt=%d\n", getHead(), halt ? 1 : 0);
   CPUstate.ROBModule.pop();
-  if (isHeadHalt()) {
+  if (halt) {
     CPUstate.ROBModule.haltCommitted = true;
     CPUstate.ROBModule.haltRd = headDest();
   }

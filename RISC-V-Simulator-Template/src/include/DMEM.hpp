@@ -46,9 +46,6 @@ struct DMEMOutput {
 struct DMEM : public Memory, dark::Module<DMEMInput, DMEMOutput, DMEMInner> {
   DMEM() = default;
   DMEM(const Memory &mem) : Memory(mem) {}
-  // Sub-word load, used by the reorder/consistency paths only (the DCache
-  // reads whole lines through the read port).
-  int32_t load_n_bytes(uint32_t address, int n, bool isSigned) const;
   void writeLine(uint32_t addr, const uint8_t *lineData);
   bool isReadBusy() const { return static_cast<bool>(readBusy); }
   bool isWriteBusy() const { return static_cast<bool>(writeBusy); }

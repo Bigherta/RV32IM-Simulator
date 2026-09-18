@@ -77,7 +77,7 @@ Disassembly of section .text:
     10dc:	00878433          	add	s0,a5,s0
     10e0:	00048593          	mv	a1,s1
     10e4:	000aa503          	lw	a0,0(s5)
-    10e8:	140000ef          	jal	ra,1228 <__mulsi3>
+    10e8:	140000ef          	jal	ra,1228 <__si3>
     10ec:	fca42223          	sw	a0,-60(s0)
     10f0:	000aa503          	lw	a0,0(s5)
     10f4:	f0dff0ef          	jal	ra,1000 <printInt>

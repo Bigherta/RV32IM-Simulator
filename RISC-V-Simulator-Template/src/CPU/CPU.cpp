@@ -777,9 +777,6 @@ void CPU::wire() {
   PRFModule.issue.issueCkptId = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.robEntry.ckptId);
   };
-  PRFModule.rob.robHead = [this]() {
-    return static_cast<uint32_t>(ROBModule.headView.head);
-  };
   PRFModule.rob.isRobEmpty = [this]() {
     return static_cast<uint32_t>(ROBModule.headView.isEmpty);
   };
@@ -1190,12 +1187,6 @@ void CPU::wire() {
   DCacheModule.squashTag = [this]() {
     return static_cast<uint32_t>(flushArbiter.SquashTag);
   };
-  DCacheModule.squashPC = [this]() {
-    return static_cast<uint32_t>(flushArbiter.SquashPC);
-  };
-  DCacheModule.squashCkptId = [this]() {
-    return static_cast<uint32_t>(flushArbiter.CkptId);
-  };
   DCacheModule.decisionValid = [this]() {
     return MemArbiterModule.valid ? 1u : 0u;
   };
@@ -1525,9 +1516,6 @@ void CPU::wire() {
   };
   ROBModule.issue.entry.isRet = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.robEntry.isRet);
-  };
-  ROBModule.issue.entry.isIndirect = [this]() {
-    return static_cast<uint32_t>(IssueArbiterModule.robEntry.isIndirect);
   };
   ROBModule.issue.entry.ckptId = [this]() {
     return static_cast<uint32_t>(IssueArbiterModule.robEntry.ckptId);
@@ -1895,6 +1883,13 @@ void CPU::wire() {
 
 void CPU::run(bool shuffle) {
   bool finish = false;
+  // host-only: core IPC freezes on the HALT-marker commit. The marker itself
+  // is not an executed architectural instruction, while its commit cycle is
+  // part of the measured interval.
+  uint64_t retired = 0;
+  uint64_t ipcRetired = 0;
+  uint64_t ipcCycles = 0;
+  bool ipcFrozen = false;
   while (!finish) {
     // Snapshot semantics (mirrors main tree): finish samples the state as of
     // the START of this cycle, not the post-sync state -- the sampling MUST
@@ -1906,10 +1901,27 @@ void CPU::run(bool shuffle) {
     bool s_sqEmpty = SQModule.isEmpty();
     bool s_dmemFree = !DMEMModule.isReadBusy() && !DMEMModule.isWriteBusy();
     bool s_dcacheFree = !DCacheModule.isBusy();
+    const uint32_t headBefore =
+        static_cast<uint32_t>(ROBModule.headView.head);
+    const bool haltBefore = s_halt;
     if (shuffle)
       dcpu.run_once_shuffle();
     else
       dcpu.run_once();
+    const uint32_t headAfter =
+        static_cast<uint32_t>(ROBModule.headView.head);
+    const bool haltAfter = ROBModule.isHaltCommitted();
+    const uint32_t committed = (headAfter - headBefore) & 0x7F;
+    const bool haltCommitted = !haltBefore && haltAfter;
+    assert(!haltCommitted || committed != 0);
+    if (!ipcFrozen) {
+      retired += committed - static_cast<uint32_t>(haltCommitted);
+      if (haltCommitted) {
+        ipcRetired = retired;
+        ipcCycles = dcpu.cycles;
+        ipcFrozen = true;
+      }
+    }
     // Halt drain (mirrors main tree): stop only after every committed store
     // has left the SQ and reached the DCache (SQ empty), and after any
     // in-flight cache refill/writeback finished (DCache idle + DMEM both
@@ -1921,18 +1933,34 @@ void CPU::run(bool shuffle) {
   // host-only: the three debug::print blocks below are end-of-run reports for
   // the human (double percentage math + stdio formatting). They are not part
   // of the modelled datapath, which is why `*` and `/` are legal here.
-  if (debug::enabled(debug::TOPIC_DCACHE))
+  if (debug::enabled(debug::TOPIC_ICACHE)) {
+    uint64_t ih = ICacheModule.statHits;
+    uint64_t im = ICacheModule.statMisses;
+    uint64_t it = ih + im;
+    debug::print("icache: hits=%llu misses=%llu total=%llu hit-rate=%.2f%%\n",
+                 ih, im, it,
+                 it ? 100.0 * static_cast<double>(ih) /
+                          static_cast<double>(it)
+                    : 0.0);
+    uint64_t dh = DCacheModule.statHits;
+    uint64_t dm = DCacheModule.statMisses;
+    uint64_t dt = dh + dm;
     debug::print("dcache: hits=%llu misses=%llu total=%llu hit-rate=%.2f%% "
                  "writebacks=%llu\n",
-                 DCacheModule.statHits, DCacheModule.statMisses,
-                 DCacheModule.statHits + DCacheModule.statMisses,
-                 (DCacheModule.statHits + DCacheModule.statMisses)
-                     ? 100.0 * DCacheModule.statHits /
-                           (DCacheModule.statHits + DCacheModule.statMisses)
-                     : 0.0,
+                 dh, dm, dt,
+                 dt ? 100.0 * static_cast<double>(dh) /
+                          static_cast<double>(dt)
+                    : 0.0,
                  DCacheModule.statWritebacks);
-  if (debug::enabled(debug::TOPIC_CLOCK))
+  }
+  if (debug::enabled(debug::TOPIC_CLOCK)) {
     debug::print("clock: %llu\n", dcpu.cycles);
+    debug::print("ipc: %.6f retired=%llu cycles=%llu\n",
+                 ipcCycles ? static_cast<double>(ipcRetired) /
+                                 static_cast<double>(ipcCycles)
+                           : 0.0,
+                 ipcRetired, ipcCycles);
+  }
   if (debug::enabled(debug::TOPIC_BRANCH))
     debug::print("branch: %llu/%llu correct (%.2f%%)\n",
                  BPUModule.getBranchCorrect(), BPUModule.getBranchTotal(),

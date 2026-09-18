@@ -146,7 +146,6 @@ struct RSInput {
   RSInputSquash squash;
   RSInputPRF prf;
 };
-struct RSOutput { Wire<1> _unused; };
 struct RSInner {
   std::array<IntRS, INTEGERRS_CAP> integerRS;
   std::array<LoadRS, LOADRS_CAP> loadRS;
@@ -163,16 +162,9 @@ struct RSInner {
 static_assert(MULTIPLYRS_CAP == 4, "multiply slot scans are fixed-length");
 static_assert(DIVIDERS_CAP == 4, "divide slot scans are fixed-length");
 
-struct RSUnit : public dark::Module<RSInput, RSOutput, RSInner> {
+struct RSUnit
+    : public dark::Module<RSInput, dark::details::empty_class, RSInner> {
 public:
-  // free-slot priority scans (bridge accessors over committed state; called
-  // by the unconverted IssueArbiter in comb)
-  int tryAllocInteger() const;
-  int tryAllocLoad() const;
-  int tryAllocStoreAddress() const;
-  int tryAllocStoreValue() const;
-  int tryAllocBranch() const;
-  int tryAllocDivide() const;
   // field bridge accessors (Register is non-copyable: consumers read fields,
   // never whole entries)
   bool isIntFree(int i) const {

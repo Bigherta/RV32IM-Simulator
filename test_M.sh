@@ -11,14 +11,14 @@
 #
 # Per case/arm it reports -- the same set of columns as docs/benchmarks.md, plus the
 # wall-clock runtime:
-#   Exit | Clock | Time | x10 | Golden
+#   Exit | Clock | IPC Clock | Retired | IPC | Time | x10 | Golden
 #   | Br% | Cond% | Jal% | Jalr%    (branch prediction, four subtypes)
 #   | I$% | D$%                      (L1I / L1D hit rate)
 #   | mul | div                      (static hardware-op count in the .dump)
 #
-# Per-case verdict line: dClock(M/I)%, I/M speedup, both runtimes, both brAcc,
-# and cross-arm x10 agreement. TOTAL line sums clock + runtime over all cases
-# and reports the weighted branch accuracy of each arm (total correct/total).
+# Per-case verdict line: dClock(M/I)%, I/M speedup, both IPCs/runtimes/brAcc,
+# and cross-arm x10 agreement. TOTAL lines sum clocks, retired instructions,
+# runtime, and report weighted IPC/branch accuracy for each arm.
 #
 # NOTE on branch accuracy: the cond/jal/jalr/branch percentages describe THIS arm's own
 #   control flow. The two arms compile to different code (software routines add many extra
@@ -117,7 +117,7 @@ pct() {
 }
 
 # Prints: "<exit> <bc> <bt> <brate> <cond_c> <cond_t> <jal_c> <jal_t> <jalr_c> <jalr_t>
-#          <clock> <icache%> <dcache%> <result>"
+#          <clock> <ipc-clock> <retired> <ipc> <icache%> <dcache%> <result>"
 run_arm() {
   local data=$1
   local stderr_out code=0 result
@@ -130,9 +130,10 @@ run_arm() {
   set -e
   result=$(tr -d '\r' < "$STDOUT_TMP" 2>/dev/null || echo "")
 
-  local branch_line clock_line type_line ic_line dc_line
+  local branch_line clock_line ipc_line type_line ic_line dc_line
   branch_line=$(echo "$stderr_out" | grep "^branch:" || echo "branch: 0/0 correct (0.00%)")
   clock_line=$(echo "$stderr_out" | grep "^clock:" || echo "clock: 0")
+  ipc_line=$(echo "$stderr_out" | grep "^ipc:" || echo "ipc: 0.000000 retired=0 cycles=0")
   type_line=$(echo "$stderr_out" | grep "^branch-type:" || echo "")
   ic_line=$(echo "$stderr_out" | grep "^icache:" || echo "hit-rate=0%")
   dc_line=$(echo "$stderr_out" | grep "^dcache:" || echo "hit-rate=0%")
@@ -151,9 +152,12 @@ run_arm() {
 
   echo "$code $(echo "$branch_line" | awk '{print $2}' | cut -d/ -f1) \
 $(echo "$branch_line" | awk '{print $2}' | cut -d/ -f2) \
-$(echo "$branch_line" | awk '{print $4}' | tr -d '()%') \
-${cond_c:-0} ${cond_t:-0} ${jal_c:-0} ${jal_t:-0} ${jalr_c:-0} ${jalr_t:-0} \
-$(echo "$clock_line" | awk '{print $2}') ${ic:-0} ${dc:-0} $result"
+ $(echo "$branch_line" | awk '{print $4}' | tr -d '()%') \
+ ${cond_c:-0} ${cond_t:-0} ${jal_c:-0} ${jal_t:-0} ${jalr_c:-0} ${jalr_t:-0} \
+ $(echo "$clock_line" | awk '{print $2}') \
+ $(echo "$ipc_line" | awk '{print $4}' | cut -d= -f2) \
+ $(echo "$ipc_line" | awk '{print $3}' | cut -d= -f2) \
+ $(echo "$ipc_line" | awk '{print $2}') ${ic:-0} ${dc:-0} $result"
 }
 
 # ---------------------------------------------------------------- case list ----
@@ -179,16 +183,20 @@ if [ -n "$pi_case" ] && [ "$QUICK" != "1" ]; then
 fi
 
 # -------------------------------------------------------------------- report ---
-printf "%-15s | %-3s | %-4s | %11s | %7s | %6s | %-6s | %-7s | %-7s | %-7s | %-7s | %-6s | %-6s | %3s | %3s\n" \
-  "Case" "Arm" "Exit" "Clock" "Time" "x10" "Golden" "Br%" "Cond%" "Jal%" "Jalr%" "I$%" "D$%" "mul" "div"
-printf "%-15s-+-%-3s-+-%-4s-+-%11s-+-%7s-+-%6s-+-%-6s-+-%-7s-+-%-7s-+-%-7s-+-%-7s-+-%-6s-+-%-6s-+-%3s-+-%3s\n" \
-  "---------------" "---" "----" "-----------" "-------" "------" "------" "-------" \
+printf "%-15s | %-3s | %-4s | %11s | %11s | %11s | %8s | %7s | %6s | %-6s | %-7s | %-7s | %-7s | %-7s | %-6s | %-6s | %3s | %3s\n" \
+  "Case" "Arm" "Exit" "Clock" "IPC Clock" "Retired" "IPC" "Time" "x10" "Golden" "Br%" "Cond%" "Jal%" "Jalr%" "I$%" "D$%" "mul" "div"
+printf "%-15s-+-%-3s-+-%-4s-+-%11s-+-%11s-+-%11s-+-%8s-+-%7s-+-%6s-+-%-6s-+-%-7s-+-%-7s-+-%-7s-+-%-7s-+-%-6s-+-%-6s-+-%3s-+-%3s\n" \
+  "---------------" "---" "----" "-----------" "-----------" "-----------" "--------" "-------" "------" "------" "-------" \
   "-------" "-------" "-------" "------" "------" "---" "---"
 
 tot_pass=0
 tot_count=0
 tot_m_clock=0
 tot_i_clock=0
+tot_m_ipc_clock=0
+tot_i_ipc_clock=0
+tot_m_retired=0
+tot_i_retired=0
 tot_m_ms=0
 tot_i_ms=0
 tot_m_brc=0; tot_m_brt=0
@@ -205,7 +213,7 @@ for case_name in ${ordered[@]+"${ordered[@]}"}; do
 
     start=$(date +%s%N)
     read -r code correct total rate cond_c cond_t jal_c jal_t jalr_c jalr_t \
-      clock ic_rate dc_rate result <<< "$(run_arm "$data")"
+      clock ipc_clock retired ipc ic_rate dc_rate result <<< "$(run_arm "$data")"
     end=$(date +%s%N)
     # Must use bash integer arithmetic here: date +%s%N yields ~1.8e18, which
     # exceeds awk's 53-bit float mantissa and silently corrupts the difference.
@@ -222,24 +230,28 @@ for case_name in ${ordered[@]+"${ordered[@]}"}; do
 
     if [ "$code" -ne 0 ]; then
       status="CRASH($code)"
+    elif [ "$ipc_clock" -le 0 ]; then
+      status="NO IPC STATS"
     elif [ -n "$golden_x10" ]; then
       if [ "$result" = "$golden_x10" ]; then status="OK"; else status="FAIL"; fi
     else
       status="(no golden)"
     fi
 
-    printf "%-15s | %-3s | %-4s | %11s | %6ss | %6s | %-6s | %-7s | %-7s | %-7s | %-7s | %-6s | %-6s | %3s | %3s\n" \
-      "$case_name" "$arm" "$code" "$clock" "$elapsed" "$result" "$status" \
+    printf "%-15s | %-3s | %-4s | %11s | %11s | %11s | %8s | %6ss | %6s | %-6s | %-7s | %-7s | %-7s | %-7s | %-6s | %-6s | %3s | %3s\n" \
+      "$case_name" "$arm" "$code" "$clock" "$ipc_clock" "$retired" "$ipc" "$elapsed" "$result" "$status" \
       "$br_pct" "$cond_pct" "$jal_pct" "$jalr_pct" "$ic_rate" "$dc_rate" \
       "$(mul_count "$CORPUS/$arm/$case_name.dump")" \
       "$(div_count "$CORPUS/$arm/$case_name.dump")"
 
     if [ "$arm" = "M" ]; then
-      have_m=1; m_clock=$clock; m_x10=$result; m_code=$code; m_br=$br_pct; m_ms=$elapsed_ms
+      have_m=1; m_clock=$clock; m_ipc_clock=$ipc_clock; m_retired=$retired; m_ipc=$ipc
+      m_x10=$result; m_code=$code; m_br=$br_pct; m_ms=$elapsed_ms
       tot_m_brc=$((tot_m_brc + correct)); tot_m_brt=$((tot_m_brt + total))
       if [ "$status" = "OK" ]; then m_ok=1; fi
     else
-      have_i=1; i_clock=$clock; i_x10=$result; i_code=$code; i_br=$br_pct; i_ms=$elapsed_ms
+      have_i=1; i_clock=$clock; i_ipc_clock=$ipc_clock; i_retired=$retired; i_ipc=$ipc
+      i_x10=$result; i_code=$code; i_br=$br_pct; i_ms=$elapsed_ms
       tot_i_brc=$((tot_i_brc + correct)); tot_i_brt=$((tot_i_brt + total))
       if [ "$status" = "OK" ]; then i_ok=1; fi
     fi
@@ -261,10 +273,14 @@ for case_name in ${ordered[@]+"${ordered[@]}"}; do
     fi
     rt_m=$(awk "BEGIN{printf \"%.2f\", $m_ms/1000}")
     rt_i=$(awk "BEGIN{printf \"%.2f\", $i_ms/1000}")
-    printf "  -> %-13s dClock(M/I) = %8s%%   speedup = %7sx   runtime M=%ss I=%ss   brAcc: M=%s%%  I=%s%%   cross-arm x10: %s\n" \
-      "$case_name" "$delta" "$speed" "$rt_m" "$rt_i" "$m_br" "$i_br" "$verdict"
+    printf "  -> %-13s dClock(M/I) = %8s%%   speedup = %7sx   IPC M=%s I=%s   runtime M=%ss I=%ss   brAcc: M=%s%%  I=%s%%   cross-arm x10: %s\n" \
+      "$case_name" "$delta" "$speed" "$m_ipc" "$i_ipc" "$rt_m" "$rt_i" "$m_br" "$i_br" "$verdict"
     tot_m_clock=$((tot_m_clock + m_clock))
     tot_i_clock=$((tot_i_clock + i_clock))
+    tot_m_ipc_clock=$((tot_m_ipc_clock + m_ipc_clock))
+    tot_i_ipc_clock=$((tot_i_ipc_clock + i_ipc_clock))
+    tot_m_retired=$((tot_m_retired + m_retired))
+    tot_i_retired=$((tot_i_retired + i_retired))
     tot_m_ms=$((tot_m_ms + m_ms))
     tot_i_ms=$((tot_i_ms + i_ms))
   else
@@ -289,8 +305,18 @@ if [ "$tot_count" -gt 0 ]; then
   m_brtot=$(pct "$tot_m_brc" "$tot_m_brt")
   i_brtot=$(pct "$tot_i_brc" "$tot_i_brt")
   br_delta=$(awk "BEGIN{printf \"%+.4f\", $m_brtot - $i_brtot}")
+  if [ "$tot_m_ipc_clock" -gt 0 ] && [ "$tot_i_ipc_clock" -gt 0 ]; then
+    m_ipc=$(awk "BEGIN{printf \"%.6f\", $tot_m_retired/$tot_m_ipc_clock}")
+    i_ipc=$(awk "BEGIN{printf \"%.6f\", $tot_i_retired/$tot_i_ipc_clock}")
+  else
+    m_ipc="0.000000"
+    i_ipc="0.000000"
+  fi
   printf "TOTAL: %d/%d cases passed   clock M=%s  I=%s   overall dClock = %s%%   runtime M=%ss  I=%ss\n" \
     "$tot_pass" "$tot_count" "$tot_m_clock" "$tot_i_clock" "$overall" "$rt_m" "$rt_i"
+  printf "TOTAL: IPC M=%s (%s/%s)   I=%s (%s/%s)\n" \
+    "$m_ipc" "$tot_m_retired" "$tot_m_ipc_clock" \
+    "$i_ipc" "$tot_i_retired" "$tot_i_ipc_clock"
   printf "TOTAL: branch M=%s%% (%d/%d)   I=%s%% (%d/%d)   dBr = %s pp\n" \
     "$m_brtot" "$tot_m_brc" "$tot_m_brt" "$i_brtot" "$tot_i_brc" "$tot_i_brt" "$br_delta"
   [ "$tot_pass" -eq "$tot_count" ] || exit 1

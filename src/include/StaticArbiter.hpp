@@ -29,8 +29,7 @@ class DispatchArbiter {
 public:
   static DispatchBus arbitrate(const RSUnit &rs, const ALU &alu, const AGU &agu,
                                const BRU &bru, const MUL &mul, const DIV &div,
-                               const ROB &rob, const PRF &prf,
-                               const SquashInfo &squash);
+                               const PRF &prf, const SquashInfo &squash);
 };
 
 // Named MemArbiter (was MemRequestArbiter) to match the template tree file

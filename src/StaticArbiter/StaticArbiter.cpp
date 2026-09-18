@@ -11,8 +11,7 @@
 DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
                                        const AGU &agu, const BRU &bru,
                                        const MUL &mul, const DIV &div,
-                                       const ROB &rob, const PRF &prf,
-                                       const SquashInfo &squash) {
+                                       const PRF &prf, const SquashInfo &squash) {
   DispatchBus dispatch;
   // ALU channel: oldest operand-ready integerRS entry (I-extension ALU ops).
   if (!alu.isFull()) {
@@ -34,7 +33,6 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
     if (foundAny) {
       dispatch.alu.rsIndex = best;
       dispatch.alu.robTag = bestTag;
-      dispatch.alu.rsType = RSType::Integer;
       dispatch.alu.valid = true;
       if (squash.needSquash && !ROB::isOlder(bestTag, squash.SquashTag))
         dispatch.alu.valid = false;
@@ -62,7 +60,6 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
     if (foundAny) {
       dispatch.mul.rsIndex = best;
       dispatch.mul.robTag = bestTag;
-      dispatch.mul.rsType = RSType::Multiply;
       dispatch.mul.valid = true;
       if (squash.needSquash && !ROB::isOlder(bestTag, squash.SquashTag))
         dispatch.mul.valid = false;
@@ -90,7 +87,6 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
     if (foundAny) {
       dispatch.div.rsIndex = best;
       dispatch.div.robTag = bestTag;
-      dispatch.div.rsType = RSType::Divide;
       dispatch.div.valid = true;
       if (squash.needSquash && !ROB::isOlder(bestTag, squash.SquashTag))
         dispatch.div.valid = false;
@@ -158,7 +154,6 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
     if (foundAny) {
       dispatch.bru.rsIndex = best;
       dispatch.bru.robTag = bestTag;
-      dispatch.bru.rsType = RSType::Branch;
       dispatch.bru.valid = true;
       if (squash.needSquash && !ROB::isOlder(bestTag, squash.SquashTag))
         dispatch.bru.valid = false;
@@ -234,6 +229,9 @@ IssuePacket IssueArbiter::issue_IntegerRS(const IssueArbiterInput &input,
   if (integerSlot < 0) {
     return p;
   }
+  if (inst.allocDest && input.PRFModule.isFreeListEmpty()) {
+    return p;
+  }
   p.valid = true;
   p.hasInteger = true;
   p.integerSlot = integerSlot;
@@ -289,6 +287,9 @@ IssuePacket IssueArbiter::issue_Multiply(const IssueArbiterInput &input,
   if (mulSlot < 0) {
     return p;
   }
+  if (inst.allocDest && input.PRFModule.isFreeListEmpty()) {
+    return p;
+  }
   p.valid = true;
   p.hasMultiply = true;
   p.multiplySlot = mulSlot;
@@ -332,6 +333,9 @@ IssuePacket IssueArbiter::issue_Divide(const IssueArbiterInput &input,
   if (divSlot < 0) {
     return p;
   }
+  if (inst.allocDest && input.PRFModule.isFreeListEmpty()) {
+    return p;
+  }
   p.valid = true;
   p.hasDivide = true;
   p.divideSlot = divSlot;
@@ -370,6 +374,9 @@ IssuePacket IssueArbiter::issue_UandJ(const IssueArbiterInput &input,
   }
   int integerSlot = input.RSModule.tryAllocInteger();
   if (integerSlot < 0) {
+    return p;
+  }
+  if (inst.allocDest && input.PRFModule.isFreeListEmpty()) {
     return p;
   }
   p.valid = true;
@@ -449,6 +456,9 @@ IssuePacket IssueArbiter::issue_Load(const IssueArbiterInput &input,
   }
   int loadSlot = input.RSModule.tryAllocLoad();
   if (loadSlot < 0) {
+    return p;
+  }
+  if (inst.allocDest && input.PRFModule.isFreeListEmpty()) {
     return p;
   }
   p.valid = true;

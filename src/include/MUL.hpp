@@ -59,6 +59,5 @@ public:
   bool isEmpty() const;
   uint32_t headValue() const;
   uint8_t headRobTag() const;
-  bool isValid(int index) const { return slotValid[index]; }
   void tick(const MULInput &, systemState &);
 };

@@ -4,14 +4,12 @@
 #include <cstdint>
 #include <stdexcept>
 
-
 namespace {
 // Plain (non-Register) snapshot of one flush-request slot, used for the
 // single-cycle composition: load committed world -> clear -> 3 ordered
 // inserts -> single write-back (Register single-write discipline).
 struct FlushReqPlain {
   bool valid = false;
-  bool needSquash = false;
   uint32_t squashTag = 0;
   uint32_t squashPC = 0;
   uint32_t ckptId = 0;
@@ -36,12 +34,21 @@ void insertPlain(FlushReqPlain cur[FLUSHARBITER_CAP],
   if (w == FLUSHARBITER_CAP)
     throw std::runtime_error("flush arbiter overload!");
   int pos = 0;
-  while (pos < w && ROB::isOlder(cur[pos].squashTag, request.SquashTag))
-    ++pos;
-  for (int i = FLUSHARBITER_CAP - 1; i > pos; --i)
-    cur[i] = cur[i - 1];
+  bool scanning = true;
+  for (int i = 0; i < FLUSHARBITER_CAP; ++i) {
+    if (!scanning || i >= w)
+      continue;
+    if (ROB::isYounger(request.SquashTag, cur[i].squashTag))
+      ++pos;
+    else
+      scanning = false;
+  }
+  for (int i = FLUSHARBITER_CAP - 1; i > 0; --i)
+    if (i > pos)
+      cur[i] = cur[i - 1];
   cur[pos].valid = true;
-  cur[pos].needSquash = request.needSquash;
+  // request.needSquash is true at all three call sites (each gated on the
+  // local SquashInfo's needSquash); valid==1 implies it, no slot storage.
   cur[pos].squashTag = request.SquashTag;
   cur[pos].squashPC = request.SquashPC;
   cur[pos].ckptId = request.CkptId;
@@ -63,8 +70,8 @@ const FlushRequest *FlushArbiter::selectOldest() const {
 
 void FlushArbiter::wire_output() {
   needSquash = [this]() -> uint32_t {
-    const FlushRequest *win = selectOldest();
-    return win ? (static_cast<bool>(win->needSquash) ? 1u : 0u) : 0u;
+    // valid==1 implies needSquash==1 (see FlushRequest note): a hit means 1.
+    return selectOldest() ? 1u : 0u;
   };
   SquashTag = [this]() -> uint32_t {
     const FlushRequest *win = selectOldest();
@@ -85,7 +92,6 @@ void FlushArbiter::work() {
   FlushReqPlain cur[FLUSHARBITER_CAP];
   for (int i = 0; i < FLUSHARBITER_CAP; ++i) {
     cur[i].valid = static_cast<bool>(requests[i].valid);
-    cur[i].needSquash = static_cast<bool>(requests[i].needSquash);
     cur[i].squashTag = static_cast<uint32_t>(requests[i].SquashTag);
     cur[i].squashPC = static_cast<uint32_t>(requests[i].SquashPC);
     cur[i].ckptId = static_cast<uint32_t>(requests[i].CkptId);
@@ -101,12 +107,14 @@ void FlushArbiter::work() {
 
   // Stage 2-4: detection stages -> ordered inserts.
   if (debug::enabled(debug::TOPIC_BRANCH))
-    debug::print("F2 e=%d tag=%x res=%x pred=%x sqn=%d\n",
-                 static_cast<uint32_t>(bru.isBRUEmpty),
-                 static_cast<uint32_t>(bru.bruHeadRobTag),
-                 static_cast<uint32_t>(bru.bruHeadPCResult),
-                 static_cast<uint32_t>(rob.robPredictPC[static_cast<uint32_t>(bru.bruHeadRobTag) & 0x3F]),
-                 static_cast<bool>(squash.needSquash) ? 1 : 0);
+    debug::print(
+        "F2 e=%d tag=%x res=%x pred=%x sqn=%d\n",
+        static_cast<uint32_t>(bru.isBRUEmpty),
+        static_cast<uint32_t>(bru.bruHeadRobTag),
+        static_cast<uint32_t>(bru.bruHeadPCResult),
+        static_cast<uint32_t>(
+            rob.robPredictPC[static_cast<uint32_t>(bru.bruHeadRobTag) & 0x3F]),
+        static_cast<bool>(squash.needSquash) ? 1 : 0);
   if (bru.isBRUEmpty == 0) {
     SquashInfo BranchSquash;
     auto brRobTag = static_cast<uint32_t>(bru.bruHeadRobTag);
@@ -205,10 +213,9 @@ void FlushArbiter::work() {
     }
   }
 
-  // Stage 5: single write-back, 5 fields x CAP slots, each Register once.
+  // Stage 5: single write-back, 4 fields x CAP slots, each Register once.
   for (int i = 0; i < FLUSHARBITER_CAP; ++i) {
     requests[i].valid <= cur[i].valid;
-    requests[i].needSquash <= cur[i].needSquash;
     requests[i].SquashTag <= cur[i].squashTag;
     requests[i].SquashPC <= cur[i].squashPC;
     requests[i].CkptId <= cur[i].ckptId;

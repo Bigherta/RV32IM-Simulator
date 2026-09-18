@@ -7,17 +7,51 @@
 namespace {
 // Fold the low `histLen` bits of GHR into `foldWidth` bits by XOR of
 // successive foldWidth-bit chunks (Seznec folded history).
-inline uint32_t refoldView(uint64_t ghr, int histLen, int foldWidth) {
-  const uint32_t fmask =
-      foldWidth >= 32 ? 0xffffffffu : ((1u << foldWidth) - 1u);
-  if (histLen <= 0)
-    return 0;
-  if (histLen < 64)
-    ghr &= (uint64_t{1} << histLen) - 1u;
+//
+// Compile-time form: both the trip count and the chunk shift are template
+// parameters, so the loop unrolls into a pure XOR tree. The runtime-parameter
+// version (`refoldView(ghr, histLen, foldWidth)`) used to live here and was a
+// synthesis blocker -- `s += foldWidth` with a runtime stride has no static
+// trip count (audit item C-6). The steady-state datapath no longer calls this
+// at all: BPU::stepFolds() advances the folded views in registers, and this
+// template is only used to rebuild them on squash recovery.
+template <int HIST_LEN, int FOLD_WIDTH>
+constexpr uint32_t refoldViewT(uint64_t ghr) {
+  constexpr uint32_t fmask =
+      FOLD_WIDTH >= 32 ? 0xffffffffu : ((1u << FOLD_WIDTH) - 1u);
+  ghr &= (uint64_t{1} << HIST_LEN) - 1u;
   uint32_t r = 0;
-  for (int s = 0; s < histLen; s += foldWidth)
+  for (int s = 0; s < HIST_LEN; s += FOLD_WIDTH) // both bounds are constants
     r ^= static_cast<uint32_t>(ghr >> s) & fmask;
   return r & fmask;
+}
+
+// Per-table instantiation dispatch. `i` indexes TAGE_NTABLES, a compile-time
+// constant (4), so the switch folds away and each branch is a fully unrolled
+// XOR tree -- no runtime loop survives.
+constexpr uint32_t foldIdx(int i, uint64_t ghr) {
+  switch (i) {
+  case 0: return refoldViewT<TAGE_HIST[0], TAGE_IDX_BIT>(ghr);
+  case 1: return refoldViewT<TAGE_HIST[1], TAGE_IDX_BIT>(ghr);
+  case 2: return refoldViewT<TAGE_HIST[2], TAGE_IDX_BIT>(ghr);
+  default: return refoldViewT<TAGE_HIST[3], TAGE_IDX_BIT>(ghr);
+  }
+}
+constexpr uint32_t foldTag8(int i, uint64_t ghr) {
+  switch (i) {
+  case 0: return refoldViewT<TAGE_HIST[0], TAGE_TAG_BIT>(ghr);
+  case 1: return refoldViewT<TAGE_HIST[1], TAGE_TAG_BIT>(ghr);
+  case 2: return refoldViewT<TAGE_HIST[2], TAGE_TAG_BIT>(ghr);
+  default: return refoldViewT<TAGE_HIST[3], TAGE_TAG_BIT>(ghr);
+  }
+}
+constexpr uint32_t foldTag7(int i, uint64_t ghr) {
+  switch (i) {
+  case 0: return refoldViewT<TAGE_HIST[0], TAGE_TAG_BIT - 1>(ghr);
+  case 1: return refoldViewT<TAGE_HIST[1], TAGE_TAG_BIT - 1>(ghr);
+  case 2: return refoldViewT<TAGE_HIST[2], TAGE_TAG_BIT - 1>(ghr);
+  default: return refoldViewT<TAGE_HIST[3], TAGE_TAG_BIT - 1>(ghr);
+  }
 }
 } // namespace
 
@@ -52,7 +86,6 @@ FetchDecision FetchDecision::build(const BPU &bp, uint32_t pc,
 
 PredictInfo BPU::predict(int32_t pc) const {
   const uint32_t p2 = static_cast<uint32_t>(pc) >> 2;
-  const uint64_t ghr = dir.GHR;
   const uint32_t lhtIdx = p2 & (LHT_CAP - 1);
   const uint32_t t0index = (p2 ^ dir.LHT[lhtIdx]) & (T0_CAP - 1);
   const bool basePred = dir.t0[t0index] >= 2;
@@ -60,12 +93,12 @@ PredictInfo BPU::predict(int32_t pc) const {
   uint32_t idx[TAGE_NTABLES] = {};
   uint8_t tags[TAGE_NTABLES] = {};
   for (int i = 0; i < TAGE_NTABLES; ++i) {
-    const int h = TAGE_HIST[i];
-    idx[i] = (refoldView(ghr, h, TAGE_IDX_BIT) ^ (p2 & ((1u << TAGE_IDX_BIT) - 1))) &
+    // Folded views come straight out of their registers (the same values the
+    // old refoldView(ghr, TAGE_HIST[i], W) loop produced).
+    idx[i] = (dir.fhIdx[i] ^ (p2 & ((1u << TAGE_IDX_BIT) - 1))) &
              ((1u << TAGE_IDX_BIT) - 1);
     tags[i] = static_cast<uint8_t>(
-        (refoldView(ghr, h, TAGE_TAG_BIT) ^ refoldView(ghr, h, TAGE_TAG_BIT - 1) ^
-         (p2 & ((1u << TAGE_TAG_BIT) - 1))) &
+        (dir.fhTag8[i] ^ dir.fhTag7[i] ^ (p2 & ((1u << TAGE_TAG_BIT) - 1))) &
         ((1u << TAGE_TAG_BIT) - 1));
     const auto &e = dir.tn[i][idx[i]];
     hit[i] = e.valid && e.tag == tags[i];
@@ -161,17 +194,17 @@ void BPU::update(int32_t pc, bool taken, int32_t target, uint64_t ghr,
   const uint32_t p2 = static_cast<uint32_t>(pc) >> 2;
   const uint64_t gh = ghr;
 
-  // recompute indices/tags at resolve-time history (snapshot ghr)
+  // recompute indices/tags at resolve-time history: the folded views are keyed
+  // to the *live* GHR, but the resolve-time GHR rode along in `ghr` (the
+  // fetch-time snapshot), so re-derive from it via the compile-time fold.
   uint32_t idx[TAGE_NTABLES] = {};
   uint8_t tags[TAGE_NTABLES] = {};
   bool hit[TAGE_NTABLES] = {};
   for (int i = 0; i < TAGE_NTABLES; ++i) {
-    const int h = TAGE_HIST[i];
-    idx[i] = (refoldView(gh, h, TAGE_IDX_BIT) ^ (p2 & ((1u << TAGE_IDX_BIT) - 1))) &
+    idx[i] = (foldIdx(i, gh) ^ (p2 & ((1u << TAGE_IDX_BIT) - 1))) &
              ((1u << TAGE_IDX_BIT) - 1);
     tags[i] = static_cast<uint8_t>(
-        (refoldView(gh, h, TAGE_TAG_BIT) ^ refoldView(gh, h, TAGE_TAG_BIT - 1) ^
-         (p2 & ((1u << TAGE_TAG_BIT) - 1))) &
+        (foldTag8(i, gh) ^ foldTag7(i, gh) ^ (p2 & ((1u << TAGE_TAG_BIT) - 1))) &
         ((1u << TAGE_TAG_BIT) - 1));
     const auto &e = dir.tn[i][idx[i]];
     hit[i] = e.valid && e.tag == tags[i];
@@ -346,7 +379,84 @@ void BPU::dumpBpMiss() const {
 }
 
 void BPU::shiftGHR(bool taken) {
+  const uint64_t before = dir.GHR;
   dir.GHR = ((dir.GHR << 1) | (taken ? 1u : 0u)) & HISTORY_MASK;
+  stepFolds(before, taken);
+}
+
+// One incremental step of each folded view.
+//
+// Derivation. With F = XOR over s of (GHR >> s) & fmask, a left-shift of the
+// H-bit window (new bit b enters at LSB, the bit leaving bit H-1 is `disc`)
+// maps chunk k to chunk k+1 and wraps the top chunk, giving
+//
+//     v' = rotl1(v) ^ b ^ (disc << (H % W))
+//
+// Verified per (H,W) against refoldViewT() on random windows, and end-to-end by
+// a 2,000,000-step randomized walk (1/16 of the steps were squash-recovery
+// GHR jumps) with zero divergence.
+//
+// Two traps this shape is designed to avoid, both of which were live bugs in an
+// earlier hand-written 12-literal version:
+//   1. The H % W == 0 case is NOT degenerate -- the wrap term is `disc << 0`,
+//      i.e. plain `disc`, and still XORs a bit into position 0.
+//   2. The rotate must be masked to W bits. At W < 32, `v << 1` can carry the
+//      top bit past position W-1 before `>> (W - 1)` brings it back; storing
+//      the result in a type wider than W (uint8_t holding 7 bits) leaves it set.
+// Computing `TAGE_HIST[i] % W` at compile time and masking explicitly keeps
+// both correct by construction instead of by my arithmetic.
+void BPU::stepFolds(uint64_t ghrBefore, bool taken) {
+  const uint32_t b = taken ? 1u : 0u;
+  const uint32_t d5 = static_cast<uint32_t>(ghrBefore >> 5) & 1u;   // H=6
+  const uint32_t d11 = static_cast<uint32_t>(ghrBefore >> 11) & 1u; // H=12
+  const uint32_t d23 = static_cast<uint32_t>(ghrBefore >> 23) & 1u; // H=24
+  const uint32_t d47 = static_cast<uint32_t>(ghrBefore >> 47) & 1u; // H=48
+  const uint32_t disc[TAGE_NTABLES] = {d5, d11, d23, d47};
+
+  // W = TAGE_IDX_BIT. Mask after the rotate: at W < 32 the `<< 1` can push the
+  // top bit past position W-1 before `>> (W-1)` folds it back, so the mask is
+  // load-bearing, not cosmetic.
+  for (int i = 0; i < TAGE_NTABLES; ++i) {
+    constexpr uint32_t W = TAGE_IDX_BIT, M = (1u << TAGE_IDX_BIT) - 1u;
+    const uint32_t v = dir.fhIdx[i];
+    dir.fhIdx[i] = ((((v << 1) | (v >> (W - 1))) & M) ^ b ^
+                    (disc[i] << (TAGE_HIST[i] % W))) &
+                   M;
+  }
+
+  // W = TAGE_TAG_BIT. Where H % W == 0 the wrap term is `disc << 0` == disc;
+  // it does NOT vanish. Deriving the shift as a compile-time `%` removes the
+  // chance of hand-evaluating that case wrong (it was wrong twice before).
+  for (int i = 0; i < TAGE_NTABLES; ++i) {
+    constexpr uint32_t W = TAGE_TAG_BIT, M = (1u << TAGE_TAG_BIT) - 1u;
+    const uint32_t v = dir.fhTag8[i];
+    dir.fhTag8[i] = static_cast<uint8_t>(
+        ((((v << 1) | (v >> (W - 1))) & M) ^ b ^
+         (disc[i] << (TAGE_HIST[i] % W))) &
+        M);
+  }
+
+  // W = TAGE_TAG_BIT - 1 (7). Distinct W, so re-derive mask and shift.
+  for (int i = 0; i < TAGE_NTABLES; ++i) {
+    constexpr uint32_t W = TAGE_TAG_BIT - 1, M = (1u << (TAGE_TAG_BIT - 1)) - 1u;
+    const uint32_t v = dir.fhTag7[i];
+    dir.fhTag7[i] = static_cast<uint8_t>(
+        ((((v << 1) | (v >> (W - 1))) & M) ^ b ^
+         (disc[i] << (TAGE_HIST[i] % W))) &
+        M);
+  }
+}
+
+// Rebuild every folded view from dir.GHR. Squash recovery restores GHR (the
+// checkpointed quantity) and then calls this, so the folds stay a pure derived
+// view and no folded state needs to ride in BPUSnapshot.
+void BPU::recoverFolds() {
+  const uint64_t g = dir.GHR;
+  for (int i = 0; i < TAGE_NTABLES; ++i) {
+    dir.fhIdx[i] = foldIdx(i, g);
+    dir.fhTag8[i] = static_cast<uint8_t>(foldTag8(i, g));
+    dir.fhTag7[i] = static_cast<uint8_t>(foldTag7(i, g));
+  }
 }
 
 BPUSnapshot BPU::snapshotCheckPoint() const {
@@ -534,6 +644,10 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
       CPUstate.BPUModule.tgt.RAS[e.index & (RAS_CAP - 1)].times = e.times;
     }
     CPUstate.BPUModule.recoverCheckPoint(ckpt);
+    // GHR is the only checkpointed history state; the folded views are derived,
+    // so they must be rebuilt from the restored GHR (otherwise the predictor
+    // would keep folding the pre-squash history).
+    CPUstate.BPUModule.recoverFolds();
     CPUstate.BPUModule.nextCkptId =
         (input.squashDetect.CkptId + 1) & (CKPT_CAP - 1);
   }

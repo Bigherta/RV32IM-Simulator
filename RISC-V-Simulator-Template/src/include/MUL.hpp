@@ -43,6 +43,5 @@ struct MUL : dark::Module<MulInput, MulOutput, MulInner> {
   bool isEmpty() const;
   int32_t headValue() const;
   uint8_t headRobTag() const;
-  bool isValid(int index) const { return static_cast<bool>(slotValid[index]); }
   void work() override;
 };

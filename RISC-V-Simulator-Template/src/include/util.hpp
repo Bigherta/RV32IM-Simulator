@@ -19,7 +19,11 @@ enum Topic : unsigned {
   TOPIC_PRF = 1u << 8,
   TOPIC_MDP = 1u << 9,
   TOPIC_BPMISS = 1u << 10,
-  TOPIC_DCACHE = 1u << 11,
+  // Cache-profile dump. Named TOPIC_ICACHE to match the main tree's debug
+  // facade: the block reports BOTH the ICache and the DCache, so the two trees
+  // must answer to the same VERBOSE token. Both "icache" and the historical
+  // "dcache" spelling are accepted below (see parseVerbose).
+  TOPIC_ICACHE = 1u << 11,
   TOPIC_ALL = 0xFFFFFFFFu,
 };
 
@@ -55,8 +59,10 @@ static unsigned parseVerbose(const char *env) {
       mask |= TOPIC_MDP;
     else if (len == 6 && strncmp(p, "bpmiss", 6) == 0)
       mask |= TOPIC_BPMISS;
+    else if (len == 6 && strncmp(p, "icache", 6) == 0)
+      mask |= TOPIC_ICACHE;
     else if (len == 6 && strncmp(p, "dcache", 6) == 0)
-      mask |= TOPIC_DCACHE;
+      mask |= TOPIC_ICACHE; // legacy spelling, same cache-profile dump
     if (end == nullptr)
       break;
     p = end + 1;

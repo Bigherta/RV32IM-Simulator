@@ -1,0 +1,81 @@
+
+data/testcases_ipc/build/median.elf:     file format elf32-littleriscv
+
+
+Disassembly of section .text.start:
+
+00000000 <_start>:
+   0:	00020137          	lui	x2,0x20
+   4:	7fd000ef          	jal	x1,1000 <main>
+   8:	0ff00513          	addi	x10,x0,255
+   c:	000306b7          	lui	x13,0x30
+  10:	00a68223          	sb	x10,4(x13) # 30004 <verify_data+0x2e8cc>
+  14:	ff9ff06f          	jal	x0,c <_start+0xc>
+
+Disassembly of section .text:
+
+00001000 <main>:
+    1000:	9b010113          	addi	x2,x2,-1616 # 1f9b0 <verify_data+0x1e278>
+    1004:	00000597          	auipc	x11,0x0
+    1008:	0f458593          	addi	x11,x11,244 # 10f8 <input_data>
+    100c:	19000513          	addi	x10,x0,400
+    1010:	00010613          	addi	x12,x2,0
+    1014:	64112623          	sw	x1,1612(x2)
+    1018:	00000097          	auipc	x1,0x0
+    101c:	050080e7          	jalr	x1,80(x1) # 1068 <median>
+    1020:	00010793          	addi	x15,x2,0
+    1024:	00000717          	auipc	x14,0x0
+    1028:	71470713          	addi	x14,x14,1812 # 1738 <verify_data>
+    102c:	00000513          	addi	x10,x0,0
+    1030:	19000593          	addi	x11,x0,400
+    1034:	00c0006f          	jal	x0,1040 <main+0x40>
+    1038:	00470713          	addi	x14,x14,4
+    103c:	02b50263          	beq	x10,x11,1060 <main+0x60>
+    1040:	0007a603          	lw	x12,0(x15)
+    1044:	00072683          	lw	x13,0(x14)
+    1048:	00150513          	addi	x10,x10,1
+    104c:	00478793          	addi	x15,x15,4
+    1050:	fed604e3          	beq	x12,x13,1038 <main+0x38>
+    1054:	64c12083          	lw	x1,1612(x2)
+    1058:	65010113          	addi	x2,x2,1616
+    105c:	00008067          	jalr	x0,0(x1)
+    1060:	00000513          	addi	x10,x0,0
+    1064:	ff1ff06f          	jal	x0,1054 <main+0x54>
+
+00001068 <median>:
+    1068:	00251793          	slli	x15,x10,0x2
+    106c:	ffc78793          	addi	x15,x15,-4
+    1070:	00f60733          	add	x14,x12,x15
+    1074:	00062023          	sw	x0,0(x12)
+    1078:	00072023          	sw	x0,0(x14)
+    107c:	00200713          	addi	x14,x0,2
+    1080:	02a75e63          	bge	x14,x10,10bc <median+0x54>
+    1084:	00b78533          	add	x10,x15,x11
+    1088:	00460613          	addi	x12,x12,4
+    108c:	ffc50513          	addi	x10,x10,-4
+    1090:	0045a783          	lw	x15,4(x11)
+    1094:	0005a703          	lw	x14,0(x11)
+    1098:	0085a683          	lw	x13,8(x11)
+    109c:	02f75263          	bge	x14,x15,10c0 <median+0x58>
+    10a0:	00d7c663          	blt	x15,x13,10ac <median+0x44>
+    10a4:	00070793          	addi	x15,x14,0
+    10a8:	02d74063          	blt	x14,x13,10c8 <median+0x60>
+    10ac:	00f62023          	sw	x15,0(x12)
+    10b0:	00458593          	addi	x11,x11,4
+    10b4:	00460613          	addi	x12,x12,4
+    10b8:	fca59ce3          	bne	x11,x10,1090 <median+0x28>
+    10bc:	00008067          	jalr	x0,0(x1)
+    10c0:	02d74063          	blt	x14,x13,10e0 <median+0x78>
+    10c4:	fed7d4e3          	bge	x15,x13,10ac <median+0x44>
+    10c8:	00068793          	addi	x15,x13,0
+    10cc:	00f62023          	sw	x15,0(x12)
+    10d0:	00458593          	addi	x11,x11,4
+    10d4:	00460613          	addi	x12,x12,4
+    10d8:	faa59ce3          	bne	x11,x10,1090 <median+0x28>
+    10dc:	00008067          	jalr	x0,0(x1)
+    10e0:	00070793          	addi	x15,x14,0
+    10e4:	00f62023          	sw	x15,0(x12)
+    10e8:	00458593          	addi	x11,x11,4
+    10ec:	00460613          	addi	x12,x12,4
+    10f0:	faa590e3          	bne	x11,x10,1090 <median+0x28>
+    10f4:	00008067          	jalr	x0,0(x1)

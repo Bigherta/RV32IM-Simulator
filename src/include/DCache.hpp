@@ -23,7 +23,6 @@ struct CacheSet {
   uint8_t plru = 0; // tree-PLRU: b2=root, b1=left, b0=right; 0=left,1=right
 };
 struct DCacheInput {
-  SquashInfo squashDetect;
   MemDispatchDecision decision;
   // Snapshot reference to the downstream memory: the DCache observes DMEM's
   // completion through the comb-refreshed snapshot (order-independent under
@@ -75,7 +74,7 @@ public:
     }
     return resp;
   }
-  uint8_t AllocateLine(int set_idx, uint32_t tag)
+  uint8_t AllocateLine(int set_idx)
       const; // distribute the line without modifying anything
   void tick(const DCacheInput &, systemState &);
   void snapshotFrom(const DCache &other);

@@ -54,7 +54,6 @@ struct systemState {
 class CPU {
 private:
   systemState CPUstate;
-  IMEM InstructMem;
   RSUnit RSModule;
   RAT RATModule;
   ROB ROBModule;
@@ -89,19 +88,17 @@ private:
   ALUInput aluInput{RSModule, PRFModule};
   MULInput mulInput{RSModule, PRFModule};
   DIVInput divInput{RSModule, PRFModule};
-  BRUInput bruInput{ROBModule, RSModule, PRFModule};
+  BRUInput bruInput{RSModule, PRFModule};
   BPUInput bpuInput{BRUModule, ROBModule};
   DMEMInput dmemInput{};
   DCacheInput dcacheInput{DMEMModule};
   DecodeInput decodeInput{FQModule, issuePacket};
-  LQInput lqInput{AGUModule, RSModule, ROBModule, DMEMModule, SQModule,
-                   issuePacket};
-  SQInput sqInput{AGUModule, RSModule, PRFModule, ROBModule, DMEMModule,
-                   LQModule, issuePacket};
+  LQInput lqInput{AGUModule, ROBModule, SQModule, issuePacket};
+  SQInput sqInput{AGUModule, RSModule, PRFModule, ROBModule, issuePacket};
   RSInput rsInput{issuePacket, PRFModule};
   ROBInput robInput{BRUModule, SQModule, issuePacket};
   PRFInput prfInput{ROBModule, issuePacket};
-  RATInput ratInput{ROBModule, issuePacket};
+  RATInput ratInput{issuePacket};
   FlushArbiterInput flarbInput{BRUModule, ROBModule, AGUModule, LQModule};
   IssueArbiterInput isarbInput{DecodeUnitModule, ROBModule, RSModule,
                                 RATModule,        PRFModule, LQModule,

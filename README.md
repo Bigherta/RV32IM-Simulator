@@ -185,8 +185,9 @@ RISC-V-Tomasulo-CPU-Simulator/
 ├── README.md                         # 本文档（总览 + 子系统精简简介）
 ├── issue.pdf                         # 题目与评测说明（ISA 约束 / 口径 / 数据来源）
 ├── AGENTS.md                         # 开发账本：架构决策 / 模块归属 / 验证流程
-├── test.sh                           # 行为回归脚本（x10 vs docs/benchmarks.md + 分支/时钟统计）
-├── test_M.sh                         # RV32M 双臂 A/B（M vs I：clock / 运行时间 / 分支 / 收益）
+├── test.sh                           # 课程语料行为回归（x10 / 分支 / clock / retired / IPC）
+├── test_M.sh                         # RV32M 双臂 A/B（M vs I：clock / IPC / 分支 / 收益）
+├── test_IPC.sh                       # RV32IM IPC 语料回归并生成 docs/ipc_benchmarks.md
 ├── code                              # 构建产物：Release 可执行（WSL/Linux ELF）
 │
 ├── src/                              # 模拟器源码（comb()/tick() 逐周期快照双缓冲）
@@ -242,11 +243,13 @@ RISC-V-Tomasulo-CPU-Simulator/
 │   ├── testcases_rv32im/            # RV32M 扩展 A/B 双臂语料（M = rv32im 硬乘+硬除 / I = rv32i + libdiv.S 软乘软除）
 │   │   ├── M/                       # 18 用例：rv32im 重编译（硬件 mul/div/rem 内联，链接行去 libdiv.S）
 │   │   └── I/                       # 同用例 rv32i + libdiv.S（软乘 __mulsi3 / 软除 libdiv.S）对照臂
+│   ├── testcases_ipc/               # RV32IM IPC 基准（median/multiply/qsort/rsort/towers/vvadd）
 │
 ├── test/                            # （2026-09-10 整体清理删除；reorder_test / mul_unit_test 等均已移除）
 │
 ├── docs/                            # 设计文档（子系统详析，见 §2.3）
 │   ├── benchmarks.md                # 逐用例实测 + 行为回归 golden 数据源（x10 / clock / 命中率 / 准确率）
+│   ├── ipc_benchmarks.md            # test_IPC.sh 生成的 RV32IM IPC 基准结果
 │   ├── frontend.md                  # 前端：取指 / 预译码 / 译码 / 分支预测
 │   ├── backend.md                   # 后端：发射 / 乱序执行 / 写回 / 提交 / squash 恢复
 │   ├── memory.md                    # 访存：LQ/SQ / 转发 / MDP / 请求准入
@@ -258,7 +261,7 @@ RISC-V-Tomasulo-CPU-Simulator/
 ├── RISC-V-Simulator-Template/       # RTL 化重建线（Register/Wire 模块框架，见 §8）
 │   ├── include/  src/  test/        # 模板头 + 逐模块重写的可综合风格模型
 │   ├── data/  docs/  AGENTS.md
-│   └── CMakeLists.txt  test.sh
+│   └── CMakeLists.txt  test.sh  test_M.sh  test_IPC.sh
 └── build/                           # 构建缓存目录（cmake 产物）
 ```
 
@@ -343,8 +346,8 @@ VERBOSE=branch,clock ./code < data/testcases/gcd.data   # 统计走 stderr
 
 `VERBOSE`（stderr，逗号分隔）主题：`issue` `exec` `wb` `commit` `lsq` `mem`
 `clock` `branch` `prf` `mdp` `bpmiss` `icache` `cdb`，或 `all`。`branch` 输出
-正确/总数与准确率，`clock` 输出总时钟，`icache`/`cdb`/`bpmiss` 输出命中率、
-总线争用等概要。
+正确/总数与准确率；`clock` 输出端到端总时钟、HALT 提交时冻结的 IPC 时钟、
+实际退休指令数与 IPC；`icache`/`cdb`/`bpmiss` 输出命中率、总线争用等概要。
 
 ---
 
@@ -353,8 +356,8 @@ VERBOSE=branch,clock ./code < data/testcases/gcd.data   # 统计走 stderr
 > 各基准的逐项实测数据已外置到 [`docs/benchmarks.md`](docs/benchmarks.md)，
 > 不再在本表重复维护。数据口径与文档一致：**主存延迟固定 50 周期、L1 命中
 > 零延迟、8 KB 指令缓存 + 64 KB 数据缓存（写回 + 写分配）**；每个用例记录
-> cycles、按控制流类型拆分的预测准确率（cond / jal / jalr / branch）以及
-> I$/D$ 命中率。行为回归（退出码 / x10 对照本表 / 崩溃检测）仍由
+> cycles、retired/IPC、按控制流类型拆分的预测准确率（cond / jal / jalr / branch）
+> 以及 I$/D$ 命中率。行为回归（退出码 / x10 对照本表 / 崩溃检测）仍由
 > [`./test.sh`](#6-验证与回归) 执行。
 
 要点（详见 `docs/benchmarks.md` 表注）：
@@ -368,15 +371,17 @@ VERBOSE=branch,clock ./code < data/testcases/gcd.data   # 统计走 stderr
 
 ## 6. 验证与回归
 
-验证分两层：**行为回归**（x10/分支/clock，基准见 `docs/benchmarks.md`）、
-**扩展双臂 A/B**（rv32im 重编译管线，见 §6.4）。原"重排一致性"（`reorder_test`）
+验证分三层：**行为回归**（x10/分支/clock/IPC，基准见 `docs/benchmarks.md`）、
+**扩展双臂 A/B**（rv32im 重编译管线，见 §6.4）、**IPC 语料回归**（见 §6.7）。
+三个入口分别为 `test.sh`、`test_M.sh`、`test_IPC.sh`；模板树内提供同名脚本，默认运行模板
+自己的 `code` 和 `data/`，同时复用仓库根 `docs/` 中的 golden/报告。原"重排一致性"（`reorder_test`）
 与"MUL 单元直驱自测"两节已随 2026-09-10 `test/` 清理退役（保留于 §6.2/§6.3 作历史）。
 
 ### 6.1 行为回归 — `test.sh`
 
 以 `data/testcases/*.data` 为输入运行 `./code`，校验退出码（崩溃检测）与
-`x10&0xFF`（对照 `docs/benchmarks.md` 的 `result` 列），汇总分支正确率与总时钟；
-任一 FAIL/CRASH 非 0 退出（pi 排最后）。
+`x10&0xFF`（对照 `docs/benchmarks.md` 的 `result` 列），汇总分支正确率、总时钟、
+IPC 时钟、退休指令数与加权 IPC；任一 FAIL/CRASH 或 IPC 统计缺失均非 0 退出（pi 排最后）。
 
 ```bash
 ./test.sh                 # 全量
@@ -420,7 +425,7 @@ QUICK=1 ./test_M.sh         # 跳过 pi
 BP_BIN=/path/to/code ./test_M.sh   # 指定模拟器二进制（默认 ./code）
 ```
 
-脚本逐例打印 `Exit / Clock / Time / x10 / Golden / Br% / Cond% / Jal% / Jalr% / I$% / D$% / mul / div`
+脚本逐例打印 `Exit / Clock / IPC Clock / Retired / IPC / Time / x10 / Golden / Br% / Cond% / Jal% / Jalr% / I$% / D$% / mul / div`
 （分支四项分型口径与 `docs/benchmarks.md` 一致），并汇总：
 
 | 检查项 | 说明 |
@@ -429,7 +434,7 @@ BP_BIN=/path/to/code ./test_M.sh   # 指定模拟器二进制（默认 ./code）
 | 跨臂一致性 | 同语义两套乘/除实现，M/I 结果不同必是 bug |
 | 崩溃检测 | 退出码非 0 记 `CRASH` |
 | 收益 | `Δclock(M/I)%`、speedup 与两臂**实际运行时间**，附 `.dump` 静态 `mul`/`div` 条数 |
-| TOTAL 汇总 | 两臂总 clock、总实际运行时间、**加权分支正确率**（`Σcorrect/Σtotal`）及跨臂差 |
+| TOTAL 汇总 | 两臂总 clock、加权 IPC（`Σretired/Σipc-cycles`）、总实际运行时间、**加权分支正确率**（`Σcorrect/Σtotal`）及跨臂差 |
 
 实测 **18/18 跨臂 x10 一致**；逐用例明细、总时钟、总分支正确率与收益见
 [`docs/benchmarks.md`](docs/benchmarks.md) 的 `## RV32M A/B`。
@@ -492,6 +497,25 @@ rv32i 镜像口径，自制镜像不可比）。
 > （如 `gcd` 的 M 臂仅 7 次分支、I 臂 125 次），差值反映**代码差异**而非预测器退化。
 > 预测器回归判据仍是「同一镜像跨模拟器版本」对 `docs/benchmarks.md` 主表四列
 > （2026-09-12 复核：18/18 逐列零漂移）。
+
+### 6.7 RV32IM IPC 语料 — `test_IPC.sh`
+
+脚本遍历 `data/testcases_ipc/*/*.data`，逐例检查模拟器退出码以及 x10、clock、IPC
+输出格式，并将结果原子写入 `docs/ipc_benchmarks.md`。该语料当前包含
+`median`、`multiply`、`qsort`、`rsort`、`towers`、`vvadd` 六个 RV32IM 基准。
+
+```bash
+./test_IPC.sh                         # 使用根目录 ./code，运行全部 IPC 基准并更新报告
+BP_BIN=/path/to/code ./test_IPC.sh   # 指定待测模拟器二进制
+
+cd RISC-V-Simulator-Template
+./test.sh gcd                         # 模板树课程语料单例
+QUICK=1 ./test_M.sh                   # 模板树 RV32M 双臂，跳过 pi
+./test_IPC.sh                         # 模板树 IPC 语料，报告仍写到根 docs/
+```
+
+`test_IPC.sh` 不读取 golden；它验证统计行完整性并记录当前实现的结果。行为正确性仍由
+`test.sh` 的 `docs/benchmarks.md` 对照和 `test_M.sh` 的 M/I 跨臂一致性负责。
 
 
 ## 7. 参考资料

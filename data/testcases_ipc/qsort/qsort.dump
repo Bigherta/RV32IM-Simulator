@@ -1,0 +1,143 @@
+
+data/testcases_ipc/build/qsort.elf:     file format elf32-littleriscv
+
+
+Disassembly of section .text.start:
+
+00000000 <_start>:
+   0:	00020137          	lui	x2,0x20
+   4:	180010ef          	jal	x1,1184 <main>
+   8:	0ff00513          	addi	x10,x0,255
+   c:	000306b7          	lui	x13,0x30
+  10:	00a68223          	sb	x10,4(x13) # 30004 <input_data+0x2ce14>
+  14:	ff9ff06f          	jal	x0,c <_start+0xc>
+
+Disassembly of section .text:
+
+00001000 <sort>:
+    1000:	f3010113          	addi	x2,x2,-208 # 1ff30 <input_data+0x1cd40>
+    1004:	00251513          	slli	x10,x10,0x2
+    1008:	00810f13          	addi	x30,x2,8
+    100c:	40000fb7          	lui	x31,0x40000
+    1010:	00058e93          	addi	x29,x11,0
+    1014:	00a588b3          	add	x17,x11,x10
+    1018:	000f0313          	addi	x6,x30,0
+    101c:	00458593          	addi	x11,x11,4
+    1020:	02400e13          	addi	x28,x0,36
+    1024:	ffff8f93          	addi	x31,x31,-1 # 3fffffff <input_data+0x3fffce0f>
+    1028:	40b887b3          	sub	x15,x17,x11
+    102c:	04fe4863          	blt	x28,x15,107c <sort+0x7c>
+    1030:	ffc58613          	addi	x12,x11,-4
+    1034:	0315f863          	bgeu	x11,x17,1064 <sort+0x64>
+    1038:	0005a683          	lw	x13,0(x11)
+    103c:	00058793          	addi	x15,x11,0
+    1040:	0100006f          	jal	x0,1050 <sort+0x50>
+    1044:	00e7a023          	sw	x14,0(x15)
+    1048:	ffc78793          	addi	x15,x15,-4
+    104c:	00f60663          	beq	x12,x15,1058 <sort+0x58>
+    1050:	ffc7a703          	lw	x14,-4(x15)
+    1054:	fee6c8e3          	blt	x13,x14,1044 <sort+0x44>
+    1058:	00d7a023          	sw	x13,0(x15)
+    105c:	00458593          	addi	x11,x11,4
+    1060:	fd15ece3          	bltu	x11,x17,1038 <sort+0x38>
+    1064:	11e30c63          	beq	x6,x30,117c <sort+0x17c>
+    1068:	00032883          	lw	x17,0(x6)
+    106c:	ffc32583          	lw	x11,-4(x6)
+    1070:	ff830313          	addi	x6,x6,-8
+    1074:	40b887b3          	sub	x15,x17,x11
+    1078:	fafe5ce3          	bge	x28,x15,1030 <sort+0x30>
+    107c:	41d58733          	sub	x14,x11,x29
+    1080:	41d887b3          	sub	x15,x17,x29
+    1084:	4027d793          	srai	x15,x15,0x2
+    1088:	40275713          	srai	x14,x14,0x2
+    108c:	00f70733          	add	x14,x14,x15
+    1090:	01f75793          	srli	x15,x14,0x1f
+    1094:	00e787b3          	add	x15,x15,x14
+    1098:	4017d793          	srai	x15,x15,0x1
+    109c:	01f787b3          	add	x15,x15,x31
+    10a0:	00279793          	slli	x15,x15,0x2
+    10a4:	0005a703          	lw	x14,0(x11)
+    10a8:	00fe87b3          	add	x15,x29,x15
+    10ac:	0007a683          	lw	x13,0(x15)
+    10b0:	00e7a023          	sw	x14,0(x15)
+    10b4:	ffc5a703          	lw	x14,-4(x11)
+    10b8:	00d5a023          	sw	x13,0(x11)
+    10bc:	ffc8a783          	lw	x15,-4(x17)
+    10c0:	00e7da63          	bge	x15,x14,10d4 <sort+0xd4>
+    10c4:	fef5ae23          	sw	x15,-4(x11)
+    10c8:	fee8ae23          	sw	x14,-4(x17)
+    10cc:	0005a683          	lw	x13,0(x11)
+    10d0:	00070793          	addi	x15,x14,0
+    10d4:	00d7d863          	bge	x15,x13,10e4 <sort+0xe4>
+    10d8:	00f5a023          	sw	x15,0(x11)
+    10dc:	fed8ae23          	sw	x13,-4(x17)
+    10e0:	0005a683          	lw	x13,0(x11)
+    10e4:	ffc5a783          	lw	x15,-4(x11)
+    10e8:	00f6d863          	bge	x13,x15,10f8 <sort+0xf8>
+    10ec:	fed5ae23          	sw	x13,-4(x11)
+    10f0:	00f5a023          	sw	x15,0(x11)
+    10f4:	00078693          	addi	x13,x15,0
+    10f8:	00458513          	addi	x10,x11,4
+    10fc:	00088793          	addi	x15,x17,0
+    1100:	00052803          	lw	x16,0(x10)
+    1104:	00450513          	addi	x10,x10,4
+    1108:	fed84ce3          	blt	x16,x13,1100 <sort+0x100>
+    110c:	ff87a703          	lw	x14,-8(x15)
+    1110:	00078613          	addi	x12,x15,0
+    1114:	ffc78793          	addi	x15,x15,-4
+    1118:	fee6cae3          	blt	x13,x14,110c <sort+0x10c>
+    111c:	00a7e863          	bltu	x15,x10,112c <sort+0x12c>
+    1120:	fee52e23          	sw	x14,-4(x10)
+    1124:	ff07ae23          	sw	x16,-4(x15)
+    1128:	fd9ff06f          	jal	x0,1100 <sort+0x100>
+    112c:	40a88833          	sub	x16,x17,x10
+    1130:	00e5a023          	sw	x14,0(x11)
+    1134:	40285713          	srai	x14,x16,0x2
+    1138:	40b78833          	sub	x16,x15,x11
+    113c:	fed7ae23          	sw	x13,-4(x15)
+    1140:	00170793          	addi	x15,x14,1
+    1144:	40285713          	srai	x14,x16,0x2
+    1148:	00830693          	addi	x13,x6,8
+    114c:	ff860613          	addi	x12,x12,-8
+    1150:	00e7cc63          	blt	x15,x14,1168 <sort+0x168>
+    1154:	01132423          	sw	x17,8(x6)
+    1158:	00a32223          	sw	x10,4(x6)
+    115c:	00060893          	addi	x17,x12,0
+    1160:	00068313          	addi	x6,x13,0
+    1164:	ec5ff06f          	jal	x0,1028 <sort+0x28>
+    1168:	00b32223          	sw	x11,4(x6)
+    116c:	00c32423          	sw	x12,8(x6)
+    1170:	00050593          	addi	x11,x10,0
+    1174:	00068313          	addi	x6,x13,0
+    1178:	eb1ff06f          	jal	x0,1028 <sort+0x28>
+    117c:	0d010113          	addi	x2,x2,208
+    1180:	00008067          	jalr	x0,0(x1)
+
+00001184 <main>:
+    1184:	00001537          	lui	x10,0x1
+    1188:	ff010113          	addi	x2,x2,-16
+    118c:	80050513          	addi	x10,x10,-2048 # 800 <_start+0x800>
+    1190:	00002597          	auipc	x11,0x2
+    1194:	06058593          	addi	x11,x11,96 # 31f0 <input_data>
+    1198:	00112623          	sw	x1,12(x2)
+    119c:	00000097          	auipc	x1,0x0
+    11a0:	e64080e7          	jalr	x1,-412(x1) # 1000 <sort>
+    11a4:	00002717          	auipc	x14,0x2
+    11a8:	04c70713          	addi	x14,x14,76 # 31f0 <input_data>
+    11ac:	00000797          	auipc	x15,0x0
+    11b0:	04478793          	addi	x15,x15,68 # 11f0 <verify_data>
+    11b4:	00000513          	addi	x10,x0,0
+    11b8:	0100006f          	jal	x0,11c8 <main+0x44>
+    11bc:	00470713          	addi	x14,x14,4
+    11c0:	00478793          	addi	x15,x15,4
+    11c4:	02058263          	beq	x11,x0,11e8 <main+0x64>
+    11c8:	00072603          	lw	x12,0(x14)
+    11cc:	0007a683          	lw	x13,0(x15)
+    11d0:	00150513          	addi	x10,x10,1
+    11d4:	80050593          	addi	x11,x10,-2048
+    11d8:	fed602e3          	beq	x12,x13,11bc <main+0x38>
+    11dc:	00c12083          	lw	x1,12(x2)
+    11e0:	01010113          	addi	x2,x2,16
+    11e4:	00008067          	jalr	x0,0(x1)
+    11e8:	00000513          	addi	x10,x0,0
+    11ec:	ff1ff06f          	jal	x0,11dc <main+0x58>

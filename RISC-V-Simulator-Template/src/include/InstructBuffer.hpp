@@ -51,12 +51,6 @@ struct InstructBuffer : dark::Module<FQInput, FQOutput, FQInner> {
   bool isEmpty() const {
     return static_cast<uint32_t>(head) == static_cast<uint32_t>(tail);
   }
-  uint8_t getHead() const {
-    return static_cast<uint8_t>(static_cast<uint32_t>(head));
-  }
-  uint8_t getTail() const {
-    return static_cast<uint8_t>(static_cast<uint32_t>(tail));
-  }
   uint32_t getLastRaw() const {
     return static_cast<uint32_t>(lastRaw);
   }

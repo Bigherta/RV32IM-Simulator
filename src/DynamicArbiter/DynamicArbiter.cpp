@@ -21,11 +21,18 @@ void FlushArbiter::receive(SquashInfo request) {
   if (w == FLUSHARBITER_CAP)
     throw std::runtime_error("flush arbiter overload!");
   int pos = 0;
-  while (pos < w &&
-         ROB::isOlder(requests[pos].requestArgs.SquashTag, request.SquashTag))
-    ++pos;
-  for (int i = FLUSHARBITER_CAP - 1; i > pos; --i)
-    requests[i] = requests[i - 1];
+  bool scanning = true;
+  for (int i = 0; i < FLUSHARBITER_CAP; ++i) {
+    if (!scanning || i >= w)
+      continue;
+    if (ROB::isYounger(request.SquashTag, requests[i].requestArgs.SquashTag))
+      ++pos;
+    else
+      scanning = false;
+  }
+  for (int i = FLUSHARBITER_CAP - 1; i > 0; --i)
+    if (i > pos)
+      requests[i] = requests[i - 1];
   requests[pos].valid = true;
   requests[pos].requestArgs = request;
 }
@@ -55,8 +62,6 @@ void FlushArbiter::clear(uint8_t tag) {
   }
 }
 
-FlushRequest FlushArbiter::getRequest(int i) const { return requests[i]; }
-
 void FlushArbiter::tick(const FlushArbiterInput &input, systemState &CPUstate) {
   if (input.squashDetect.needSquash)
     CPUstate.flushArbiter.clear(input.squashDetect.SquashTag);
@@ -85,7 +90,7 @@ void FlushArbiter::tick(const FlushArbiterInput &input, systemState &CPUstate) {
       CPUstate.flushArbiter.receive(BranchSquash);
   }
 
-  const auto & cdbOut = input.cdbOut;
+  const auto &cdbOut = input.cdbOut;
   if (cdbOut.valid) {
     if (!input.squashDetect.needSquash ||
         ROB::isOlder(cdbOut.robTag, input.squashDetect.SquashTag)) {
@@ -96,11 +101,9 @@ void FlushArbiter::tick(const FlushArbiterInput &input, systemState &CPUstate) {
           isControl) {
         SquashInfo JumpSquash;
         const auto pc = static_cast<uint32_t>(cdbOut.value);
-        if (pc !=
-            input.ROBModule.getPredictedPC(((cdbOut.robTag) & 0x3F))) {
+        if (pc != input.ROBModule.getPredictedPC(((cdbOut.robTag) & 0x3F))) {
           if (debug::enabled(debug::TOPIC_BPMISS))
-            debug::print("squash tag=%u pc=%u (jalr)\n", cdbOut.robTag,
-                         pc);
+            debug::print("squash tag=%u pc=%u (jalr)\n", cdbOut.robTag, pc);
           JumpSquash.needSquash = true;
           JumpSquash.SquashPC = pc;
           JumpSquash.SquashTag = cdbOut.robTag;

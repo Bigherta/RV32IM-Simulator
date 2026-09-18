@@ -13,7 +13,7 @@ constexpr int TAGE_NTABLES = 4;
 static_assert((TAGE_NTABLES & (TAGE_NTABLES - 1)) == 0,
               "TAGE_NTABLES must be a power of two (allocation uses & (N-1))");
 constexpr int TAGE_HIST[TAGE_NTABLES] = {6, 12, 24, 48};
-constexpr int TAGE_IDX_BIT = 10; // 1024 entries per table
+constexpr int TAGE_IDX_BIT = 9;  // 512 entries per table
 constexpr int TAGE_TAG_BIT = 8;
 constexpr uint8_t BANKTICK_MAX = 63;
 constexpr uint8_t LFSR_TAPS = 0xB8; // 8-bit Galois taps
@@ -185,7 +185,11 @@ struct DirectionPred {
   std::array<Register<2>, T0_CAP> t0;
   std::array<Register<12>, LHT_CAP>
       LHT; // per-PC local history (12b), non-speculative
-  std::array<std::array<TageEntry, 1024>, TAGE_NTABLES> tn;
+  std::array<std::array<TageEntry, 512>, TAGE_NTABLES> tn;
+  std::array<Register<9>, TAGE_NTABLES> fhIdx; // W = TAGE_IDX_BIT
+  std::array<Register<8>, TAGE_NTABLES> fhTag8; // W = TAGE_TAG_BIT
+  std::array<Register<7>, TAGE_NTABLES>
+      fhTag7; // W = TAGE_TAG_BIT - 1   （tag = 8位折 ^ 7位折）
   std::array<Register<4>, 128> useAltOnNa; // boot-reset to 0b1000
   std::array<TAGE_MetaReg, CKPT_CAP> tmeta;
   Register<32> GHR_1; // high 32b of the 64b GHR
@@ -223,18 +227,6 @@ struct BPUInner {
 };
 struct BPU : dark::Module<BPUInput, BPUOutput, BPUInner> {
   BPU() { wire_output(); }
-  struct Cand {
-    bool valid = false;
-    int32_t pc = 0;
-    bool taken = false;
-    int32_t target = 0;
-    uint64_t ghr = 0;
-    bool cond = true;
-    bool isCall = false;
-    bool isRet = false;
-    bool isIndirect = false;
-    TAGESCMeta meta{};
-  };
   uint64_t branchTotal = 0;
   uint64_t branchCorrect = 0;
 
@@ -244,16 +236,10 @@ struct BPU : dark::Module<BPUInput, BPUOutput, BPUInner> {
            static_cast<uint32_t>(dir.GHR_2);
   }
 
-  void update(int32_t pc, bool taken, int32_t target, uint64_t ghr,
-              const TAGESCMeta &meta);
-  void updateJump(int32_t pc, int32_t target, bool isCall, bool isRet,
-                  bool isIndirect);
-  void shiftGHR(bool taken);
   uint64_t getBranchTotal() const { return branchTotal; }
   uint64_t getBranchCorrect() const { return branchCorrect; }
   PredictInfo predict(int32_t pc) const;
   BPUSnapshot snapshotCheckPoint() const;
-  void recoverCheckPoint(const BPUSnapshot &);
   uint8_t getNextCkptId() const { return static_cast<uint32_t>(nextCkptId); }
   void work() override;
 

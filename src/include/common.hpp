@@ -51,6 +51,7 @@ constexpr int ICACHE_CAP =
     512; // 8KB direct-mapped (512×16B), was 1024×16B=16KB
 constexpr int REQUEST_CAP = 4;
 constexpr int NUM_OF_WAYS = 4;
+constexpr int MEM_LATENCY = 20;
 // DCache geometry, overridable at compile time. Shrinking the cache (e.g.
 // -DNUM_OF_SETS=64 -DDCACHE_INDEX_BITS=6) forces capacity evictions so the
 // dirty-writeback path gets exercised; the index/tag split follows.
@@ -268,10 +269,16 @@ struct DispatchInfo {
   bool valid = false;
   int rsIndex = -1;
   uint8_t robTag = 0;
+};
+struct DispatchAGUInfo {
+  bool valid = false;
+  int rsIndex = -1;
+  uint8_t robTag = 0;
   RSType rsType = RSType::Integer;
 };
 struct DispatchBus {
-  DispatchInfo alu, agu, bru, mul, div;
+  DispatchInfo alu, bru, mul, div;
+  DispatchAGUInfo agu;
 };
 class ROB;
 class PRF;

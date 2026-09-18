@@ -70,7 +70,4 @@ public:
     if (addr < MEM_SIZE)
       mem[addr] = data;
   }
-  bool operator==(const Memory &other) const {
-    return std::memcmp(mem, other.mem, MEM_SIZE) == 0;
-  }
 };

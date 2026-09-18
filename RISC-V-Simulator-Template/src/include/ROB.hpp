@@ -13,32 +13,11 @@ enum class ROBType : dark::max_size_t {
   STORE,
   LINK,
 };
-// Plain entry for IssuePacket (comb-built, not Register) — keep in sync with ROBEntryReg
-struct ROBEntry {
-  ROBType type = ROBType::REGISTER;
-  bool isCommitReady = false;
-  uint8_t tag = 0;
-  int dest = 0;
-  uint32_t predictedPC = 0;
-  int32_t pc = 0;
-  bool halt = false;
-  bool isCall = false;
-  bool isRet = false;
-  bool isIndirect = false;
-  uint8_t lqTailSnapshot = 0;
-  uint8_t sqTailSnapshot = 0;
-  uint8_t ckptId = 0;
-  int newPhy = InvalidPhy;
-  int oldPhy = InvalidPhy;
-};
-
 // ---- Input ----
 struct ROBInputSquash {
   Wire<1> needSquash;
   Wire<7> SquashTag;
 };
-// 14-field flat entry (same order as ROBEntry minus tag: the ROB assigns
-// each pushed entry its own `next` as the tag, so no tag port is needed)
 struct ROBInputEntry {
   Wire<2> type;
   Wire<1> isCommitReady;
@@ -46,7 +25,6 @@ struct ROBInputEntry {
   Wire<1> halt;
   Wire<1> isCall;
   Wire<1> isRet;
-  Wire<1> isIndirect;
   Wire<6> ckptId;
   Wire<32> predictedPC;
   Wire<32> pc;
@@ -104,28 +82,18 @@ struct ROBInput {
 // with bridge accessor methods isEmpty/isFull/isHeadCommitReady/isHeadHalt/headType/headDest) + flat entry arrays ----
 struct ROBOutputHeadView {
   Wire<7> head;
-  Wire<7> nextTag;
   Wire<1> isEmpty;
-  Wire<1> isFull;
   Wire<1> isHeadCommitReady;
   Wire<1> isHeadHalt;
   Wire<2> headType;
-  Wire<5> headDest;
-  Wire<1> haltCommitted;
-  Wire<5> haltRd;
 };
 struct ROBOutput {
   ROBOutputHeadView headView;
-  // per-entry arrays — same field order as ROBEntryReg — keep in sync
+  // Per-entry views consumed outside the ROB.
   struct Entry {
-    std::array<Wire<7>, ROB_CAP> tag;
     std::array<Wire<1>, ROB_CAP> isCommitReady;
-    std::array<Wire<2>, ROB_CAP> type;
-    std::array<Wire<5>, ROB_CAP> dest;
-    std::array<Wire<1>, ROB_CAP> halt;
     std::array<Wire<1>, ROB_CAP> isCall;
     std::array<Wire<1>, ROB_CAP> isRet;
-    std::array<Wire<1>, ROB_CAP> isIndirect;
     std::array<Wire<6>, ROB_CAP> ckptId;
     std::array<Wire<32>, ROB_CAP> predictedPC;
     std::array<Wire<32>, ROB_CAP> pc;
@@ -145,7 +113,6 @@ struct ROBEntryReg {
   Register<1> halt;
   Register<1> isCall;
   Register<1> isRet;
-  Register<1> isIndirect;
   Register<6> ckptId;
   Register<32> predictedPC;
   Register<32> pc;
@@ -153,7 +120,6 @@ struct ROBEntryReg {
   Register<4> sqTailSnapshot;
   Register<7> newPhy;
   Register<7> oldPhy;
-  Register<7> tag;
 };
 struct ROBInner {
   std::array<ROBEntryReg, ROB_CAP> ROBqueue;
@@ -169,7 +135,6 @@ private:
   void wire_output();
   void updateNextTag();
   void pop();
-  void setROBCommitReady(int index);
   void flush(uint32_t squashTag);
 public:
   ROB();
@@ -179,26 +144,6 @@ public:
   bool isEmpty() const;
   bool isHaltCommitted() const;
   uint32_t getHaltRd() const;
-  bool isHeadCommitReady() const;
-  bool isHeadHalt() const;
-  ROBType headType() const;
-  uint32_t headDest() const;
   uint32_t getNextTag() const;
-  uint32_t getHead() const;
-  uint32_t getTag(int index) const;
-  bool isCommitReadyAt(int index) const;
-  ROBType getType(int index) const;
-  uint32_t getDest(int index) const;
-  uint32_t getPC(int index) const;
-  bool isHalt(int index) const;
-  uint32_t getCkptId(int index) const;
-  uint32_t getPredictedPC(int index) const;
-  uint32_t getLqTailSnapshot(int index) const;
-  uint32_t getSqTailSnapshot(int index) const;
-  uint32_t getNewPhy(int index) const;
-  uint32_t getOldPhy(int index) const;
-  bool isCall(int index) const;
-  bool isRet(int index) const;
-  bool isIndirect(int index) const;
   void work() override;
 };

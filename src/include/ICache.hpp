@@ -37,7 +37,6 @@ private:
 
 public:
   ICache() { std::memset(this, 0, sizeof((*this))); }
-  uint8_t getHead() const { return head; }
   bool isRequestFull() const { return count == REQUEST_CAP; }
   bool isReturnReady() const { return count > 0 && requestBuffer[head].valid; }
   bool hit(uint32_t addr) const;

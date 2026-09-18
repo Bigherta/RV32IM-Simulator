@@ -3,7 +3,6 @@
 #include <cstdint>
 constexpr int ulpExpWithShiftD = 28;
 constexpr int ulpExpNoShiftD = 27;
-constexpr int estBits = 9;
 constexpr int sliceShiftWithShiftD = 27;
 constexpr int sliceShiftNoShiftD = 26;
 struct DIVInput {
@@ -18,7 +17,6 @@ struct DIVInput {
   Wire<7> cdbRobTag;
 };
 struct DIVOutput {
-  Register<1> busy;
   Register<1> resultValid;
 };
 struct DIVInner {
@@ -46,7 +44,6 @@ struct DIVInner {
   Register<5> loopTimes;
   Register<5> clzD; // <= 31: receive()'s special cases intercept d == 0
   Register<5> clzX; // <= 31: the general path requires |x| >= |d| >= 1
-  Register<1> isDivisorNegative;
   Register<1> isDividendNegative;
   Register<1> isResultNegative;
   // D_dp = |d| << clzD << shiftD < 2^33 -> lo/hi pair (join33() re-joins).
@@ -65,7 +62,9 @@ struct DIV : dark::Module<DIVInput, DIVOutput, DIVInner> {
   void work() override;
   bool isReady() const { return static_cast<bool>(resultValid); }
   bool canAccept() const {
-    return !static_cast<bool>(busy) && !static_cast<bool>(resultValid);
+    return !static_cast<bool>(prepareValid) && !static_cast<bool>(loopValid) &&
+           !static_cast<bool>(fullAdderValid) &&
+           !static_cast<bool>(resultValid);
   }
   uint8_t getResultRobtag() const { return static_cast<uint32_t>(robTag); }
   int32_t getValue() const {

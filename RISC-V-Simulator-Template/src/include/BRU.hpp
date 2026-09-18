@@ -42,8 +42,5 @@ public:
   int32_t headPCFrom() const;
   int32_t headPCResult() const;
   uint8_t headRobTag() const;
-  bool isValid(int index) const {
-    return static_cast<bool>(slotValid[index]);
-  }
   void work() override;
 };

@@ -43,7 +43,6 @@ void DIV::receive(int32_t op1, int32_t op2, RobTag tag, Operation op) {
     isResultNegative = false;
     isDividendNegative = false;
     resultValid = true;
-    busy = false;
     robTag = tag;
     operationType = op;
   };
@@ -90,7 +89,6 @@ void DIV::receive(int32_t op1, int32_t op2, RobTag tag, Operation op) {
     }
   }
   resultValid = false;
-  busy = true;
   robTag = tag;
   operationType = op;
   uint32_t xBits = static_cast<uint32_t>(op1);
@@ -99,14 +97,13 @@ void DIV::receive(int32_t op1, int32_t op2, RobTag tag, Operation op) {
   const bool signedOp = (op == Operation::DIV || op == Operation::REM);
   isDividendNegative = signedOp && (op1 < 0);
   unsignedDividend = isDividendNegative ? (~xBits + 1u) : xBits;
-  isDivisorNegative = signedOp && (op2 < 0);
-  unsignedDivisor = isDivisorNegative ? (~dBits + 1u) : dBits;
-  isResultNegative = (isDivisorNegative ^ isDividendNegative) ? 1 : 0;
+  const bool divisorNegative = signedOp && (op2 < 0);
+  unsignedDivisor = divisorNegative ? (~dBits + 1u) : dBits;
+  isResultNegative = (divisorNegative ^ isDividendNegative) ? 1 : 0;
   prepareValid = true;
-} // pay attention: the caller of this function is CPUstate.DIVModule,
-  // therefore, you should throw an error in tick when the current DIVModule is
-  // busy
-void DIV::prepare(uint64_t divisor, uint64_t dividend) {
+} // Dispatch is admitted only when canAccept() sees all stage flags and
+  // resultValid low.
+void DIV::prepare() {
   // unsignedDividend holds |x| (P side); unsignedDivisor holds |d| (D side).
   clzX = clz(unsignedDividend); // clzX = CLZ of |x|
   clzD = clz(unsignedDivisor);  // clzD = CLZ of |d|
@@ -218,7 +215,6 @@ void DIV::calculateResult(uint64_t oldRegS, uint64_t oldRegC, uint32_t oldRegA,
     remain = (((Pk + (unsignedDivisor << 2)) >> 2) >> shiftD) >> clzD;
   }
   fullAdderValid = false;
-  busy = false;
   resultValid = true;
 }
 void DIV::flush(uint8_t tag) {
@@ -226,7 +222,6 @@ void DIV::flush(uint8_t tag) {
     unsignedDivisor = 0;
     unsignedDividend = 0;
     prepareValid = 0;
-    isDivisorNegative = 0;
     isDividendNegative = 0;
     isResultNegative = 0;
     clzX = 0;
@@ -245,7 +240,6 @@ void DIV::flush(uint8_t tag) {
     fullAdderValid = 0;
     shiftD = 0;
     resultValid = 0;
-    busy = 0;
   }
 }
 void DIV::tick(const DIVInput &input, systemState &CPUstate) {
@@ -260,7 +254,7 @@ void DIV::tick(const DIVInput &input, systemState &CPUstate) {
     div.loop(regS, regC, regA, regB);
   }
   if (prepareValid) {
-    div.prepare(unsignedDivisor, unsignedDividend);
+    div.prepare();
   }
   if (input.dispatch.valid) {
     const auto &rs = input.RSModule.divideRS[input.dispatch.rsIndex];

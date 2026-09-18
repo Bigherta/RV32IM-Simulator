@@ -39,8 +39,5 @@ public:
   int32_t headValue() const;
   uint8_t headRobTag() const;
   bool headIsControl() const;
-  bool isValid(int index) const {
-    return static_cast<bool>(slotValid[index]);
-  }
   void work() override;
 };

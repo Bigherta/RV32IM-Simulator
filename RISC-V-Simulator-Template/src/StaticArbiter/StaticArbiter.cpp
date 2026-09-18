@@ -163,9 +163,6 @@ void DispatchArbiter::wire_output() {
     WinResult w = aluSelect();
     return !static_cast<bool>(aluFull) && w.v ? w.tag : 0u;
   };
-  alu.rsType = [this]() -> uint32_t {
-    return static_cast<uint32_t>(RSType::Integer); // set on hit, default Integer
-  };
   agu.valid = [this]() -> uint32_t {
     WinResult w = aguSelect();
     return !static_cast<bool>(aguFull) && w.v &&
@@ -207,12 +204,6 @@ void DispatchArbiter::wire_output() {
     WinResult w = bruSelect();
     return !static_cast<bool>(bruFull) && w.v ? w.tag : 0u;
   };
-  bru.rsType = [this]() -> uint32_t {
-    WinResult w = bruSelect();
-    return !static_cast<bool>(bruFull) && w.v
-               ? static_cast<uint32_t>(RSType::Branch)
-               : static_cast<uint32_t>(RSType::Integer);
-  };
   mul.valid = [this]() -> uint32_t {
     WinResult w = mulSelect();
     return !static_cast<bool>(mulFull) && w.v &&
@@ -228,10 +219,6 @@ void DispatchArbiter::wire_output() {
   mul.robTag = [this]() -> uint32_t {
     WinResult w = mulSelect();
     return !static_cast<bool>(mulFull) && w.v ? w.tag : 0u;
-  };
-  mul.rsType = [this]() -> uint32_t {
-    return static_cast<uint32_t>(RSType::Multiply); // verbatim: dedicated mul
-                                                   // grant carries its type
   };
   // DIV channel: same fold as the MUL channel over the divideRS pool, but the
   // destination gate is the unit's own canAccept() instead of an isFull -- the
@@ -253,9 +240,6 @@ void DispatchArbiter::wire_output() {
   div.robTag = [this]() -> uint32_t {
     WinResult w = divSelect();
     return static_cast<bool>(divAccept) && w.v ? w.tag : 0u;
-  };
-  div.rsType = [this]() -> uint32_t {
-    return static_cast<uint32_t>(RSType::Divide); // dedicated div grant
   };
 }
 
@@ -441,13 +425,6 @@ Operand IssueArbiter::resolveSrc(const IssueArbOperandView &v) const {
 // slots now 0-default + has-gated per the retired -1 sentinel). ----
 void IssueArbiter::wire_output() {
   // ---- branch parameters (pure functions of the decoded head) ----
-  intHasRs2 = [this]() -> uint32_t {
-    // only the R case passes has_rs2=true
-    return (issueClass() == 1u &&
-            static_cast<uint32_t>(dec.type) == static_cast<uint32_t>(RISC_V::R))
-               ? 1u
-               : 0u;
-  };
   intImmAsVk = [this]() -> uint32_t {
     // I-0x13 (non-halt) / JALR / Istar pass imm_as_vk=true; R passes false
     if (issueClass() != 1u)
@@ -485,8 +462,7 @@ void IssueArbiter::wire_output() {
         static_cast<uint32_t>(dec.funct3), static_cast<uint32_t>(dec.funct7)));
   };
 
-  // ---- first-fit free-slot scans: verbatim tryAlloc* loops over the busy
-  // bitmaps (first-hit return, comb-helper exemption). free/slot split
+  // ---- first-fit free-slot scans over the busy bitmaps. free/slot split
   // replaces the retired -1 sentinel. ----
   intFree = [this]() -> uint32_t {
     for (int i = 0; i < INTEGERRS_CAP; i++)
@@ -580,12 +556,18 @@ void IssueArbiter::wire_output() {
     const bool robFull = static_cast<bool>(rob.isFull);
     switch (cls) {
     case 1u: // INT
-      return (!robFull && static_cast<bool>(intFree)) ? 1u : 0u;
+      return (!robFull && static_cast<bool>(intFree) &&
+              (!static_cast<bool>(dec.allocDest) ||
+               !static_cast<bool>(prf.freeListEmpty)))
+                 ? 1u
+                 : 0u;
     case 2u: // HALT
       return 2u;
     case 3u: // LOAD
       return (!robFull && !static_cast<bool>(lsq.lqFull) &&
-              static_cast<bool>(loadFree))
+              static_cast<bool>(loadFree) &&
+              (!static_cast<bool>(dec.allocDest) ||
+               !static_cast<bool>(prf.freeListEmpty)))
                  ? 3u
                  : 0u;
     case 4u: // STORE
@@ -596,17 +578,25 @@ void IssueArbiter::wire_output() {
     case 5u: // BR
       return (!robFull && static_cast<bool>(brFree)) ? 5u : 0u;
     case 6u: // UJ
-      return (!robFull && static_cast<bool>(intFree)) ? 6u : 0u;
+      return (!robFull && static_cast<bool>(intFree) &&
+              (!static_cast<bool>(dec.allocDest) ||
+               !static_cast<bool>(prf.freeListEmpty)))
+                 ? 6u
+                 : 0u;
     case 7u: // RV_INVALID
       return 7u;
     case 8u: // MUL (issue_Multiply: funct3 0..3)
       return (!robFull && static_cast<bool>(mulFree) &&
+              (!static_cast<bool>(dec.allocDest) ||
+               !static_cast<bool>(prf.freeListEmpty)) &&
               static_cast<uint32_t>(opDec) !=
                   static_cast<uint32_t>(Operation::OP_INVALID))
                  ? 8u
                  : 0u;
     case 9u: // DIV (issue_Divide: funct3 4..7, dedicated divideRS)
       return (!robFull && static_cast<bool>(divFree) &&
+              (!static_cast<bool>(dec.allocDest) ||
+               !static_cast<bool>(prf.freeListEmpty)) &&
               static_cast<uint32_t>(opDec) !=
                   static_cast<uint32_t>(Operation::OP_INVALID))
                  ? 9u
@@ -658,9 +648,6 @@ void IssueArbiter::wire_output() {
             (w == 6u && static_cast<bool>(ujIsControl)))
                ? 1u
                : 0u;
-  };
-  core.isHalt = [this]() -> uint32_t {
-    return static_cast<uint32_t>(win) == 2u ? 1u : 0u;
   };
   core.nBytes = [this]() -> uint32_t {
     const uint32_t w = static_cast<uint32_t>(win);
@@ -1044,12 +1031,6 @@ void IssueArbiter::wire_output() {
             static_cast<uint32_t>(dec.rd) == 0u &&
             static_cast<uint32_t>(dec.rs1) == 1u &&
             static_cast<uint32_t>(dec.imm) == 0u)
-               ? 1u
-               : 0u;
-  };
-  robEntry.isIndirect = [this]() -> uint32_t {
-    return (static_cast<uint32_t>(win) == 1u &&
-            static_cast<bool>(intIsControl))
                ? 1u
                : 0u;
   };

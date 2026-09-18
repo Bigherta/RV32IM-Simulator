@@ -45,10 +45,6 @@ int InstructBuffer::headpc() const {
 
 void InstructBuffer::pop() { head = (head + 1) & (FQ_CAP - 1); }
 
-uint8_t InstructBuffer::getHead() const { return head; }
-
-uint8_t InstructBuffer::getTail() const { return tail; }
-
 // index-based getters removed; use head* accessors for head entry
 
 void InstructBuffer::clear() {

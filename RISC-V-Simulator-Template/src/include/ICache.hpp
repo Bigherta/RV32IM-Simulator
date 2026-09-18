@@ -48,9 +48,13 @@ struct ICacheInner {
 };
 
 struct ICache : dark::Module<ICacheInput, ICacheOutput, ICacheInner> {
-  uint8_t getHead() const {
-    return static_cast<uint8_t>(static_cast<uint32_t>(head));
-  }
+  // host-only cache profile counters (mirrors the main tree's ICache
+  // hitCount/missCount). Incremented at the stage-1 push, once per accepted
+  // fetch request. They are statistics, never read by the datapath, so they
+  // cannot perturb the modelled behaviour.
+  uint64_t statHits = 0;
+  uint64_t statMisses = 0;
+
   // Window invariant over requestBuffer.valid[]; occupancy is derived, not
   // stored (same scheme as IMEM).
   uint32_t occupancy() const {

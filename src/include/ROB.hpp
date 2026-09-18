@@ -66,10 +66,8 @@ public:
   int headDest() const;
   uint8_t getNextTag() const;
   int getHead() const;
-  uint8_t getTag(int index) const;
   bool isCommitReadyAt(int index) const;
   ROBType getType(int index) const;
-  int getDest(int index) const;
   int32_t getPC(int index) const;
   bool isHalt(int index) const;
   uint8_t getCkptId(int index) const;

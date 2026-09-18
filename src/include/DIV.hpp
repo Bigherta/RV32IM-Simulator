@@ -6,7 +6,6 @@
 #include <stdexcept>
 constexpr int ulpExpWithShiftD = 28;
 constexpr int ulpExpNoShiftD = 27;
-constexpr int estBits = 9;
 constexpr int sliceShiftWithShiftD = 27;
 constexpr int sliceShiftNoShiftD = 26;
 struct DIVInput {
@@ -27,7 +26,6 @@ private:
   uint64_t unsignedDivisor = 0;
   uint64_t unsignedDividend = 0;
   bool prepareValid = false;
-  bool isDivisorNegative = false;
   bool isDividendNegative = false;
   bool isResultNegative = false;
   uint8_t clzX = 0;
@@ -47,9 +45,8 @@ private:
   bool fullAdderValid = false;
   bool shiftD = false;
   bool resultValid = false;
-  bool busy = false;
   void receive(int32_t op1, int32_t op2, RobTag robTag, Operation op);
-  void prepare(uint64_t divisor, uint64_t dividend);
+  void prepare();
   void loop(uint64_t oldRegS, uint64_t oldRegC, uint32_t oldRegA,
             uint32_t oldRegB);
   void calculateResult(uint64_t oldRegS, uint64_t oldRegC, uint32_t oldRegA,
@@ -64,7 +61,9 @@ public:
   // The divider is a single iterative unit (no output buffer like MUL), so it
   // must not be handed a new op while it is still computing OR while a
   // finished result has not been broadcast yet.
-  bool canAccept() const { return !busy && !resultValid; }
+  bool canAccept() const {
+    return !prepareValid && !loopValid && !fullAdderValid && !resultValid;
+  }
   uint8_t getResultRobtag() const { return robTag; }
   int32_t getValue() const {
     if (operationType == Operation::DIV) {

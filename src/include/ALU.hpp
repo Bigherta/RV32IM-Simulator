@@ -31,6 +31,5 @@ public:
   int32_t headValue() const;
   uint8_t headRobTag() const;
   bool headIsControl() const;
-  bool isValid(int index) const { return slotValid[index]; }
   void tick(const ALUInput &, systemState &);
 };

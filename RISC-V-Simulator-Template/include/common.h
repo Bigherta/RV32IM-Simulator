@@ -56,7 +56,7 @@ constexpr int NUM_OF_SETS = 1024;
 constexpr int DCACHE_INDEX_BITS = 10;              // log2(NUM_OF_SETS)
 constexpr int DCACHE_TAG_SHIFT = 4 + DCACHE_INDEX_BITS; // 16B block + set idx
 constexpr int NUM_OF_WAYS = 4;
-constexpr int MEM_LATENCY = 50;
+constexpr int MEM_LATENCY = 20;
 static_assert(NUM_OF_SETS == (1 << DCACHE_INDEX_BITS),
               "NUM_OF_SETS must be 2^DCACHE_INDEX_BITS");
 static_assert(DCACHE_BLOCK_CAP == 16, "16B lines assumed by DCACHE_TAG_SHIFT");

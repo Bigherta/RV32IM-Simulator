@@ -57,16 +57,18 @@ int DCache::decodeNBytes(uint32_t enc) {
 
 int32_t DCache::extractValue(const uint8_t *datas, int off, int n,
                              bool isSigned) {
-  // sign-extended sub-word load (mask branch identical to DMEM::load_n_bytes):
+  // Sign-extended sub-word load:
   // a bare static_cast<int32_t> would leave the high bits zero for n<4 signed
   // reads.
   uint32_t rawData = 0;
-  for (int i = 0; i < n; ++i) {
-    rawData |= static_cast<uint32_t>(datas[off + i]) << (i << 3);
+  for (int i = 0; i < 4; ++i) {
+    if (i < n)
+      rawData |= static_cast<uint32_t>(datas[off + i]) << (i << 3);
   }
-  if (isSigned && n < 4 && (rawData & (1u << ((n << 3) - 1)))) {
-    rawData |= ~((1u << (n << 3)) - 1);
-  }
+  if (isSigned && n == 1 && (rawData & 0x80u))
+    rawData |= 0xFFFFFF00u;
+  else if (isSigned && n == 2 && (rawData & 0x8000u))
+    rawData |= 0xFFFF0000u;
   return static_cast<int32_t>(rawData);
 }
 
@@ -124,12 +126,11 @@ void DCache::work() {
     const uint32_t addr = static_cast<uint32_t>(decisionAddr);
     const uint32_t blockNum = addr >> 4;
     const uint32_t setIndex = blockNum & (NUM_OF_SETS - 1);
-    const uint32_t tag = addr >> DCACHE_TAG_SHIFT;
     const int n = decodeNBytes(static_cast<uint32_t>(decisionNBytes));
     const Probe p = probe(addr);
     const bool opIsLoad = decOp == static_cast<uint32_t>(Operation::Load);
-    const bool opIsStore = decOp == static_cast<uint32_t>(Operation::Store);
 #ifdef _DEBUG
+    const bool opIsStore = decOp == static_cast<uint32_t>(Operation::Store);
     // A request must never straddle a 16B line (mirrors main tree PrRd/PrWr).
     if (decValid && (opIsLoad || opIsStore))
       assert((addr & (DCACHE_BLOCK_CAP - 1)) + n <= DCACHE_BLOCK_CAP);
@@ -199,10 +200,10 @@ void DCache::work() {
         } else {
           // store hit: merge into the line (write-back cache, no DMEM write)
           cacheSets[setIndex].lines[p.way].dirty <= true;
-          for (int i = 0; i < n; ++i) {
-            if (addr + i < MEM_SIZE) {
+          for (int i = 0; i < 4; ++i) {
+            if (i < n && addr + i < MEM_SIZE) {
               cacheSets[setIndex].lines[p.way].datas[(addr & 0xF) + i] =
-                  (static_cast<uint32_t>(decisionValue) >> (i * 8)) & 0xFF;
+                  (static_cast<uint32_t>(decisionValue) >> (i << 3)) & 0xFF;
             }
           }
         }
@@ -283,8 +284,8 @@ void DCache::work() {
       }
       if (serveStore) {
         const int pn = decodeNBytes(static_cast<uint32_t>(parkNBytes));
-        for (int i = 0; i < pn; ++i) {
-          if (paddr + i < MEM_SIZE) {
+        for (int i = 0; i < 4; ++i) {
+          if (i < pn && paddr + i < MEM_SIZE) {
             line.datas[(paddr & 0xF) + i] =
                 (static_cast<uint32_t>(parkValue) >> (i << 3)) & 0xFF;
           }

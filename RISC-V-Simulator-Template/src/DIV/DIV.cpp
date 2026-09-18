@@ -52,7 +52,6 @@ void DIV::receive(int32_t op1, int32_t op2, RobTag tag, Operation op) {
     isResultNegative <= false;
     isDividendNegative <= false;
     resultValid <= true;
-    busy <= false;
     robTag <= tag;
     operationType <= static_cast<uint32_t>(op);
   };
@@ -99,7 +98,6 @@ void DIV::receive(int32_t op1, int32_t op2, RobTag tag, Operation op) {
     }
   }
   resultValid <= false;
-  busy <= true;
   robTag <= tag;
   operationType <= static_cast<uint32_t>(op);
   uint32_t xBits = static_cast<uint32_t>(op1);
@@ -110,15 +108,13 @@ void DIV::receive(int32_t op1, int32_t op2, RobTag tag, Operation op) {
   isDividendNegative <= rawIsDividendNegative;
   unsignedDividend <= (rawIsDividendNegative ? (~xBits + 1u) : xBits);
   bool rawIsDivisorNegative = static_cast<bool>(signedOp && (op2 < 0));
-  isDivisorNegative <= rawIsDivisorNegative;
   // raw |d| < 2^32: the D_dp normalization shift happens in prepare().
   unsignedDivisorLo <= (rawIsDivisorNegative ? (~dBits + 1u) : dBits);
   unsignedDivisorHi <= 0;
   isResultNegative <= ((rawIsDivisorNegative ^ rawIsDividendNegative) ? 1 : 0);
   prepareValid <= true;
-} // pay attention: the caller of this function is CPUstate.DIVModule,
-  // therefore, you should throw an error in tick when the current DIVModule is
-  // busy
+} // Dispatch is admitted only when canAccept() sees all stage flags and
+  // resultValid low.
 void DIV::prepare() {
   // Sampling: receive() wrote raw |x|/|d| last cycle (prepareValid is hot).
   // All same-cycle forwarding goes through raw* locals -- a Register read
@@ -321,7 +317,6 @@ void DIV::calculateResult() {
                               rawClzD);
   }
   fullAdderValid <= false;
-  busy <= false;
   resultValid <= true;
 }
 void DIV::flush() {
@@ -333,7 +328,6 @@ void DIV::flush() {
   unsignedDivisorHi <= 0;
   unsignedDividend <= 0;
   prepareValid <= 0;
-  isDivisorNegative <= 0;
   isDividendNegative <= 0;
   isResultNegative <= 0;
   clzX <= 0;
@@ -354,7 +348,6 @@ void DIV::flush() {
   fullAdderValid <= 0;
   shiftD <= 0;
   resultValid <= 0;
-  busy <= 0;
 }
 void DIV::work() {
   // ---- 0. sampling: cycle-stable input wires + committed state ----
@@ -381,7 +374,7 @@ void DIV::work() {
   if (flushFires) {
     flush();
   } else if (drain) { // consume the result via the dedicated DivCDB bus
-    resultValid <= false; // busy is already 0 (calculateResult cleared it)
+    resultValid <= false;
   } else if (static_cast<bool>(fullAdderValid)) {
     calculateResult();
   } else if (static_cast<bool>(loopValid)) {

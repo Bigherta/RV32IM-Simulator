@@ -19,7 +19,6 @@ void PRF::work() {
   bool needSquash = static_cast<bool>(squash.needSquash);
   uint32_t squashTag = static_cast<uint32_t>(squash.SquashTag);
   uint8_t ckptId = static_cast<uint32_t>(squash.CkptId);
-  uint32_t robHeadVal = static_cast<uint32_t>(rob.robHead);
   bool isRobEmpty = static_cast<bool>(rob.isRobEmpty);
   bool isHeadReady = static_cast<bool>(rob.isRobHeadCommitReady);
   bool issueValid = static_cast<bool>(issue.issueValid);

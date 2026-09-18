@@ -11,7 +11,10 @@
 #include <array>
 #include <cstdint>
 struct FlushRequest {
-  Register<1> needSquash;
+  // NOTE: no per-slot needSquash -- valid==1 implies needSquash==1 by
+  // construction (all three inserts only fire when the local SquashInfo
+  // has needSquash==true), so the broadcast Output derives it as
+  // (selectOldest() != nullptr).
   Register<7> SquashTag;
   Register<32> SquashPC;
   Register<6> CkptId;

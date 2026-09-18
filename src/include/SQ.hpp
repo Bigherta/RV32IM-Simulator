@@ -24,14 +24,12 @@ struct SQInput {
   const RSUnit &RSModule;
   const PRF &PRFModule;
   const ROB &ROBModule;
-  const DMEM &DMEMModule;
-  const LQ &LQModule;
   const IssuePacket &issuePacket;
   MemDispatchDecision decision;
   SQInput(const AGU &agu, const RSUnit &rs, const PRF &prf, const ROB &rob,
-          const DMEM &dmem, const LQ &lq, const IssuePacket &pkt)
+          const IssuePacket &pkt)
       : AGUModule(agu), RSModule(rs), PRFModule(prf), ROBModule(rob),
-        DMEMModule(dmem), LQModule(lq), issuePacket(pkt) {}
+        issuePacket(pkt) {}
 };
 
 struct StoreNotify {

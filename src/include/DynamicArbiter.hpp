@@ -48,6 +48,5 @@ private:
 public:
   FlushArbiter();
   SquashInfo arbitResult() const;
-  FlushRequest getRequest(int i) const;
   void tick(const FlushArbiterInput &, systemState &);
 };

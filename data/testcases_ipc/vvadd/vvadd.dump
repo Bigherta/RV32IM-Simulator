@@ -1,0 +1,63 @@
+
+data/testcases_ipc/build/vvadd.elf:     file format elf32-littleriscv
+
+
+Disassembly of section .text.start:
+
+00000000 <_start>:
+   0:	00020137          	lui	x2,0x20
+   4:	02c010ef          	jal	x1,1030 <main>
+   8:	0ff00513          	addi	x10,x0,255
+   c:	000306b7          	lui	x13,0x30
+  10:	00a68223          	sb	x10,4(x13) # 30004 <verify_data+0x2e5f4>
+  14:	ff9ff06f          	jal	x0,c <_start+0xc>
+
+Disassembly of section .text:
+
+00001000 <vvadd>:
+    1000:	02a05663          	bge	x0,x10,102c <vvadd+0x2c>
+    1004:	00251513          	slli	x10,x10,0x2
+    1008:	00a58533          	add	x10,x11,x10
+    100c:	0005a783          	lw	x15,0(x11)
+    1010:	00062703          	lw	x14,0(x12)
+    1014:	00458593          	addi	x11,x11,4
+    1018:	00460613          	addi	x12,x12,4
+    101c:	00e787b3          	add	x15,x15,x14
+    1020:	00f6a023          	sw	x15,0(x13)
+    1024:	00468693          	addi	x13,x13,4
+    1028:	fea592e3          	bne	x11,x10,100c <vvadd+0xc>
+    102c:	00008067          	jalr	x0,0(x1)
+
+00001030 <main>:
+    1030:	b5010113          	addi	x2,x2,-1200 # 1fb50 <verify_data+0x1e140>
+    1034:	00000617          	auipc	x12,0x0
+    1038:	52c60613          	addi	x12,x12,1324 # 1560 <input2_data>
+    103c:	00010693          	addi	x13,x2,0
+    1040:	00000797          	auipc	x15,0x0
+    1044:	07078793          	addi	x15,x15,112 # 10b0 <input1_data>
+    1048:	00060813          	addi	x16,x12,0
+    104c:	00068593          	addi	x11,x13,0
+    1050:	0007a703          	lw	x14,0(x15)
+    1054:	00062503          	lw	x10,0(x12)
+    1058:	00478793          	addi	x15,x15,4
+    105c:	00460613          	addi	x12,x12,4
+    1060:	00a70733          	add	x14,x14,x10
+    1064:	00e5a023          	sw	x14,0(x11)
+    1068:	00458593          	addi	x11,x11,4
+    106c:	ff0792e3          	bne	x15,x16,1050 <main+0x20>
+    1070:	00001797          	auipc	x15,0x1
+    1074:	9a078793          	addi	x15,x15,-1632 # 1a10 <verify_data>
+    1078:	00000513          	addi	x10,x0,0
+    107c:	12c00593          	addi	x11,x0,300
+    1080:	00c0006f          	jal	x0,108c <main+0x5c>
+    1084:	00478793          	addi	x15,x15,4
+    1088:	02b50063          	beq	x10,x11,10a8 <main+0x78>
+    108c:	0006a603          	lw	x12,0(x13)
+    1090:	0007a703          	lw	x14,0(x15)
+    1094:	00150513          	addi	x10,x10,1
+    1098:	00468693          	addi	x13,x13,4
+    109c:	fee604e3          	beq	x12,x14,1084 <main+0x54>
+    10a0:	4b010113          	addi	x2,x2,1200
+    10a4:	00008067          	jalr	x0,0(x1)
+    10a8:	00000513          	addi	x10,x0,0
+    10ac:	ff5ff06f          	jal	x0,10a0 <main+0x70>

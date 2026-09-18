@@ -32,7 +32,6 @@ public:
   }
   IMEM(const IMEM &) = default;
   IMEM &operator=(const IMEM &) = default;
-  uint8_t getHead() const { return head; }
   bool isReturnReady() const {
     return count > 0 && IMEMreqs[head].valid &&
            IMEMreqs[head].remain_cycle == 0;

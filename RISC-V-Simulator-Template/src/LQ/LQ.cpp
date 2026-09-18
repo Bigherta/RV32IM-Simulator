@@ -38,10 +38,6 @@ bool LQ::isActive(uint8_t index) const {
 uint8_t LQ::getHead() const { return static_cast<uint32_t>(head); }
 uint8_t LQ::getTail() const { return static_cast<uint32_t>(tail); }
 
-auto LQ::getIsCDBBroadcast(int index) const -> bool {
-  return static_cast<bool>(LQqueue[index].isCDBBroadcast);
-}
-
 auto LQ::getAddress(int index) const -> uint32_t {
   if (LQqueue[index].isAddressReady)
     return static_cast<uint32_t>(LQqueue[index].address);
@@ -109,14 +105,6 @@ int LQ::CDBDetect() const {
     }
   }
   return detectedIndex;
-}
-
-bool LQ::isReadyToCommit(int index) const {
-  if (LQqueue[index].isAddressReady &&
-      static_cast<uint32_t>(LQqueue[index].valueState) == static_cast<uint32_t>(ValueState::READY)) {
-    return true;
-  }
-  return false;
 }
 
 void LQ::work() {

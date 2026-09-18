@@ -36,8 +36,6 @@ public:
   }
   uint8_t headCkptId() const { return uopQueueEntries[head].ckptId; }
   void pop();
-  uint8_t getHead() const;
-  uint8_t getTail() const;
   void clear();
 };
 struct IssuePacket;
@@ -73,6 +71,4 @@ public:
   bool headAllocDest() const { return iq.headAllocDest(); }
   int32_t headPredictedPC() const { return iq.headPredictedPC(); }
   uint8_t headCkptId() const { return iq.headCkptId(); }
-  uint8_t getHead() const { return iq.getHead(); }
-  uint8_t getTail() const { return iq.getTail(); }
 };

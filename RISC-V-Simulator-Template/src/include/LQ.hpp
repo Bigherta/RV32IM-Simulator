@@ -111,7 +111,6 @@ public:
   // tail: memIndex wants "my slot" (= old tail), squash snapshots want
   // "the border that keeps me alive" (= old tail + 1).
   uint8_t getTailSnapshot() const { return static_cast<uint32_t>((tail + 1) & 0x0F); }
-  bool isReadyToCommit(int index) const;
   auto getAddress(int index) const -> uint32_t;
   auto getValue(int index) const -> int32_t;
   auto headRobTag() const -> uint8_t;
@@ -122,7 +121,6 @@ public:
   uint32_t getValueState(int index) const {
     return static_cast<uint32_t>(LQqueue[index].valueState);
   }
-  auto getIsCDBBroadcast(int index) const -> bool;
   int CDBDetect() const;
   int LoadDetect() const;
   void work() override;

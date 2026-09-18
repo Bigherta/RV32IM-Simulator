@@ -50,7 +50,7 @@ FetchTypeInfo scanJump(const struct lastPush &lp) {
 } // namespace
 
 CPU::CPU(Memory mem)
-    : CPUstate(mem), InstructMem(mem), IMEMModule(mem), DMEMModule(mem) {}
+    : CPUstate(mem), IMEMModule(mem), DMEMModule(mem) {}
 
 void CPU::comb() {
   memcpy(&RSModule, &CPUstate.RSModule, sizeof(RSModule));
@@ -132,8 +132,7 @@ void CPU::comb() {
   }
   DispatchBus dispatchBus = DispatchArbiter::arbitrate(
       RSModule, ALUModule, AGUModule, BRUModule, MULModule, DIVModule,
-      ROBModule, PRFModule,
-      squashDetect);
+      PRFModule, squashDetect);
   aguInput.squashDetect = squashDetect;
   aluInput.squashDetect = squashDetect;
   aluInput.cdbOutput = cdbOfALU;
@@ -152,7 +151,6 @@ void CPU::comb() {
   sqInput.squashDetect = squashDetect;
   auto memDispatch = MemArbiter::arbitrate(LQModule, SQModule, ROBModule,
                                            DCacheModule, squashDetect);
-  dcacheInput.squashDetect = squashDetect;
   dcacheInput.decision = memDispatch;
   // DMEM now only ever receives requests forwarded by the DCache: the DCache
   // emits its dual-channel pulse (registered in the live module at the end of
@@ -217,8 +215,17 @@ void CPU::comb() {
 void CPU::run() {
   bool finish = false;
   uint64_t clock = 0;
+  // host-only: core IPC freezes on the HALT-marker commit. The marker itself
+  // is not an executed architectural instruction, while its commit cycle is
+  // part of the measured interval.
+  uint64_t retired = 0;
+  uint64_t ipcRetired = 0;
+  uint64_t ipcCycles = 0;
+  bool ipcFrozen = false;
   while (!finish) {
     comb();
+    const uint32_t headBefore = static_cast<uint32_t>(ROBModule.getHead());
+    const bool haltBefore = ROBModule.isHaltCommitted();
     IMEMModule.tick(imemInput, CPUstate);
     FetchUnitModule.tick(fetchUnitInput, CPUstate);
     ICacheModule.tick(icacheInput, CPUstate);
@@ -240,6 +247,20 @@ void CPU::run() {
     flushArbiter.tick(flarbInput, CPUstate);
     DecodeUnitModule.tick(decodeInput, CPUstate);
     ++clock;
+    const uint32_t headAfter =
+        static_cast<uint32_t>(CPUstate.ROBModule.getHead());
+    const bool haltAfter = CPUstate.ROBModule.isHaltCommitted();
+    const uint32_t committed = (headAfter - headBefore) & 0x7F;
+    const bool haltCommitted = !haltBefore && haltAfter;
+    assert(!haltCommitted || committed != 0);
+    if (!ipcFrozen) {
+      retired += committed - static_cast<uint32_t>(haltCommitted);
+      if (haltCommitted) {
+        ipcRetired = retired;
+        ipcCycles = clock;
+        ipcFrozen = true;
+      }
+    }
     // Halt drain: once halt has committed and the pipeline is empty, the
     // machine must still wait for every committed store to leave the SQ and
     // reach the DCache (SQ empty), and for any in-flight cache refill /
@@ -251,8 +272,14 @@ void CPU::run() {
              SQModule.isEmpty() && !DCacheModule.isBusy() &&
              !DMEMModule.isReadBusy() && !DMEMModule.isWriteBusy();
   }
-  if (debug::enabled(debug::TOPIC_CLOCK))
+  if (debug::enabled(debug::TOPIC_CLOCK)) {
     debug::print("clock: %llu\n", clock);
+    debug::print("ipc: %.6f retired=%llu cycles=%llu\n",
+                 ipcCycles ? static_cast<double>(ipcRetired) /
+                                 static_cast<double>(ipcCycles)
+                           : 0.0,
+                 ipcRetired, ipcCycles);
+  }
   if (debug::enabled(debug::TOPIC_BRANCH)) {
     // host-only: everything below this block is an end-of-run report for the
     // human (double percentage math, stdio formatting). It is not part of the

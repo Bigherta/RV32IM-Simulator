@@ -13,9 +13,7 @@ struct IssuePacket;
 struct RATInput {
   const IssuePacket &issuePacket;
   SquashInfo squashDetect;
-  const ROB &ROBModule;
-  RATInput(const ROB &rob, const IssuePacket &pkt)
-      : ROBModule(rob), issuePacket(pkt) {}
+  RATInput(const IssuePacket &pkt) : issuePacket(pkt) {}
 };
 
 struct systemState;
@@ -34,7 +32,6 @@ public:
       RAT_PRF[i] = i;
   }
   int readRAT_PRF(int regNum) const;
-  RATSnapshot snapshotRAT_PRF() const;
   OperandInfo readOperand(int regNum) const;
   void tick(const RATInput &, systemState &);
 };

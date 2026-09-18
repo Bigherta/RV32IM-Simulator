@@ -2,21 +2,6 @@
 #include "common.h"
 #include <cstdint>
 
-int32_t DMEM::load_n_bytes(uint32_t address, int n, bool isSigned) const {
-  int32_t result = 0;
-  for (int i = 0; i < n; i++) {
-    auto byte_data = read_data(address + i);
-    result |= (byte_data << (i << 3));
-    if (i == n - 1 && n < 4 && isSigned) {
-      if (result & (1 << ((n << 3) - 1))) {
-        auto mask = ~((1 << (n << 3)) - 1);
-        result |= mask;
-      }
-    }
-  }
-  return result;
-}
-
 void DMEM::writeLine(uint32_t addr, const uint8_t *lineData) {
   for (int i = 0; i < DCACHE_BLOCK_CAP; i++) {
     write_data(addr + i, lineData[i]);

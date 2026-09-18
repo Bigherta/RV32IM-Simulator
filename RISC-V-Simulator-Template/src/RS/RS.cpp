@@ -2,50 +2,11 @@
 #include "ROB.hpp"
 #include <cstdint>
 
-// Free-slot priority scans: bridge accessors over the committed (_M_old)
-// free bitmaps; called by the unconverted IssueArbiter during comb().
-int RSUnit::tryAllocInteger() const {
-  for (int i = 0; i < INTEGERRS_CAP; i++)
-    if (!static_cast<bool>(integerRS[i].busy))
-      return i;
-  return -1;
-}
-int RSUnit::tryAllocLoad() const {
-  for (int i = 0; i < LOADRS_CAP; i++)
-    if (!static_cast<bool>(loadRS[i].busy))
-      return i;
-  return -1;
-}
-int RSUnit::tryAllocStoreAddress() const {
-  for (int i = 0; i < STORERS_CAP; i++)
-    if (!static_cast<bool>(storeAddressRS[i].busy))
-      return i;
-  return -1;
-}
-int RSUnit::tryAllocStoreValue() const {
-  for (int i = 0; i < STORERS_CAP; i++)
-    if (!static_cast<bool>(storeValueRS[i].busy))
-      return i;
-  return -1;
-}
-int RSUnit::tryAllocBranch() const {
-  for (int i = 0; i < BRANCHRS_CAP; i++)
-    if (!static_cast<bool>(branchRS[i].busy))
-      return i;
-  return -1;
-}
-int RSUnit::tryAllocDivide() const {
-  for (int i = 0; i < DIVIDERS_CAP; i++)
-    if (!static_cast<bool>(divideRS[i].busy))
-      return i;
-  return -1;
-}
-
 // Per-slot single-write-point structure (RTL discipline: one driver per
 // Register per cycle, no early returns):
 //   pushHit  - issue allocates this slot (mutually exclusive with
-//              release/flush: tryAlloc only returns slots that are free in
-//              the committed state, release/flush require occupied)
+//              release/flush: issue only selects slots that are free in the
+//              committed state, release/flush require occupied)
 //   relHit   - DispatchArbiter granted this slot to an execution unit (only
 //              entries older than the squash point are granted, so relHit and
 //              flushHit are mutually exclusive; merged anyway -- both write

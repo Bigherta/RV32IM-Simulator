@@ -16,12 +16,6 @@ OperandInfo RAT::readOperand(int regNum) const {
   return {false, 0, phy};
 }
 
-RATSnapshot RAT::snapshotRAT_PRF() const {
-  RATSnapshot snapshot;
-  memcpy(snapshot.RAT_snapshot, RAT_PRF, sizeof(RAT_PRF));
-  return snapshot;
-}
-
 void RAT::restoreRAT_PRF(const RATSnapshot &snapshot) {
   memcpy(RAT_PRF, snapshot.RAT_snapshot, sizeof(RAT_PRF));
 }

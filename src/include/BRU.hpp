@@ -6,12 +6,11 @@ struct systemState;
 struct PRF;
 struct BRUInput {
   SquashInfo squashDetect;
-  const ROB &ROBModule;
   const RSUnit &RSModule;
   const PRF &PRFModule;
   DispatchInfo dispatch;
-  BRUInput(const ROB &rob, const RSUnit &rs, const PRF &prf)
-      : ROBModule(rob), RSModule(rs), PRFModule(prf) {}
+  BRUInput(const RSUnit &rs, const PRF &prf)
+      : RSModule(rs), PRFModule(prf) {}
 };
 class BRU {
 private:
@@ -29,6 +28,5 @@ public:
   int32_t headPCFrom() const;
   int32_t headPCResult() const;
   uint8_t headRobTag() const;
-  bool isValid(int index) const { return slotValid[index]; }
   void tick(const BRUInput &, systemState &);
 };

@@ -41,8 +41,5 @@ public:
   int32_t headValue() const;
   uint8_t headRobTag() const;
   uint8_t headMemIndex() const;
-  bool isValid(int index) const {
-    return static_cast<bool>(slotValid[index]);
-  }
   void work() override;
 };

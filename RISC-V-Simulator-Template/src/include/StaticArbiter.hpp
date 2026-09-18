@@ -93,8 +93,8 @@ struct DispatchArbInput {
   Wire<1> bruFull; // BRUModule.isFull()
   Wire<1> mulFull; // MULModule.isFull()
   // The divider is a single iterative unit with no output buffer, so its
-  // dispatch gate is the unit's own canAccept() (!busy && !resultValid) rather
-  // than an isFull() (verbatim from the main tree's div channel).
+  // dispatch gate is the unit's own canAccept() (all stage-valid bits and
+  // resultValid low) rather than an isFull().
   Wire<1> divAccept; // DIVModule.canAccept()
   // RS slot-field buses (raw; src tags are Wire<7> -- the 8th sentinel bit of
   // the Register<8> is clipped at the wiring site, so a tag always indexes
@@ -121,10 +121,16 @@ struct DispArbOutInfo {
   Wire<4> rsIndex; // RS slot (0 when !valid; the -1 sentinel dies -- every
                    // consumer gates on valid)
   Wire<7> robTag;  // winner slot tag (0 when !valid, verbatim default)
+};
+struct DispArbOutAguInfo {
+  Wire<1> valid;
+  Wire<4> rsIndex;
+  Wire<7> robTag;
   Wire<3> rsType;  // RSType encoding (Integer..StoreAddr, 5 values)
 };
 struct DispatchArbOutput {
-  DispArbOutInfo alu, agu, bru, mul, div;
+  DispArbOutInfo alu, bru, mul, div;
+  DispArbOutAguInfo agu;
 };
 struct DispatchArbiter : dark::Module<DispatchArbInput, DispatchArbOutput> {
   DispatchArbiter() { wire_output(); }
@@ -184,8 +190,7 @@ struct IssueArbInputRob {
   Wire<1> isFull;
   Wire<7> nextTag;
 };
-// Raw busy bitmaps: the module runs the verbatim first-fit tryAlloc scans
-// (first-hit return kept per the comb-helper exemption).
+// Raw busy bitmaps: the module runs first-fit free-slot scans.
 struct IssueArbInputRs {
   std::array<Wire<1>, INTEGERRS_CAP> intBusy;
   std::array<Wire<1>, LOADRS_CAP> loadBusy;
@@ -238,10 +243,10 @@ struct IssueArbInput {
 struct IssueArbInner {
   Wire<4> win;
   // branch parameters (pure functions of dec.type/opcode)
-  Wire<1> intHasRs2, intImmAsVk, intIsControl;
+  Wire<1> intImmAsVk, intIsControl;
   Wire<1> ujHasPC, ujIsControl;
   Wire<5> opDec; // decodeOp result, shared by the four payload groups
-  // first-fit free-slot scans (verbatim tryAlloc* loops)
+  // first-fit free-slot scans
   Wire<1> intFree;  Wire<4> intSlot;
   Wire<1> loadFree; Wire<2> loadSlot;
   Wire<1> saFree;   Wire<3> saSlot;
@@ -261,7 +266,7 @@ struct IssueArbOutputCore {
   Wire<1> allocDest;
   Wire<7> phy;
   Wire<7> robTag;
-  Wire<1> isLoad, isStore, isControl, isHalt;
+  Wire<1> isLoad, isStore, isControl;
   Wire<3> nBytes; // 0/1/2/4 bytes (LQ/SQ remap to 2b at their wiring)
   Wire<1> isUnsigned;
   Wire<32> pc;    // driven only for control transfers (JALR/JAL), else 0
@@ -326,7 +331,7 @@ struct IssueArbOutRobEntry {
   Wire<2> type;
   Wire<1> isCommitReady;
   Wire<5> dest;
-  Wire<1> halt, isCall, isRet, isIndirect;
+  Wire<1> halt, isCall, isRet;
   Wire<6> ckptId;
   Wire<32> predictedPC;
   Wire<32> pc;

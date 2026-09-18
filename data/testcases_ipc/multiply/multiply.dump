@@ -1,0 +1,75 @@
+
+data/testcases_ipc/build/multiply.elf:     file format elf32-littleriscv
+
+
+Disassembly of section .text.start:
+
+00000000 <_start>:
+   0:	00020137          	lui	x2,0x20
+   4:	7fd000ef          	jal	x1,1000 <main>
+   8:	0ff00513          	addi	x10,x0,255
+   c:	000306b7          	lui	x13,0x30
+  10:	00a68223          	sb	x10,4(x13) # 30004 <verify_data+0x2ec04>
+  14:	ff9ff06f          	jal	x0,c <_start+0xc>
+
+Disassembly of section .text:
+
+00001000 <main>:
+    1000:	e5010113          	addi	x2,x2,-432 # 1fe50 <verify_data+0x1ea50>
+    1004:	1a912223          	sw	x9,420(x2)
+    1008:	19412c23          	sw	x20,408(x2)
+    100c:	00000497          	auipc	x9,0x0
+    1010:	26448493          	addi	x9,x9,612 # 1270 <input_data2>
+    1014:	00010a13          	addi	x20,x2,0
+    1018:	1a812423          	sw	x8,424(x2)
+    101c:	1b212023          	sw	x18,416(x2)
+    1020:	19312e23          	sw	x19,412(x2)
+    1024:	1a112623          	sw	x1,428(x2)
+    1028:	00000417          	auipc	x8,0x0
+    102c:	0b840413          	addi	x8,x8,184 # 10e0 <input_data1>
+    1030:	00048993          	addi	x19,x9,0
+    1034:	000a0913          	addi	x18,x20,0
+    1038:	0004a583          	lw	x11,0(x9)
+    103c:	00042503          	lw	x10,0(x8)
+    1040:	00440413          	addi	x8,x8,4
+    1044:	00448493          	addi	x9,x9,4
+    1048:	00000097          	auipc	x1,0x0
+    104c:	06c080e7          	jalr	x1,108(x1) # 10b4 <multiply>
+    1050:	00a92023          	sw	x10,0(x18)
+    1054:	00490913          	addi	x18,x18,4
+    1058:	ff3410e3          	bne	x8,x19,1038 <main+0x38>
+    105c:	00000797          	auipc	x15,0x0
+    1060:	3a478793          	addi	x15,x15,932 # 1400 <verify_data>
+    1064:	00000513          	addi	x10,x0,0
+    1068:	06400613          	addi	x12,x0,100
+    106c:	00c0006f          	jal	x0,1078 <main+0x78>
+    1070:	00478793          	addi	x15,x15,4
+    1074:	02c50c63          	beq	x10,x12,10ac <main+0xac>
+    1078:	000a2683          	lw	x13,0(x20)
+    107c:	0007a703          	lw	x14,0(x15)
+    1080:	00150513          	addi	x10,x10,1
+    1084:	004a0a13          	addi	x20,x20,4
+    1088:	fee684e3          	beq	x13,x14,1070 <main+0x70>
+    108c:	1ac12083          	lw	x1,428(x2)
+    1090:	1a812403          	lw	x8,424(x2)
+    1094:	1a412483          	lw	x9,420(x2)
+    1098:	1a012903          	lw	x18,416(x2)
+    109c:	19c12983          	lw	x19,412(x2)
+    10a0:	19812a03          	lw	x20,408(x2)
+    10a4:	1b010113          	addi	x2,x2,432
+    10a8:	00008067          	jalr	x0,0(x1)
+    10ac:	00000513          	addi	x10,x0,0
+    10b0:	fddff06f          	jal	x0,108c <main+0x8c>
+
+000010b4 <multiply>:
+    10b4:	00050713          	addi	x14,x10,0
+    10b8:	02000693          	addi	x13,x0,32
+    10bc:	00000513          	addi	x10,x0,0
+    10c0:	00177793          	andi	x15,x14,1
+    10c4:	fff68693          	addi	x13,x13,-1
+    10c8:	00078463          	beq	x15,x0,10d0 <multiply+0x1c>
+    10cc:	00b50533          	add	x10,x10,x11
+    10d0:	40175713          	srai	x14,x14,0x1
+    10d4:	00159593          	slli	x11,x11,0x1
+    10d8:	fe0694e3          	bne	x13,x0,10c0 <multiply+0xc>
+    10dc:	00008067          	jalr	x0,0(x1)

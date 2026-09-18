@@ -22,9 +22,7 @@ struct LQEntry {
 struct LQInput {
   SquashInfo squashDetect;
   const AGU &AGUModule;
-  const RSUnit &RSModule;
   const ROB &ROBModule;
-  const DMEM &DMEMModule;
   const IssuePacket &issuePacket;
   const SQ &SQModule;
   lqCDB cdbOutput;
@@ -32,10 +30,9 @@ struct LQInput {
   MemDispatchDecision decision;
   StoreNotify storeNotifies[STORERS_CAP];
   StoreNotify storeAddrNotify;
-  LQInput(const AGU &agu, const RSUnit &rs, const ROB &rob, const DMEM &dmem,
-          const SQ &sq, const IssuePacket &pkt)
-      : AGUModule(agu), RSModule(rs), ROBModule(rob), DMEMModule(dmem),
-        SQModule(sq), issuePacket(pkt) {}
+  LQInput(const AGU &agu, const ROB &rob, const SQ &sq,
+          const IssuePacket &pkt)
+      : AGUModule(agu), ROBModule(rob), issuePacket(pkt), SQModule(sq) {}
 };
 class LQ {
 private:
@@ -64,7 +61,6 @@ public:
   // tail: memIndex wants "my slot" (= old tail), squash snapshots want
   // "the border that keeps me alive" (= old tail + 1).
   uint8_t getTailSnapshot() const { return (tail + 1) & 0x0F; }
-  bool isReadyToCommit(int index) const;
   auto getAddress(int index) const -> uint32_t;
   auto getValue(int index) const -> int32_t;
   auto headRobTag() const -> uint8_t;
@@ -75,7 +71,6 @@ public:
   ValueState getValueState(int index) const {
     return LQqueue[index].valueState;
   }
-  auto getIsCDBBroadcast(int index) const -> bool;
   int CDBDetect() const;
   int LoadDetect() const;
   void tick(const LQInput &, systemState &);

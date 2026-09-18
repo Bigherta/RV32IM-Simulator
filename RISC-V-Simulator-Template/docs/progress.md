@@ -1,331 +1,232 @@
-# 迁移进度：当前框架 → RISC-V-Simulator-Template
+# 模板迁移回顾与当前状态
 
-> 目标：把 `src/`（memcpy 快照 + comb()/tick()）逐模块迁移到模板框架
-> （`Register`/`Wire`/`Bit` + `Module<In,Out,Inner>` + `sync_member`）。
-> 配套文档：`docs/output.md`（全模块 Output 清单 / 总线归属表，已含 RS 去值化修订）。
-> 每步完成 = **golden(x10+clock，取自 `docs/benchmarks.md`) 严格一致 + reorder 全排列一致**；pi 约 8 分钟可放里程碑跑。
+> `src/` 到 RISC-V-Simulator-Template 的阶段 0--9 迁移已于 2026-08-30 完成。
+> 本文不再充当逐日任务清单，而记录终态架构、迁移成立的时序依据、仍有约束力的经验和当前唯一的数据通路遗留项。
 
-## 核心等价（迁移前提）
+## 文档入口
 
-| 当前框架 | 模板 |
+- 当前前端架构：[前端](frontend.md)。
+- 当前乱序后端与 RV32M 实现：[后端](backend.md)。
+- 当前 LQ/SQ、访存仲裁与内存一致性：[访存](memory.md)。
+- 当前 ICache/DCache/IMEM/DMEM 层次：[缓存](cache.md)。
+- 模板运行、框架 API 与常见错误：[使用说明](help.md)。
+- 回归结果与性能口径的唯一基线：仓库根目录 [`../../docs/benchmarks.md`](../../docs/benchmarks.md)。
+- 可综合循环的完整审计与分类：仓库根目录
+  [`../../docs/non-synthesizable-loops.md`](../../docs/non-synthesizable-loops.md)。
+
+## 当前结论
+
+| 项目 | 终态 |
 |---|---|
-| `CPUstate.X`（tick 写，new） | `Register::_M_new`（`field <= v`） |
-| `XModule` 快照成员（comb() 开头 memcpy） | `Register::_M_old`（读取默认值） |
-| `comb()` 的 memcpy（时钟上升沿提交） | 模块内 `sync()`（`_M_old = _M_new`） |
-| `input.YModule.getFoo()`（跨模块读） | Input `Wire` lambda 读 Y 的 `_M_old` |
-| tick()（读 Input、写 CPUstate.self） | work() |
-| 17 阶段 reorder_test | `run_once_shuffle` |
+| 迁移进度 | 阶段 0--9 全部完成；没有仍在进行的“混跑阶段” |
+| 状态更新 | 所有时序模块使用 `work()` 写 `Register::_M_new`，周期末统一 `sync()` |
+| 组合通信 | 跨模块端口和中央总线使用 `Wire`；无状态仲裁器本身也是 `Module` |
+| CPU 运行时 | 模块按值归 `CPU` 所有，以非拥有指针注册到 `dark::CPU`，每拍调用 `run_once()` |
+| 旧机制 | `comb()`、`tick()`、模块快照成员和周期性 `memcpy` 已退出模板树 |
+| 执行/写回 | ALU、LQ、MUL、DIV 四路独立结果总线；MUL 与 DIV 有专用 RS 和派发通道 |
+| 恢复 | ROB tag、checkpoint、FlushArbiter 和各模块本地恢复状态共同完成整窗 squash |
+| 验证 | 双树 `x10` 与等价改动的 `clock` 对拍，加 Release、`_DEBUG` 单写断言和基准表核验 |
 
-## 混跑可行性：并存，但它是"有严格边界条件的迁移中间态"
+迁移收官后的 DCache、MUL、DIV 等扩展都直接按同一 `Module + Register + Wire`
+模型接入，不再引入第二套快照机制。
 
-**为什么成立（时序等价）**：转换模块 X = 删 CPU 里快照成员 `XModule`、Input 引用重指单一实例 `CPUstate.X`。
+## 阶段 0--9 回顾
 
-| | 未转换（memcpy 双缓冲） | 已转换（Register 自同步） |
-|---|---|---|
-| 周期内可见 | 快照成员（comb 开头 memcpy） | `_M_old`（上一周期末 sync 提交） |
-| tick 写 | `CPUstate.X` | `field <= v`（写 `_M_new`） |
-| 提交 | 下一周期 comb() memcpy | 周期末 sync() |
-
-两者"周期内可见 = 上一周期末"一致；跨模块读：未转换消费者读已转换生产者走 `input.X` 访问器（=`_M_old`），已转换消费者读未转换生产者走快照成员——都等于上一周期末。**机制可靠，混跑行为等价**。通信层不必立刻用 Wire：转换模块保留 const 访问器作为"桥"，未转换消费者照常调用；Wire 只在**生产者与消费者双方都转换**后引入。
-
-**揉进有 6 条硬约束（每条都真实存在）**：
-
-1. **模块粒度全有或全无**：Register 禁拷贝，含 Register 的模块被 memcpy 即 UB。不能半转换。
-2. **每次转换动三处**：`CPU.hpp`（删快照成员、重指 Input 初始化）、`CPU.cpp`（comb() 删该模块 memcpy 行、run() 末尾加该模块 sync）、`test/reorder_test.cpp`（`runStage` 引用改单实例 + 周期末补 sync + 状态比较不能用 memcmp 对含 Register 的模块）。
-3. **Register 初值问题**：Register 只有默认构造（`_M_old=0`），无法构造时设非零初值——RAT `RAT_PRF[i]=i`、BPU 表 `=1` 这类初值需"复位周期"或显式 reset 逻辑（模板本身空缺，BPU/RAT 转换时要专门设计）。
-4. **算术摩擦**：Register 只有 explicit 转换，`(tail+1)&0xF`、`(head^next_tag)==0x40`、`ROB::isOlder` 等 tag/指针运算都要 `static_cast`，ROB/SQ/LQ/PRF 热路径改动量大。
-5. **memset 构造器必须重写**：FQ/LQ/SQ/ICache/FetchUnit/IMEM 的 `memset(this,...)` 对含 Register 的类是 UB，改逐成员显式初始化。
-6. **单赋值是硬性纪律**：Register `_DEBUG` 对同周期双写 assert，SQ push+flush 同写 tail、ALU push+flush 同写 slotValid 这类须先重构。
-
-**结论**：并存可行且是逐模块迁移的唯一安全路径（每步 golden+reorder 独立验证）；但它本质是**过渡态**而非长期架构——同时维护两套状态机制/同步路径/混合 Input 引用的成本长期看比任何单一架构都差；"揉进"不免费，每揉一个模块付 1–6 的代价并保持全绿。若最终不走全量模板，揉进几个模块只会背上两套机制复杂度，不建议。
-
-## 总原则
-
-1. **先简单后复杂、生产者先于消费者、总线最后**。
-2. **每模块转换天然含单赋值重构**：Register 调试态（`_DEBUG`）对同周期双写 assert，强制把 SQ push+flush、ALU push+flush 等"同字段两写"改成"算一次写一次"（RTL 纪律）。
-3. **transition 期 tick 签名不变**（`tick(const XInput&, systemState&)`），reorder_test 结构沿用；但每转换一个模块，reorder_test 需同步适配（`runStage` 引用改单实例、周期末补该模块 sync、状态比较避开含 Register 模块的 memcmp）。仅收尾阶段切换为 work()。
-4. **Checkpoint 机制不迁移为 Wire**：ckpt_id + RAT/PRF/BPU 本地快照数组是"状态复制"，用 Register 数组存、恢复时逐槽 `<=`。
-5. **`getIndexByTag` 存活守卫原样保留**（headTag 守卫 + squash 检查），不因改 Wire 放宽。
-
-## 阶段列表与进度
-
-### 阶段 0 — 基础设施（一次性）
-- [x] vendor 模板头文件（`bit/concept/debug/register/wire/synchronize/reflect/module/cpu` 等）到 `src/include/` 或接入 include 路径；确认 C++20 + g++-12+
-- [x] 确立"混跑"存储模型（已转换单实例 + 未转换双缓冲）
-- [x] `CPU::run()` 末尾加 `sync_all()`（先手写已转换模块列表）
-- [x] 建立每步验证门禁：`cmake --build build` + 短用例 + reorder；里程碑跑全量 18 用例（另建 `-D_DEBUG` 配置压单赋值 assert）
-- 验证：基线 `./test.sh` 18/18 + `reorder_test` 通过后才开工
-
-### 阶段 1 — 定版模块：FetchUnit
-- [x] 状态字段 `programCounter:32`/`haltFetched:1` → `Register`
-- [x] Output Wire：`getPC`/`isHaltFetched`；删 comb() 的 memcpy 行；Input 重指（实际定版：Output 直接暴露 Register，消费方 explicit cast 读）
-- [x] tick 改单赋值 + `<=`；run() 末尾 sync
-- 验证：golden + reorder 通过（确立全部转换手法）
-
-### 阶段 2 — 取指侧生产模块
-- [x] FetchQueue（entries/head/tail → Register；headRaw/pc/PredictedPC/CkptId/full/empty → Output Wire）
-- [x] DecodeUnit / InstructQueue（head* 字段 → Output Wire；消费方 FQ/IssueArbiter；实际定版：合并单一模块，InstructQueue 类删除，head* 以 const 桥接访问器输出，IssueArbiter 零改动）
-- [x] ICache（blocks 保持普通数组或 Register 数组？；requestBuffer/head/count → Register；hit/return* → Output Wire）
-- [x] IMEM（IMEMreqs/head → Register；getReturn/isReturnReady/isRequestFull → Output Wire；Memory 保持外部；实际定版：data 全 Register、head:4bit、remainCycle:2bit；**count 寄存器删除**（手法 #10）——occupancy 由 valid[] popcount 派生、full=AND、isReturnReady 用首槽位，squash 清全槽 valid，周期首 `assert(windowContiguous())` 兜底）
-- 验证：每模块 golden + reorder
-
-### 阶段 3 — 执行单元
-- [x] ALU（outputBuffer/slotValid → Register 数组；headValue/headRobTag/headIsControl/isFull/isEmpty/isValid → Output Wire）
-- [x] AGU（同 ALU；headMemIndex → Output Wire）
-- [x] BRU（同 ALU；headPCFrom/headPCResult → Output Wire）
-- 验证：每模块 golden + reorder（CDB 候选/转发源就绪）
-
-### 阶段 4 — 值通路核心
-- [x] PRF（PhysicalRegs/freeList/headSeq/tailSeq → Register；isReady/getValue/isOperandReady/getOperandValue/freeList* → Output Wire，扇出最广）
-- [x] RS（槽数组 → Register；src1/src2/data（Operand）字段；tryAlloc* → Output Wire；RS 去值化后值一律经 PRF）
-- 验证：每模块 golden + reorder
-
-### 阶段 5 — 存储顺序
-- [x] DMEM（busy/bufferValid/MemExecution/MemOutputBuffer → Register；isBusy/isReady/LoadReturn → Output Wire；Memory 外部）
-- [x] LQ（LQqueue/head/tail → Register；CDBDetect/LoadDetect/isReadyToCommit/getAddress/getValue/... → Output Wire/数组）
-- [x] SQ（SQqueue/head/tail → Register；planDataForward/planAddressForward/replyToLoadRequest/canDispatchLoad/hasOlderUnresolvedAddressStore → Output Wire）
-- 验证：每模块 golden + reorder
-
-### 阶段 6 — 核心：ROB
-- [x] ROBEntry[64]（多字段）→ Register 数组；head/next_tag/haltCommitted/haltRd → Register
-- [x] 全部 get* / isHead* / headType / getIndexByTag → Output Wire/数组；**一次性重指所有消费方 Input**
-- 验证：golden + reorder（读方最广，改动面最大）
-
-### 阶段 7 — 双 hub
-- [x] FlushArbiter（requests → Register；arbitResult → SquashInfoWire 广播总线；receive/clear 保持状态内部）
-- [x] BPU（大表 globalPHT/LHT/localPHT/selector/BTB/RAS/alignQueue → Register 数组；predict/getNextCkptId → Output Wire；GHR/RAS 推进与恢复保持状态内部）
-- 验证：每模块 golden + reorder
-
-### 阶段 8 — 无状态仲裁/总线 Wire 化
-- [x] FetchDecision（BPU.predict + FetchUnit/FQ/ICache/IMEM Output 组合）
-- [x] CDBArbiter → cdbOut（ALU/LQ Output 组合）
-- [x] CDBBus（cdbOut 派生，`{lsqSetCDB, memIndex}` 仅 LQ）
-- [x] DispatchArbiter（RS/ALU/AGU/BRU/ROB/PRF Output 组合，PRF.isOperandReady 判就绪）
-- [x] MemRequestArbiter → MemDispatchDecision（LQ/SQ/ROB/DMEM Output 组合）
-- [x] IssueArbiter → issuePacket（Decode/ROB/RS/RAT/PRF/LQ/SQ Output 组合；多字段超 32bit 拆逐字段 Wire）
-- 验证：golden + reorder；comb() 总线从"读快照"整体切到"Wire 引用"
-
-### 阶段 9 — 收尾
-- [x] 删 comb()；删全部快照成员；Input 引用全部重指单一实例
-- [x] tick() → work()；CPU::run() → `run_once`/`run_once_shuffle` 风格
-- [x] reorder_test 切换为模板乱序验证
-- [x] 全量 18 用例 + reorder；更新 `AGENTS.md` / `docs/output.md` / README
-- 验证：18/18 golden + reorder 全排列一致
-
-> ⚠️ 上列阶段 2–9 的"reorder / reorder_test"验证项已随 2026-09-10 `test/` 清理退役；
-> 现行验证闭环 = 双树 x10+clock 逐位一致 + `docs/benchmarks.md`（`result`/`cycles`）。
-
-## 关键风险与注意
-
-- **ROB/FlushArbiter 的 `getIndexByTag` 存活守卫**：headTag 守卫 + squash 检查在 Wire 组合函数里原样保留。
-- **Checkpoint（ckpt_id）**：RAT/PRF/BPU 本地快照数组是状态复制，用 Register 数组、恢复逐槽 `<=`，不走 Wire。
-- **Memory（IMEM/DMEM）**：128KB 存储数组保持外部普通数据，不进 sync（Register 数组 sync 开销大且语义不符）。
-- **单赋值**：Register `_DEBUG` 双写 assert；迁移时先重构同周期双写（SQ push+flush 同写 tail、ALU push+flush 同写 slotValid 等）。
-- **宽结构体拆分**：SquashInfo/CDBOutput/CDBBus/FetchDecision/MemRequest/IssuePacket/StoreNotify/LoadResponse/PredictInfo/OperandInfo/LineReturn 拆逐字段 Wire 聚合体；聚合体 sync 上限 ≤14 成员，超了嵌套。
-- **混跑期读一致性**：comb() 已转换模块读 `CPUstate.X`（=`_M_old`）、未转换读快照成员，值一致；每步转换后立即 golden 兜底。
-
-## 进度记录
-
-- 2026-08-22：`docs/output.md` 完成（全模块 Output 清单 + 总线归属表，含 RS 去值化修订）；本文件建立迁移顺序与进度跟踪。
-- 2026-08-22：补入"混跑的边界与代价"（并存 = 过渡态；6 条硬约束：全有全无/三处联动/Register 初值/算术摩擦/memset 重写/单赋值）；修订总原则第 3 条（reorder_test 每模块需同步适配）。
-- 2026-08-23：阶段 0/1 收口。`sync_all()` 手写列表落地（FetchUnit）；基线验证 17 用例 x10+clock 与参考/golden 严格一致（pi 留里程碑）。
-- 2026-08-23：阶段 2 前两项落地——**FetchQueue**、**DecodeUnit/InstructQueue** 转模板：
-  - 形态照搬 FetchUnit 定版：Input=Wire 组合体（wire() 接线在模块实例上）、状态 Register、work() 单赋值 `<=`、squash 后 return 保留、周期末 sync_all()；
-  - 条目数组换 `std::array`：FQ=`std::array<FQEntry,8>`{raw/pc/predictedPC:32, ckptId:8}，IQ=`std::array<UopEntry,16>`（13 字段 ≤14 成员上限）；
-  - 对外组合值保留 **const 桥接访问器**读 `_M_old`（签名不变）→ 未转换消费者零改动：IssueArbiter 13 个 head* 原样、CPU.comb/run 原样、Decoder.cpp 随 DecodeUnit 合并重写；
-  - 新坑记录：Wire/Register 的 `operator bool` 是 explicit，`&&/||` 里必须 `static_cast<bool>`；
-  - 验证：17 用例 release 与 `-D_DEBUG` 双门禁 x10+clock 严格一致（快 9 例每子步骤 + 中档 8 例收尾；pi 留里程碑）。
-- 2026-08-23：位宽收紧（手法 #9 确立）：FQ ckptId 8→**6**bit（=log2(CKPT_CAP)）、head/tail 8→**3**bit（=log2(FQ_CAP)）；IQ ckptId 8→**6**bit、head/tail 8→**4**bit；对应 Wire 同步。纯头文件模板参数改动，.cpp 零改动（int_type 写入裁剪 + static_cast 读取链保证域内无损）；旁置 `static_assert(CAP==...)` 守卫。11 用例（快 9 + hanoi/superloop）release 与 `-D_DEBUG` 双门禁严格一致。
-- 2026-08-23：阶段 2 第三项落地——**IMEM** 转模板（data 全 Register 方案）。审查修正 5 处：count 位宽 4→**5**bit（0..16 溢出 bug）、squash 补清全槽 valid（残留倒计时槽与回绕 push 双写/脏 data 风险）、wire() 补 icacheHit 门控+`&~0xF` 行对齐、`(head+count)` 等长运算改显式 uint32、sync_all 补 IMEMModule.sync()。17 用例 release+`-D_DEBUG` 双门禁严格一致（pi 留里程碑）。
-- 2026-08-23：IMEM **count 寄存器删除**（手法 #10 确立）：valid[]⟺窗口不变式下 occupancy=popcount 派生、isRequestFull=AND、isReturnReady 缩为首槽位，pop/push 对 valid 的写即增减计数；同拍 pop+push 的槽位恒等式与连续性逐路径归纳证明，并加周期首 `assert(windowContiguous())` 运行时兜底（_DEBUG 下 11 用例每拍校验零触发）。净效果 -5FF、消掉 pop+push 同拍净写。release 复验 gcd/superloop/basicopt1 严格一致。
-
-## 2026-08-31 双树 clock 逐位对齐战役（17/17 收官，pi 待重验）
-
-**结果**：17/17 用例 x10 + clock 双树逐位一致（gcd 880 / array_test1 342 / array_test2 379 /
-multiarray 2031 / lvalue2 141 / naive 73 / expr 1011 / manyarguments 149 / statement_test 1706 /
-hanoi 176279 / basicopt1 532885 / bulgarian 369515 / qsort 1226385 / magic 779059 /
-queens 843711 / superloop 636510 / tak 1967314）；build-assert 零触发；reorder_test
-gcd/lvalue2 各 20 轮全排列一致（tak 未入窗，机制同证）。多数 clock 较旧基线**变优**
-（gcd 885→880、basicopt1 533486→532885、bulgarian 371044→369515、magic 787282→779059 等）。
-golden 双树统一重写为新基线；pi.golden 保留旧值暂判 FAIL（轨迹变更待重验 ~44min）。
-
-### 根因链（探针 → trace diff → 逐 hop 归账，共六项）
-
-方法：对称插桩（PR/TRAIN/FI/ALLOC/SQRES/GA/DISP/SQF 走 util.hpp debug 主题），
-跑 gcd/hanoi/bulgarian 找**首个分歧拍**，逐 hop 回溯到状态写入点。验证后全部拆除。
-
-1. **模板 LFSR boot seed 被 commit 覆盖**（gcd ALLOC 探针首分配选表不同锁死）：
-   BPU commit 块 `dir.lfsr <= lfsr` 每拍无条件执行，cycle-0 读 _M_old=0 与 boot 块
-   `dir.lfsr <= LFSR_SEED` 同拍双写（Release 第二写胜出→seed 丢失→victim-pick 全偏；
-   _DEBUG 即 register.h:38 断言真身）。改使能写（仅 lfsr_steps>0 拍写回）。
-2. **主树 FI 早训练 BTB 写死快照**（ret 位 PR 探针差异定位）：tick() 在 comb 快照副本上
-   执行，对 BTB 的九行赋值从未持久化，主树 BTB 早训练（JAL target/RET type）
-   一直无效；改写 CPUstate.BPUModule.tgt.BTB。属性能缺陷修复（早训练本为设计意图）。
-3. **模板 updateJumpPlan 硬编码 T_BTB_IND=1**（hanoi PR ind 位差异定位）：主树写
-   isIndirect 参数（CDB 口 Cand 恒不设 = false）；TC 训练门同步补 req.isIndirect
-   （主树 CDB 口恒 false → TC 永不训练，模板对齐）。
-4. **模板 BPU 无差别 needSquash 抹除 trBru**（bulgarian TRAIN 事件缺失定位）：
-   主树仅有 !needSquash 与 isOlder(brTag, squashTag) 解码门；无差别抑制把广播拍上
-   更老分支的训练一并抹掉（比 squash 点老的训练本应保留）。删除，仅留 isOlder 门。
-5. **模板 squash 回卷两处偏差**（hanoi FI tm=5/4 与 bulgarian SQRES dist=-255 定位）：
-   a. 回卷重放范围基准用 post-fi 镜像 alignTail（本拍 FI 日志项被误回卷）→ 改 pre-fi
-      基准 alignTailPreFi（主树用快照，语义 = 本拍 FI 事件不被回卷）；
-   b. dist = curTail - base 用 uint32 减法，0-255 下溢为 0xFFFFFF01 → 重放 32 条垃圾
-      日志（主树 uint8 模 256 = 1）→ 改 (curTail - base) 掩码 0xFF。
-6. **模板 IssueArbiter RET 门控删除（D3，已批准）**：ra=0 野取指真因是 BTB/RAS 守卫缺失，
-   门控属多余队头阻塞（bulgarian MDP 时序偏移实证）。
-
-### 旧结论废弃
-
-- "squash 广播 +3 拍"：DISP 149/152 周期戳取自野取指（BTB target=0）未修时代，全在下游
-  污染区；修复后两树同拍（N 执行 → N+1 检测入队 → N+2 广播）。FlushArbiter 保持 3 拍队列，
-  **B 方案拍平取消**。
-- "TAGE ctr +2 vs +1 同拍双口分歧"：现端口切分下 update（bru）与 updateJump（cdb）写表
-  集合不相交，BHT/BTB 双口碰撞两边等价（BHT 融合 din / BTB cdb 胜出整字写），零发生。
-- "clock 漂移为预期"：作废，clock 逐位对齐恢复为硬门禁。
-
-### 主树同轮改动（已报备）
-
-- src/BPU/BPU.cpp：① predict() 加 isRet 且 RAS_top==0 → btbHit=false、taken=false
-  （空栈 RET 回退 pc+4，堵 BTB target=0 野取指，两树同款）；② tick() FI 块 BTB 早训练
-  改写 CPUstate（见根因 2）。
-- ROB tag 域单一化（参照模板树）：ROB::idx / ROB::getIndexByTag / SquashInfo.SquashIndex /
-  IssuePacket.robIndex 全删，tag & 0x3F 直取；涉及 ROB/Arbiter/BPU/PRF/LQ/SQ/RAT/
-  IssueArbiter 及 IssueArbiter.hpp、ROB.hpp、common.hpp 死线删除。
-- 上述主树行为变化均已过 x10+clock 门禁。
-
-## 2026-09-02 DCache 迁移收官：multiarray 死循环根因修复（AGU 违例 squash 目标错误）
-
-### 现象与定位链
-- 现象：DCache Step 1 迁移完成后 17/18 用例（非 pi）x10+clock 与主树逐位一致，
-  唯 multiarray 死循环（程序跳回 .rom 重启，输出 0，永不 halt）。
-- 排除 BPU：双树 1178（j 循环退出分支 bge）的 predict/update 在 cycle 序列上只差
-  1 拍时钟偏移，t0idx/t0v/lht 演化序列完全一致（94→95→93→89→81→65），BPU 非根因。
-- 决定性 trace：提交 PC 轨迹 + squash 轨迹，捕获 `SQ cyc=1637 ->0`——一次重定向到
-  **PC 0** 的 squash，机器从 .rom 重启无限循环。
-
-### 根因
-FlushArbiter（DynamicArbiter）AGU store-load 违例处理段，重定向目标误用了
-`rob.robPredictPC[violTag]`：load 类 ROB 表项只有 INT/BR/UJ 发射者会写 predictedPC，
-**load 项恒为 0** → squash 到地址 0。主树用 `ROB::getPC()`（真实 fetch PC）。
-
-### 修复
-- `FlushArbiterInputROB` 新增 `robPC` Wire 数组（真实 PC 输入线，与 robPredictPC 并列）；
-- CPU.cpp 接线 `flushArbiter.rob.robPC[i] = ROBModule.entry.pc[i]`（ROB 已有该
-  Output Wire，读 ROBqueue[i].pc 寄存器）；
-- 违例段 `viol.SquashPC = rob.robPC[violTag & 0x3F]`。
-- 语义：违例重放从**违例 load 自身 PC** 重新取指（与主树一致）。
-
-### 诊断代码清理（同轮）
-- 模板树：CPU.cpp（FT/SQ/TRC/DIAG/g_diagCycle/g_trcN/8000 拍提前终止）、BPU.cpp
-  （RAS/PRD/TBRU/TCDB/UP/g_rasSeq）、DynamicArbiter.cpp（BRU/JLR/AGU）全部移除；
-  DCache 临时全局计数器改为正式 `statHits/statMisses/statWritebacks` 成员，
-  CPU.cpp 结尾按 `TOPIC_DCACHE` 打印命中率汇总（对齐主树 debug 体系）。
--   主树：BPU.cpp/CPU.cpp 诊断 git checkout 还原；另删除 CPU.cpp 中引用已删除 API
-  （DCache getHitCount/getMissCount/getWritebackCount）的死调试块（该块编译必炸）。
-
-## 2026-09-02 收官：官方判题 19/19 全过 + 最终清理
-
-### 判题结果（用户 WSL Release 构建，官方判题表）
-- **19/19 passed，x10 全部 Golden OK**，含 **pi = 137**（墙钟 5355.6s，≈25.7K 拍/s）。
-- 非 pi 17 例 + wb_test 的 x10+clock 与主树逐位一致（详前表）。
-- pi 的 clock 与主树（137590156）逐拍比对为低风险遗留项：判题表 pi 行 Clock 显示 0
-  属解析显示问题；确定性模拟 + 其余 18 例 clock 全对支撑高置信。
-
-### 最终清理（判题通过后）
-- 移除 3 处**无门控 DBG 探针**（multiarray 调试遗留，硬编码地址/阈值）：
-  LQ.cpp `LQsn fwd`（addr==0x12E4）、LQ.cpp `LQresp`（addr==0x12E4）、
-  ROB.cpp `robwrite`（pc>0x2000）。CPU.cpp 结尾 `std::cout` 为 x10 结果输出，保留。
-- 清理后等价性冒烟：multiarray 115/1887、gcd 178/869、statement_test 50/1669、
-  wb_test 1/55 逐位一致，stderr 恢复纯净（无 VERBOSE 时仅 0 字节）。
-- 根目录 `code`：用户 WSL 判题构建的 **ELF Release**（构建于全部语义改动之后；
-  与清理后源码唯一差异 = 3 处 stderr 探针，无语义影响），下次判题重建自然同步。
-  Windows 侧等价性验证二进制：`.cache/tmpl_final.exe`（mingw -O2）。
-
-### 环境经验（选测试环境必读）
-- WSL Release（判题配置）：≈25.7K 拍/s；MSYS g++ -O2 手动构建：≈2.5K 拍/s。
-  同一代码 **10× 差距**（Wire lambda 密集代码的平台代码gen差异）。
-- pi（137.59M 拍）在 WSL ≈1.5h、MSYS 需 ~15h——**长用例一律 WSL 判**；
-  MSYS 侧只做快速冒烟与 -D_DEBUG 断言验证。
-
-## MUL 迁移落地（2026-09-07，接线收官）
-- **64 位中间结果定版**：`max_size_t=uint32_t` 只约束存储类型；work() 内 uint64_t
-  局部量做全部组合运算（Booth 行/CSA 树/CPA），跨拍状态拆 lo/hi `Row64`
-  双 `Register<32>`（19 行 + S/C；`expected` 自检链按决议删除）。
-- **work() 六段**：采样 / stage3(CPA+槽扫描，remove-先行复用语义) / stage2(CSA树)
-  / stage1(Booth) / valid 收敛 / slotValid 收敛（flush>fill>remove>hold）；
-  calculate* 辅助函数删除（用户要求无引用接口），重建全部进 work()。
-- **转录 bug 一例（LCG 门禁捕获）**：`A` 误写零扩展
-  `static_cast<uint64_t>(static_cast<uint32_t>(op1))`，主树为符号扩展——
-  (0x80000000,1,MULH) 高半错。修后注释立碑。
-- **接线**：common.h（RISC_V::M 对齐主树序号 + MULTIPLYRS_CAP=4；dec.type/UopEntry.type
-  Wire/Register 3→4b）、Decoder 0x33+funct7==1 分类、RS multiplyRS 池（复用 IntRS）、
-  IssueArbiter win=8（Wire<4>；DIV 族 opDec-invalid 门控 stall）+ mulP/select、
-  DispatchArbiter mul grant（mulSelect 复用 selectOldest；rsType 恒 Integer 未消费）、
-  PRF/ROB cdbOfMUL 第三口、CPU（MULModule/MulCDBModule + add_module ALU→MUL→AGU；
-  顺手修 CDB 改名残留 AluCDBArbiter/LqCDBArbiter→AluCDB/LqCDB）、
-  MulCDB 补 `mul cdb broadcast` 打印（VERBOSE=exec 计数法恢复）。
-- **门禁全绿**：LCG 直驱 100267 例 ×Release/-D_DEBUG；8 快 + queens/magic/superloop/
-  basicopt1(634k) I-用例双树逐位；rv32im 双臂 I/M bulgarian 258082/254483、
-  statement 3559/2645、multiarray 2236/2236 双树逐位；广播计数 31/16 双树一致；
-  build-assert 零触发；reorder gcd 20/20 + M/bulgarian 5/5。
-- **rsType 对齐补丁**：`mul.rsType` 恒 Integer 近似值撤回，改驱 `RSType::Multiply`
- （主树 StaticArbiter.cpp:65）。双树读者-写者审计结论：`rsType` 写四处、读仅 AGU
-  通道（选 Load/SA 池）；alu/bru/mul 三家双树皆纯写无读（专用总线身份即类型，
-  非死代码，不可单删）；`RSType` 入枚举致 `StoreAddr=4`，`rsType` 线同步扩 3 位。
-  改后 9 用例双树逐位零漂移 + build-assert 零触发（符合“无人消费故零行为差异”预期）。
-
-
-## DIV 迁移落地（2026-09-12，模板树接线 + 全量验证）
-
-**背景**：`src/DIV/DIV.cpp` + `src/include/DIV.hpp` 此前只是**孤立编译**——CMakeLists 收了源文件，
-但 CPU 里没有 `DIVModule` / `DivCDB` / `divideRS`，Stage A 把 `funct3 4..7` 解码成 `OP_INVALID`
-后直接 stall head。后果：M 语料里任何含 div/rem 的程序**卡死**，`register.h:38` 的双写断言也
-永远触发不到（模块不跑）。本轮照 MUL 范式 + 主树参考实现把 DIV 接进模板流水线，并完成全量验证。
-
-### 接线范围（12 文件）
-
-| 文件 | 改动 |
+| 阶段 | 完成内容 |
 |---|---|
-| `include/common.h` | `DIVIDERS_CAP=4`；`RSType` 插入 `Divide`（`StoreAddr` 4→5，`rsType` 仍 3bit） |
-| `src/include/RS.hpp` `src/RS/RS.cpp` | `divideRS` 池（`std::array<IntRS,4>`）+ `tryAllocDivide` + `isDivFree/getDiv{Op,Src1,Src2,RobTag}`；`sel.hasDivide/divideSlot`、`data.divP.*`、`dispatch.divValid/divIdx`；push/release/flush 单写口循环 |
-| `src/include/StaticArbiter.hpp` `.cpp` | DispatchArbiter：`divAccept`（= `DIV::canAccept()`，**非 isFull**）+ `divBusy/divSrc1Tag/divSrc2Tag/divRobTag` + `divSelect()` + `div` 通道；IssueArbiter：`divBusy` 扫描、`divFree/divSlot`、win=**9**、`select.hasDivide/divideSlot`、`divP` 载荷组；`decodeOp` 的 M 族补齐 funct3 4..7；`issueClass` 按 op 拆 MUL(8)/DIV(9)；win=9 与 MUL 同构，在 robEntry 全部 9 处门控里登记 |
-| `src/include/CDB.hpp` `src/CDB/CDB.cpp` | 新增 `DivCDB`：`divEmpty = !isReady`，无输出缓冲 ⇒ 直接抽结果寄存器；`divValue` 在接线层用 `isReady` 门控（`getValue()` 对陈旧 `operationType` 会 throw）；**不加** `VERBOSE=exec` 打印（参考实现的 `divCDB::build` 也没有，避免双树 exec 计数漂移） |
-| `src/include/PRF.hpp` `src/PRF/PRF.cpp`、`src/include/ROB.hpp` `src/ROB/ROB.cpp` | 第四路写口/提交就绪口 `cdbOfDIV`（三路 → 四路）；PRF 侧保留 `prf div-write` exec 打印（与模板既有 `prf mul-write` 同风格） |
-| `src/include/CPU.hpp` `src/CPU/CPU.cpp` | `DIVModule`/`DivCDBModule` 成员 + `add_module` + 全部 Input Wire 接线（DIV 六项入线、DispatchArbiter div 通道、IssueArbiter `divBusy`、PRF/ROB `cdbOfDIV`、RS `sel/data/dispatch`） |
-| `test/CMakeLists.txt` | **补 `MUL.cpp`/`CDB.cpp`/`DIV.cpp`**：该列表自 MUL 落地起就漏了 `MUL.cpp` 与 `CDB.cpp`，reorder_test 一直链接不过（本轮实测确认） |
+| 0 | 引入模板基础设施，建立 `Register` 自同步和混跑验证方法 |
+| 1 | 以 FetchUnit 定版状态、输入接线、桥接访问器和单写口手法 |
+| 2 | 迁移 FetchQueue、DecodeUnit、ICache、IMEM 等取指生产模块 |
+| 3 | 迁移 ALU、AGU、BRU 执行单元 |
+| 4 | 迁移 PRF、RS，值与就绪状态统一由 PRF 派生 |
+| 5 | 迁移 DMEM、LQ、SQ，保留访存顺序与前向语义 |
+| 6 | 迁移 ROB，统一最广的 tag、提交、checkpoint 和恢复读口 |
+| 7 | 迁移 FlushArbiter 与 BPU 两个状态 hub |
+| 8 | Fetch/CDB/Mem/Dispatch/Issue 等组合决策及中央总线全部 Wire 化 |
+| 9 | 删除快照运行时，切换到 `dark::CPU`，完成全模块 `work()+sync()` 收口 |
 
-### 验证结果（全部当日实测）
+## 快照与 Register 的时序等价
 
-| 门禁 | 结果 |
+迁移能逐模块进行的根本原因不是接口相似，而是两套机制表达同一个同步时序：
+
+| 旧快照框架 | 模板框架 |
 |---|---|
-| 编译（MSYS g++ 15.2 `-O2`） | 通过；`-D_DEBUG` 版同样通过 |
-| 编译（WSL gcc 13.3 + cmake 官方路径） | 通过。⚠️ 模板树 `build/` 缓存当时是 **Debug**（AGENTS 点名的坑），已按项目规则 `-DCMAKE_BUILD_TYPE=Release` 重配 + `rm code` 强制重链 |
-| **M 语料 18/18**（`data/testcases_rv32im/M`） | x10 + clock 与主树**逐位一致**，并等于 `docs/benchmarks.md` M 臂表：TOTAL_CLOCK **12,150,300**（含 pi **7,844,594**，主树同值复核过） |
-| **rv32i 语料 17/17（非 pi）** | x10 + clock 与主表逐位一致，TOTAL **5,628,277**；DIV 接线对 rv32i 镜像零漂移（镜像里无 M-ops ⇒ 不产生 div 事件）。rv32i pi（137.6M 拍）未重跑 |
-| **WSL Release ELF 交叉复核 pi** | 根目录 code 二进制（gcc 13.3 / `-O2` / ELF）跑 M-pi：clock **7,844,594**，branch 283986/284202（=99.924%），与 MSYS g++ 15.2 构建**同值**——时钟数不是编译器产物 |
-| **_DEBUG 跑 M 语料 17/17** | `register.h:38` 双写断言 **零触发**（覆盖 DIV 全部 FSM 支路：prepare / loop 五分支 / calculateResult / drain / flush） |
-| **DIV 单元差分测试**（新增，直驱模块 + DivCDB） | **1,601,791 项检查 0 失败**（Release + `_DEBUG` 各一轮）= 21×21 边界集×4 op + 40 万随机向量×4 op（稀疏/大数/全随机三档）+ 15 条手写 corner（`INT_MIN/-1`、`d==0` 四种、`|x|<|d|`、`|x|==|d|`、符号组合）+ flush 三分支 + effective-tag 同拍替换子句；oracle 直接写自 RISC-V ISA 定义 |
-| **reorder_test**（`run_once_shuffle`） | M/gcd 20/20、M/lvalue2 20/20 全同 |
-| **DIV 动态事件计数**（`VERBOSE=exec`） | `prf div-write` gcd 7/7、bulgarian 18/18、statement_test 6/6 双树一致（`mul cdb` / `prf mul-write` 同步一致） |
+| 活体模块由 `tick()` 写 next-state | `work()` 用 `<=` 写 `Register::_M_new` |
+| 周期开始把活体模块复制到只读快照 | 周期开始读取 `Register::_M_old` |
+| 本周期所有模块只读快照 | 本周期所有模块只读已提交状态和由其派生的 `Wire` |
+| 下一周期 `comb()` 的复制使写入可见 | 本周期末 `sync()` 令 `_M_new` 成为新的 `_M_old` |
 
-### 等价性论证（模板 DIV 的"重写"不是转录）
+所以两者都满足：本周期组合和时序决策只能观察上一拍已提交状态，本拍写入只能在下一拍被观察。
+`Wire` 是组合函数，不是寄存器；它按拍懒求值并缓存，`sync()` 清缓存，不会凭空增加一拍。
 
-模板 `DIV.cpp` 与参考实现**逐段对齐**（特例前段 / prepare / loop / calculateResult / flush），
-差异只在两处**有证明的表示变换**：
+最终 `dark::CPU::run_once()` 先调用全部模块的 `work()`，再统一 `sync_all()`。
+正常注册顺序沿用了旧手写循环，正确性则不应依赖这个顺序：模块不能读取其他模块本拍的
+`_M_new`。迁移期曾用打乱 `work()` 顺序验证这一性质；它现在是历史证据，不是现行回归项目。
 
-1. **>32bit 状态拆 lo/hi**：P 域 PW = 35+shiftD ≤ 36bit，`regSLo/regSHi(4b)`、`regCLo/regCHi(4b)`、
-   D_dp `unsignedDivisorLo/Hi(1b)`。消费方一律先 `& mask`（mask ≤ 36bit）⇒ 截断无损：
-   `(X<<2)&mask` 只看 X 低 34 位；`Pk = regS+regC` 的低 36 位与全宽一致且随后 `Pk &= mask`；
-   `Pk>>63` 的符号判据在 mask **之后**，故不依赖高位一的补垃圾。
-2. **work() 单写口优先链**（flush > drain > fullAdder > loop > prepare > receive）替代参考的级联 if：
-   参考 `tick` 里 `receive` 写在 `flush` 之前（flush 用**已写入的新 tag** 判 `isOlder`），
-   模板用 `effTag = dispatchValid ? dispatchTag : robTagOld` 精确复现该语义（已单测覆盖两个方向）。
+`CPU::run()` 仍是 host-only 仿真外壳。它必须在 `run_once()` 前采样停机与排空条件，
+保持旧框架“周期开始判停”的语义；HALT 后还要等 SQ、DCache 和 DMEM 排空，不能截断已提交 store。
 
-### 遗留 / 文档债
+## 历史：混跑期六条硬约束
 
-- `docs/output.md`（"全模块 Output 清单 + 中央总线归属表"）自 MUL 落地起未同步：缺 `MulCDB`/`DivCDB`、
-  `mulP`/`divP`、`multiplyRS`/`divideRS`、win 码 8/9。它是迁移期计划文档，需一次专门的对齐 revision。
-- 模板树 `code`（根目录 ELF）本轮被重编过，已按 Release 重建；旧二进制备份在 `.cache/code.bak_before_div_test`。
-- 验证脚手架（未入库，均在 `.cache/`）：`div_unit_test.cpp`（DIV 单元差分测试）、`build_sim.py`（直驱 g++ 构建）、
-  `simrun.py`（语料批量跑）、`reorder_run.py`（乱序一致性）。若需纳入仓库建议放 `test/`。
+以下六条只描述阶段 0--9 期间的过渡架构，**当前模板树已经没有混跑边界**。
+保留它们是为了说明迁移为何安全，以及未来若重做类似迁移不能省略哪些步骤。
+
+1. **模块必须全有或全无地转换。** `Register` 不可按普通对象 `memcpy`；包含它的模块若仍进入快照复制就是未定义行为，不能只改半个模块。
+2. **状态所有权、快照提交和验证适配必须同步修改。** 当时每迁移一个模块，都要同时把 CPU 中的双实例收成单实例、删除对应快照复制、加入周期末 `sync()`，并让验证驱动比较已提交状态而非对象字节。
+3. **非零初值必须显式设计。** `Register` 默认只产生零态；RAT 恒等映射、BPU 计数器和 LFSR seed 等不能依赖构造器偷偷写 `_M_old`，必须有复位/boot 周期及必要的 cycle-0 读视图。
+4. **位宽与显式转换是接口的一部分。** `Register`/`Wire` 的布尔和整数转换是 explicit；环形指针、tag 距离、掩码与年龄比较必须先转成明确宽度，不能依赖宿主整型提升。
+5. **整对象清零必须删除。** 对含 `Register`、`Wire` 或 lambda 的对象执行 `memset(this, ...)` 是未定义行为；状态要逐成员初始化，固定数组使用自身零初始化。
+6. **每个 Register 每拍只能写一次。** 即使两次写入同值，`_DEBUG` 也视为两个物理驱动；push/flush、恢复/发射、写回/直写等冲突必须先归约成优先级或每槽 mux，再从唯一写点提交。
+
+## 终态模块模型
+
+- `Module<Input, Output, Inner>` 同时承载输入 Wire、输出 Wire 和内部 Register；模块实例自身就是 Input 子对象，接线必须落在实例上。
+- `work()` 对应 `always_ff`：读 `_M_old`，计算所有 next-state，每个 Register 保持单写口；不使用提前 `return` 隐藏部分写集。
+- `Wire` 对应 `always_comb`：构造/接线阶段赋一次 lambda，按拍懒求值；组合模块的 `work()` 可以为空。
+- CDB、Mem、Dispatch、Issue 等无状态仲裁器没有 Register。把它们建成 Module 的原因是让 `sync()` 统一清 Wire 缓存，而不是给组合逻辑增加状态。
+- checkpoint 是状态复制，不是普通通信总线。RAT、PRF、BPU 的 checkpoint 数组保留为本地 Register 状态，恢复时逐槽写回。
+- IMEM/DMEM 的大存储阵列和缓存数据阵列不因模板化而机械变成 Register 阵列；端口、控制状态和拍级握手才进入模块同步模型。
+- 位宽按值域收紧，并以 `static_assert` 守住容量假设；环形指针和 checkpoint id 不使用宿主 `int` 充当隐式硬件位宽。
+
+## 现行验证政策
+
+`reorder_test` 及其仓库内脚手架已经退役，不再是构建或验收依赖；不要在本仓库重建一份临时替代品。
+现行闭环是：
+
+1. 主树与模板树对同一镜像比较 `x10`；行为等价改动还必须逐拍比较 `clock`，差一拍就是回归。
+2. `x10 & 0xFF` 与性能基线只认 [`../../docs/benchmarks.md`](../../docs/benchmarks.md)；文档内不复制易过期的总拍数。
+3. Release 验证功能与时序，`_DEBUG` 验证 Register 单写、索引和结构不变量。
+4. 纯表示变换不得改变 clock；有意的微架构改动必须单独说明原因、验证结果和基线更新，不能用“模板天然漂移”解释差异。
+5. RV32I 课程镜像和含真实 `mul/div/rem` 的 RV32IM 镜像分别覆盖基本路径与扩展单元；长用例只作为里程碑，不把临时耗时写入本文。
+
+`run_once_shuffle()` 仍是框架能力，也曾证明 Wire/Register 结构没有隐藏的模块执行顺序依赖；
+但在测试目录清理后，它不再属于日常验证政策。
+
+## BPU 双树 clock 对齐复盘
+
+2026-08-31 的逐拍对齐最终确认了六项差异，其中五项是真 bug，一项是批准的冗余门控删除。
+修复后双树恢复 `x10 + clock` 逐位一致，“clock 漂移是双端口训练的预期结果”这一旧判断作废。
+
+1. **LFSR boot seed 被覆盖。** BPU commit 每拍无条件回写 LFSR，与 cycle-0 boot seed 同拍双写；Release 丢 seed，`_DEBUG` 直接触发双写。改成仅有步进时回写。
+2. **参考树 FI 早训练写到了快照。** FQ 预译码产生的 BTB 早训练没有落到活体状态，JAL target/RET type 实际未持久化；改写真正的 next-state。
+3. **模板跳转训练误写间接类型。** `updateJumpPlan` 把 `T_BTB_IND` 硬编码为 1；改为请求的 `isIndirect`，Target Cache 训练也补同一门控。
+4. **模板过度压制 BRU 训练。** `needSquash` 曾无条件撤销同拍 BRU 训练，连比 squash 更老的分支也被丢弃；删除总闸，只保留年龄判断。
+5. **squash 回卷基准与距离都错。** 回卷使用了 post-FI 的 align tail，并让 8-bit 环形距离按 32-bit 下溢；改用 pre-FI 基准，距离显式按 256 取模。
+6. **RET 队头门控被删除。** 对齐调查证明它不是正确性保护，而是冗余的队头阻塞；两树统一接受删除，空 RAS/BTB target 的真正保护放回预测侧。
+
+这次排查还确立了方法：从首个分歧拍向前追到首个状态写入点，不从最终 clock 差反推原因；
+同拍端口碰撞也必须先证明写集合真实相交，不能凭抽象结构猜测。
+
+## AGU 访存违例：重放必须使用真实 PC
+
+store 地址由 AGU 解析后，FlushArbiter 会扫描更年轻、已经取值或正在取值的同址 load。
+发生违例时，squash 对象是该 **load**，重放地址必须是 `ROB.pc[violTag & 0x3F]`。
+
+曾经错误地读取 `ROB.predictedPC`。load 的 ROB 项不会由 INT/BR/UJ 发射路径填写该字段，
+因此值恒为 0，机器会重定向到地址 0 并从启动区重跑。修复是给 FlushArbiter 接入真实
+`robPC` Wire，并从违例 load 自身 PC 重取。一般化教训是：恢复目标要按字段的生产者审计，
+“字段在 ROB 里存在”不等于“所有 uop 类型都会写它”。
+
+## 标识域与 Register 纪律
+
+### InvalidPhy 与 tag 单域
+
+- `InvalidPhy = 0` 是整个物理寄存器域的唯一哨兵；P0 永不分配、永不建立 RAT 映射，真实 phy 为 `1..127`。
+- `Operand.tag == InvalidPhy` 表示立即数/常量路径；PRF pop/push、RAT 写映射和源操作数解析都要守住非零断言。
+- `RobTag` 是 7-bit epoch+slot 身份；64 项 ROB 的物理槽只由 `tag & 0x3F` 投影得到。
+- 不再维护 `robIndex`、`SquashIndex`、`getIndexByTag` 等第二身份域。年龄比较始终在 RobTag 模 128 域完成，数组索引才切低 6 位。
+- 用 tag 索引前仍要先做存活与 squash 窗口检查；删除冗余 index 不等于删除生命周期守卫。
+
+### 零初始化
+
+`Register` 的 `_M_old/_M_new` 从 0 开始，不能用普通构造器建立非零硬件复位值。
+RAT 和 BPU 使用显式 boot；BPU 对 cycle-0 预测还提供 boot 常量视图，避免首拍先读到未提交的零表。
+
+状态编码应尽量让零态就是安全空态。例如 RS 保存 `busy` 而不是“空闲为 1”的 `free`，
+否则 cycle 0 的组合仲裁会把全零槽误当有效工作。boot 只能保护写路径，不能自动保护首拍组合读者。
+
+### 单写与优先级
+
+同值双写仍然代表两个硬件驱动。正确收敛方式是先收集意图，再用固定优先级或每槽 enable
+产生唯一一次 `<=`。flush 通常压过普通推进；若参考实现依赖“先写后覆盖”，模板必须把该顺序
+显式编码进 mux，而不是依赖 C++ 语句的最后写胜出。
+
+## RAT 写回收敛
+
+RAT 同拍可能同时遇到 checkpoint 恢复和新指令 rename。每个 `RAT_PRF[i]` 只能有一个写点：
+
+- 恢复值以 checkpoint 的 `_M_old` 为 base；
+- 若本拍 issue 分配目的寄存器且 `i == issueDest`，新映射覆盖恢复值；
+- 这精确对应参考实现的“先 restore，后 `setRAT_PRF`”优先级；
+- 本拍建立的新 checkpoint 捕获的是 **恢复前** RAT 快照，但目的槽写入新 phy，复现旧框架从周期初快照复制后再覆盖目的槽的语义。
+
+因此实现按槽计算 `destHit ? issuePhy : (restore ? checkpointValue : hold)`，并让 checkpoint
+写口独立捕获 `destHit ? issuePhy : preRestoreValue`。这既保留拍级语义，也满足 Register 单写断言。
+
+## 状态与容量收敛
+
+### TAGE 1024 -> 512
+
+四张 TAGE tagged table 的索引宽度由 10 降到 9，每表 1024 项缩为 512 项；T0 及其他结构不随之缩小。
+采纳的 W=9 方案使 tagged-table SRAM 约减半（约 28.7 Kb），全量总 clock 与 pi 均略有改善，
+已观测单例最差变化约为 `+0.35%`。W=8 虽继续省面积，但单例退化更明显，未采用。
+
+折叠历史的索引掩码、移位、旋转和 squash 重算必须与 9-bit 宽度一起修改；尤其手写 rotate/fold
+需要显式 mask。当前性能数值以根目录 benchmark 文档为准，不在这里固化总拍数。
+
+### FlushArbiter needSquash
+
+四个请求槽删除了逐槽 `needSquash` Register。BRU、CDB、AGU 三条插入路径只会插入真实 squash，
+所以不变量是 `requests[i].valid => needSquash`。清除只撤 valid，压缩只搬移有效槽，广播时
+“存在最老有效槽”即可组合生成 `needSquash=1`。该压缩省去 4 bit 状态和相应写驱动，不改变协议。
+
+### DIV busy
+
+DIV 删除独立 `busy` Register，逐拍不变量为：
+
+`busy == prepareValid || loopValid || fullAdderValid`
+
+普通输入进入 prepare，迭代在 loop 中推进，最后进入 full-adder；特殊值快路直接产生 result。
+`canAccept()` 直接检查三个阶段 valid 与 `resultValid`，因此无需再维护一个会重复表达同一 FSM
+占用状态的 bit。flush、接收和结果排空的写冲突也随之减少。
+
+IMEM 的占用计数采用同一思想：当 `valid[]` 与环形窗口有严格不变量时，occupancy、full 和
+head-ready 可由位图归约得到，不必保留容易与槽状态失配的冗余计数 Register。
+
+## 固定归约与可综合循环
+
+### ROB ready 位图
+
+ROB 原先用动态长度 `seen[]` 线性查重，既有经验上界越界风险，也不符合固定硬件结构。
+现在所有 BRU、SQ、四路 CDB ready 请求先幂等 OR 到 one-hot 风格的零初始化逐槽位图
+`std::array<bool, ROB_CAP> readyBits{}`，再固定遍历 `ROB_CAP`，每槽至多执行一次
+`isCommitReady <= true`。`{}` 零初始化是承重条件；遗漏它会产生幽灵 ready 和双写。
+
+### 固定四 lane 字节通路
+
+DMEM/DCache 中 `i < n_bytes` 的运行期循环全部改为固定 `i < 4`，`i < n_bytes` 只作为 lane enable。
+这样 1/2/4-byte load/store 明确综合为四路字节网络，而不是数据相关回边；1B/2B 符号扩展也改为
+无符号显式掩码，消除了 `1 << 31` 一类宿主 UB。
+
+### 固定容量 FlushArbiter
+
+有序插入不再使用 `while (pos < w)`。实现固定扫描 `FLUSHARBITER_CAP=4`，用 `scanning` 在首个
+不满足年龄关系的槽后冻结决策；后移也固定遍历四槽，`i > pos` 仅作为写使能。
+模板同拍请求仍按 BRU -> CDB -> AGU 的既定优先顺序合并，最后每个槽只有一个 Register 写点。
+固定数组的动态索引会综合为 mux，不需要为了“消灭动态索引”再造另一套可变循环。
+
+真正数据相关的 DIV 迭代没有强行展开，而是用有限位宽计数器和 FSM 每拍复用一次 SRT 数据通路。
+这也是可综合的：不可接受的是宿主 `while` 在一拍内跑到收敛，不是多周期硬件本身。
+
+## 当前唯一活跃关注项：BPU Plan::nTab
+
+模板 BPU 的 `Plan` 用 `tab[64] + nTab` 打包本拍稀疏表更新，合并与提交处仍有若干
+`q < nTab` / `m < merged.nTab` 的运行期边界循环。容量 64 虽然固定，但源码遍历的是
+“实际用了多少项”，综合形状仍是数据相关回边；这是当前数据通路循环审计剩余的 C-7 项。
+
+目标改写是固定 64 路遍历或固定来源端口，加逐槽 valid/one-hot enable 和明确的覆盖优先级，
+复用 ROB ready 位图的“固定归约、唯一写回”原则。改动必须同时守住 BHT 同槽融合、BTB/CDB
+覆盖顺序、bank tick 衰减与更新覆盖、LFSR 步进和双训练口共享旧快照等 BPU 端口语义。
+
+在该项完成前，不应把 `nTab <= 64` 误当成“循环已经可静态展开”；详细位置、分类和验收标准见
+[`../../docs/non-synthesizable-loops.md`](../../docs/non-synthesizable-loops.md)。

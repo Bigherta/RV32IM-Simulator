@@ -9,7 +9,7 @@ struct AGUInput {
   SquashInfo squashDetect;
   const RSUnit &RSModule;
   const PRF &PRFModule;
-  DispatchInfo dispatch;              
+  DispatchAGUInfo dispatch;
   AGUInput(const RSUnit &rs, const PRF &prf)
       : RSModule(rs), PRFModule(prf) {}
 };
@@ -17,8 +17,7 @@ class AGU {
 private:
   AddressCalculateResult outputBuffer[AGU_CAP];
   bool slotValid[AGU_CAP] = {};
-  void push(int32_t op1, int32_t op2, Operation op, RobTag robTag,
-            uint8_t memIndex);
+  void push(int32_t op1, int32_t op2, RobTag robTag, uint8_t memIndex);
   void remove(uint8_t robTag);
   void flush(uint8_t tag);
 public:
@@ -27,7 +26,6 @@ public:
   int32_t headValue() const;
   uint8_t headRobTag() const;
   uint8_t headMemIndex() const;
-  bool isValid(int index) const { return slotValid[index]; }
   void tick(const AGUInput&, systemState&);
 };
 #endif // AGU_HPP

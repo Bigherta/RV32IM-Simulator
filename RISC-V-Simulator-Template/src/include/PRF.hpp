@@ -51,7 +51,6 @@ struct PRFInputIssue {
   Wire<8> issueCkptId;
 };
 struct PRFInputROB {
-  Wire<8> robHead;
   Wire<1> isRobEmpty;
   Wire<1> isRobHeadCommitReady;
   Wire<1> robHeadIsHalt;

@@ -27,8 +27,6 @@ struct DCacheInput {
   // the logic; PC/CkptId ride along for plan fidelity)
   Wire<1> squashNeed;
   Wire<7> squashTag;
-  Wire<32> squashPC;
-  Wire<8> squashCkptId;
   // MemDispatchDecision, split field-by-field (MemArbiter Output wires)
   Wire<1> decisionValid;
   Wire<5> decisionOp; // Operation encoding (Load/Store)
@@ -132,7 +130,7 @@ private:
   Probe probe(uint32_t addr) const;
   uint32_t allocateWay(uint32_t set_index) const; // victim assert in _DEBUG
   static int decodeNBytes(uint32_t enc);
-  // sign-extended sub-word load (mask branch identical to DMEM::load_n_bytes)
+  // Sign-extended sub-word load.
   static int32_t extractValue(const uint8_t *datas, int off, int n,
                               bool isSigned);
 };

@@ -57,10 +57,6 @@ void LQ::setValueState(int index, ValueState state) {
 
 void LQ::setCDBBroadcast(int index) { LQqueue[index].isCDBBroadcast = true; }
 
-auto LQ::getIsCDBBroadcast(int index) const -> bool {
-  return LQqueue[index].isCDBBroadcast;
-}
-
 auto LQ::getAddress(int index) const -> uint32_t {
   if (LQqueue[index].isAddressReady)
     return LQqueue[index].address;
@@ -118,14 +114,6 @@ int LQ::CDBDetect() const {
     }
   }
   return detectedIndex;
-}
-
-bool LQ::isReadyToCommit(int index) const {
-  if (LQqueue[index].isAddressReady &&
-      LQqueue[index].valueState == ValueState::READY) {
-    return true;
-  }
-  return false;
 }
 
 void LQ::applyStoreForward(const StoreNotify &notify) {

@@ -2,18 +2,32 @@
 
 > 负责乱序核心本体：从 IQ 发射（rename）→ 保留站就绪乱序执行 → 结果总线写回 →
 > ROB 按序提交；误预测与记忆违例的排队、整窗恢复也在这里仲裁并触发。
-> 相关实现：`StaticArbiter`（IssueArbiter/DispatchArbiter）、`RS`、`PRF`、`RAT`、
-> `ROB`、`ALU`、`MUL`、`DIV`、`AGU`、`BRU`、`CDB`、`DynamicArbiter`（FlushArbiter）。
-> [← 返回 README](../README.md)
+> 保留站/标签广播源自 Tomasulo 算法，ROB 精确提交与物理寄存器重命名属于后续
+> 现代化扩展 [[1]](#back-ref-1)[[2]](#back-ref-2)[[3]](#back-ref-3)。
+> 相关实现：
+> `StaticArbiter`（组合逻辑的静态仲裁器）、
+> `RS`（去中心化保留站）、
+> `PRF`（中心化物理寄存器堆）、
+> `RAT`（基于物理寄存器实现的寄存器重命名表）、
+> `ROB`（重排序缓冲队列）、
+> `ALU`（基础运算单元）、
+> `MUL`（3-cycle乘法器）、
+> `DIV`（SRT-4除法器）、
+> `AGU`（专供地址计算的运算单元）、
+> `BRU`（专供分支运算的运算单元）、
+> `CDB`（写回总线）、
+> `DynamicArbiter`（时序逻辑的动态仲裁器）。
 
 取指与译码在前端完成；访存队列（LQ/SQ）与缓存/主存在
 [访存](memory.md) / [缓存](cache.md) 中描述。后端需要掌握"程序序边界"，因此
 ROB 条目同时是前端预测 checkpoint 与 LQ/SQ 尾快照的宿主。
 
-M 扩展的两个执行单元（**乘法**、**除法**）是本文件的重头：§4.3 / §4.4 给实现级
-细节（Booth+CSA 与 SRT radix-4），§5 给它们各自的写回通路差异，附 A/附 B 给符号
-映射与调试断言。**除法算法与参数的唯一权威出处就是本文件 §4.4 与 §4.5**（原先
-单独维护的 SRT 调研文档已于整合时删除，其偏实现的部分全部并入此处）。
+M 扩展的两个执行单元（**乘法**、**除法**）在 §4.3 / §4.4 给出实现细节
+（乘法：Booth 编码部分积 + CSA 压缩树；除法：SRT radix-4）。
+
+> 实现词汇：主树以周期初快照、组合总线和 `tick()` 表达时序更新；模板树以
+> `Wire`、`Register` 和 `work()/sync()` 表达同一硬件语义。下文统一使用
+> “组合选择”和“周期更新”，只在源码映射处标出两者的表示差异。
 
 ---
 
@@ -36,29 +50,31 @@ M 扩展的两个执行单元（**乘法**、**除法**）是本文件的重头�
 |------|------|
 | `IssueArbiter`（StaticArbiter） | 组合构建每周期至多 1 个发射包（rename 决策） |
 | `DispatchArbiter`（StaticArbiter） | 保留站 → 执行单元的乱序派发（五独立通道） |
-| `RS` | 六类保留站：Integer 8 / Multiply 4 / **Divide 4** / Load 4 / StoreAddr 4 / StoreValue 4 / Branch 4 |
+| `RS` | 七个物理池：Integer 8 / Multiply 4 / **Divide 4** / Load 4 / StoreAddr 4 / StoreValue 4 / Branch 4 |
 | `PRF` | 物理寄存器堆 128：循环序号自由表、完成写口、checkpoint 恢复 |
 | `RAT` | 架构寄存器 → 物理寄存器映射 |
 | `ROB` | 重排序缓冲 64：按序提交、checkpoint 快照宿主、squash 边界 |
 | `ALU` | 算术/逻辑/移位 + JALR 目标（`isControl` 载荷） |
 | `MUL` | M 扩展乘法单元（Booth → CSA → 最终加，3 级流水）——见 §4.3 |
 | `DIV` | M 扩展除法单元（SRT radix-4，单实例迭代，非流水）——见 §4.4 |
-| `AGU` | 访存地址计算（load/store；队首 store 地址广播给 SQ） |
+| `AGU` | 访存地址计算（load/store；最老有效地址结果若为 store 则广播给 SQ） |
 | `BRU` | 条件分支执行 |
-| `CDB` | 四路结果总线载荷的 `build()` 工厂（aluCDB/lqCDB/mulCDB/**divCDB**） |
+| `CDB` | 四路结果总线载荷与门控（aluCDB/lqCDB/mulCDB/**divCDB**） |
 | `FlushArbiter`（DynamicArbiter） | squash 请求队列：检测（BRU 误测/CDB 误测/MDP）、最老优先 |
 
 > `RS` 的类别计数在 `RS.hpp` 中为 `integerRS[INTEGERRS_CAP]`、`multiplyRS[MULTIPLYRS_CAP]`、
 > `divideRS[DIVIDERS_CAP]`、`loadRS`、`storeAddressRS`、`storeValueRS`；
 > `Operation` 枚举含 `MUL/MULH/MULHU/MULHSU/DIV/DIVU/REM/REMU`；
-> `RSType` 含 `Integer/Multiply/Divide/Branch/Load/StoreAddr`；
-> `DispatchBus` 含 `alu/agu/bru/mul/div` 五个 `DispatchInfo`。
+> `RSType` 含 `Integer/Multiply/Divide/Branch/Load/StoreAddr` 六种**执行派发类型**；
+> `StoreValue` 是第七个物理 RS 池，但数据就绪后直接广播给 SQ，不占执行通道；
+> 逻辑派发总线含 `alu/bru/mul/div` 四个普通载荷，以及额外携带 `rsType` 的
+> `agu` 载荷。
 
 ---
 
 ## 2. 发射（Issue / Rename）
 
-`IssueArbiter::build` 在组合阶段从 **IQ 头**解析一条指令，构造 `IssuePacket`：
+`IssueArbiter` 的组合逻辑从 **IQ 头**解析一条指令，构造本周期发射决策：
 
 - **容量门控**：ROB/PRF 自由表/对应 RS 类别/LQ/SQ 同时有空位才发射；
 - **rename**：`allocDest` 时 PRF 分配新物理寄存器（`phy`），RAT 建立新映射，
@@ -68,7 +84,7 @@ M 扩展的两个执行单元（**乘法**、**除法**）是本文件的重头�
 - **哨兵域**：`InvalidPhy = 0` 为全物理域唯一哨兵（P0 永不分配、永不映射）；
   真实物理标签恒在 `1..PRF_CAP-1`；`x0` 恒 0、不参与 rename。
 
-发射包由各模块 tick **各自 apply**（写自有纪律）：RAT 改名 / PRF `pop`+LINK /
+发射决策由各状态模块在周期边界**各自 apply**（写自有纪律）：RAT 改名 / PRF `pop`+LINK /
 ROB push / RS 占槽 / LQ/SQ push（访存指令）/ IQ pop。每周期**至多发射 1 条**
 （单口 rename + 单口 ROB push 的硬件约束）。
 
@@ -76,7 +92,8 @@ ROB push / RS 占槽 / LQ/SQ push（访存指令）/ IQ pop。每周期**至多�
 （`mul/mulh/mulhsu/mulhu`）→ 专用 `multiplyRS`；`funct3` **4..7** 归除法族
 （`div/divu/rem/remu`）→ 专用 `divideRS`。`tryAllocDivide()` 分配槽位，
 `p.divideRS.{op,src1,src2,robTag}` 填包。**两个单元各有一个专用保留站类别**，
-因此 M 扩展的发射不占用 Integer RS 的槽位。
+因此 M 扩展的发射不占用 Integer RS 的槽位。指令语义与除零/溢出规则以 RISC-V
+“M”扩展规范为准 [[4]](#back-ref-4)。
 
 ---
 
@@ -94,34 +111,39 @@ ROB push / RS 占槽 / LQ/SQ push（访存指令）/ IQ pop。每周期**至多�
 
 ### 4.1 派发（Dispatch）
 
-`DispatchArbiter::arbitrate` 每个周期给每个执行单元**独立**选一个就绪候选
-（`!isFull()` + 就绪 + 过 squash 门），五通道互不阻塞：ALU / MUL / DIV / AGU / BRU
-各一个 `DispatchInfo`。访存指令的地址就绪由 AGU 执行，store 数据就绪由
+`DispatchArbiter` 每个周期给每个执行单元**独立**选一个就绪候选
+（容量/接收门控 + 就绪 + 过 squash 门），五通道互不阻塞：ALU / MUL / DIV / AGU / BRU
+各一个派发载荷。访存指令的地址就绪由 AGU 执行，store 数据就绪由
 StoreValue RS 提供（见 [访存](memory.md) §2）。
 
 **DIV 通道的背压**（`StaticArbiter.cpp` 的 DIV 分支）：先问 `div.canAccept()`，
 再在 `divideRS` 里扫**最老**的就绪条目，选出后置 `dispatch.div.{rsIndex,robTag,rsType=Divide,valid}`；
 命中 squash 窗口则撤销。因为除法器是**单实例迭代单元**，`canAccept()` 为假时整条
-DIV 通道停发——这是与 MUL（恒 `true`，见 §4.3）唯一的结构性差异。
+DIV 通道停发；MUL 则只检查自己的输出缓冲是否已满（见 §4.3）。
 
 ### 4.2 执行单元总表
 
-| 单元 | 槽位 | 行为 |
-|------|-----:|------|
-| `ALU` | 4 | 算术/逻辑/移位；**JALR** 目标计算（`isControl` 载荷，经 aluCDB 供 FlushArbiter/BPU 消费） |
-| `MUL` | 4 | RV32M 乘法族：radix-4 **Booth** 19 行部分积 → **3:2 CSA 压缩树**（17 cell）→ 最终全宽加法；3 级寄存器流水，经专用 Multiply RS 派发。**详见 §4.3** |
-| `DIV` | 4 | RV32M 除法族（`div/divu/rem/remu`）：**SRT radix-4** 数字递推，carry-save 冗余表示 + 常数法 QDS + on-the-fly 商转换；**单实例、非流水**（`busy` 拒绝新指令），经专用 Divide RS 派发。**详见 §4.4** |
-| `AGU` | 4 | load/store 地址 = base+offset；队首为 store 时组合广播地址事件 |
-| `BRU` | 4 | 条件分支：`BranchResult{pcFrom, pcResult, robTag}` 出队 |
+| 单元 | 输入候选 | 结果保持 | 行为 |
+|------|----------|----------|------|
+| `ALU` | Integer RS 8 | 4 槽输出缓冲 | 算术/逻辑/移位；**JALR** 目标计算（`isControl` 载荷，经 aluCDB 供 FlushArbiter/BPU 消费） |
+| `MUL` | Multiply RS 4 | 3 级流水 + 4 槽输出缓冲 | RV32M 乘法族：radix-4 **Booth** 19 行部分积 → **3:2 CSA 压缩树**（17 cell）→ 最终全宽加法 [[5]](#back-ref-5)[[6]](#back-ref-6)[[7]](#back-ref-7)。**详见 §4.3** |
+| `DIV` | Divide RS 4 | 单个 `resultValid` 结果寄存器 | RV32M 除法族（`div/divu/rem/remu`）：**SRT radix-4** 数字递推，carry-save 冗余表示 + 常数法 QDS + on-the-fly 商转换 [[9]](#back-ref-9)[[10]](#back-ref-10)[[12]](#back-ref-12)[[13]](#back-ref-13)；**单实例、非流水**（三阶段 valid 归约拒绝新指令）。**详见 §4.4** |
+| `AGU` | Load RS 4 + StoreAddr RS 4 | 4 槽输出缓冲 | load/store 地址 = base+offset；最老有效结果为 store 时组合广播地址事件 |
+| `BRU` | Branch RS 4 | 4 槽输出缓冲 | 条件分支：最老有效 `BranchResult{pcFrom, pcResult, robTag}` 供误预测检测 |
 
-每单元每周期**取队首**作为唯一写回候选（输出缓冲 + `slotValid`，先进先出），
-配合四总线保证"每源每周期至多一个结果"。
+派发不是 FIFO：每个通道扫描相应 RS，按 `robTag` 选择**最老的就绪项**；AGU
+在 Load 与 StoreAddr 两池之间统一比较年龄。ALU/MUL/AGU/BRU 的 4 槽输出缓冲
+同样按 `robTag` 选最老有效结果，而不是按插入槽位或固定队首；DIV 只有一个结果
+寄存器。四路结果总线据此保证“每源每周期至多一个结果”。
 
-### 4.3 MUL 实现：radix-4 Booth + CSA 压缩树
+### 4.3 MUL 实现：radix-4 Booth + CSA pseudo-Wallace Tree
 
-> 源码 SSOT：`src/MUL/MUL.cpp`、`src/include/MUL.hpp`。数据通路内**不得出现 `*` `/` `%`**。
+本节的编码基础是 Booth 有符号乘法与 MacSorley 的 modified/radix-4 Booth
+重编码 [[5]](#back-ref-5)[[6]](#back-ref-6)；固定的 3:2 压缩网络属于
+Wallace-style CSA 树 [[7]](#back-ref-7)[[8]](#back-ref-8)，本文的 19→2 拓扑与流水级
+划分是项目实现，不宣称复现某一篇论文的门级树形。
 
-**三级流水**（`tick()` 逆向执行，每级一个 valid 标志）：
+采用一条**三级流水线**实现 3-cycle 乘法：
 
 ```
 第 1 级  calculateBooth(dispatch)      → 19 行部分积
@@ -129,8 +151,9 @@ DIV 通道停发——这是与 MUL（恒 `true`，见 §4.3）唯一的结构�
 第 3 级  calculateMulRes(scRes)        → outputBuffer[slot]（结果 + robTag）
 ```
 
-`tick()` 内**逆序**调用（`calculateMulRes` → `calculateSC` → `calculateBooth`），
-即每拍先排空最老的级、再前推；`else` 分支显式清零 valid，避免气泡留在流水里。
+周期更新只读各级的旧状态并同时前推。主树在 `tick()` 内逆序调用
+`calculateMulRes` → `calculateSC` → `calculateBooth`；模板树在 `work()` 中读取
+`Register` 旧值达到同样效果。空级会清 valid，避免气泡被误当作结果。
 `flush(tag)` 同时清 `partialRes/scRes` 的 valid 与 `outputBuffer` 中不早于 tag 的槽位。
 
 **(a) 部分积的 19 行**（`PartialProductResult::partialProduct[19]`，全部 64 bit 全宽）：
@@ -160,11 +183,11 @@ c0–c2 / d0–d1 / e0 / f0），末级输出 `scRes.S / scRes.C`。
 - `MUL` → `(int32_t)res`（低 32 位）；
 - `MULH / MULHSU / MULHU` → `(int32_t)(res >> 32)`（高 32 位）。
 
-结果写入 `outputBuffer[best]`（`slotValid[]` 标位），`headRobTag()/headValue()` 取
-**最老** robTag 作为唯一的 mulCDB 写回候选。
+结果写入任一空闲 `outputBuffer` 槽（`slotValid[]` 标位），输出选择逻辑按
+**最老** robTag 取唯一的 mulCDB 写回候选；槽位本身没有 FIFO 次序。
 
 **(d) 为什么 MUL 不需要背压门控**：`MUL_CAP=4` $>$ 在飞指令数（3 级流水 $\le3$），
-且 `cdbOfMul` 每拍排空该总线（被 squash 清掉的队首除外），故槽位永远够用 ——
+且 `cdbOfMul` 每拍排空最老结果（被 squash 清掉的结果除外），故槽位永远够用 ——
 派发通道只需 `!mul.isFull()` 这一道门（`StaticArbiter.cpp` 的 MUL 分支），
 MUL 侧**不提供 `canAccept()`**。`calculateMulRes` 里那个
 `assert(best != -1 && "MUL slot overflow: MUL_CAP must exceed in-flight stages")`
@@ -173,10 +196,16 @@ MUL 侧**不提供 `canAccept()`**。`calculateMulRes` 里那个
 
 ### 4.4 DIV 实现：SRT radix-4
 
-> 源码 SSOT：`src/DIV/DIV.cpp`、`src/include/DIV.hpp`；
-> `DIVTester` 是与 `MULTester` 同规的**仓库外探针**，CPU 从不使用。
+> **SSOT 边界**：本节与 §4.5 是 SRT 算法、位宽和参数的设计 SSOT；各树的
+> `src/DIV/DIV.cpp` 与 `src/include/DIV.hpp` 是可执行实现的源码 SSOT。主树用
+> `uint64_t` 保存 35/36-bit 中间量并在 `tick()` 更新，模板树受 32-bit `Register`
+> 上限约束而拆成 lo/hi 寄存器并在 `work()/sync()` 更新；两者实现同一递推和周期接口。
 
 #### 4.4.1 几何与参数
+
+SRT 数字递推、冗余商数字集与收敛区间的经典来源见 Robertson、Tocher 以及
+Ercegovac/Lang [[9]](#back-ref-9)[[10]](#back-ref-10)[[12]](#back-ref-12)；以下位宽、
+首拍奇偶处理、共享 ulp 判据与常数配置均是本项目针对 RV32M 的具体推导。
 
 递推 $W[j+1]=4\,W[j]-q_{j+1}D$，数字集 $q\in\{-2..2\}$，冗余因子
 
@@ -184,7 +213,10 @@ $$\rho=\frac{a}{r-1}\Big|_{a=2,\,r=4}=\frac23,\qquad
 \text{不变式 } \lvert W[j]\rvert\le\rho D$$
 
 **重叠区 $(2\rho-1)D=D/3$ 是整个截断方案的容错预算**——落进去取哪个数字都对，
-这是"常数法 QDS 可行"的唯一来源。拍数 $k=\lceil align/2\rceil+1$，满宽 $align=31$ → **17 拍**。
+这是"常数法 QDS 可行"的唯一来源。商数字数 $k=\lceil align/2\rceil+1$，满宽
+$align=31$ → **17 个商数字**。`prepare` 已产生 $q_1$，所以同构 `loop` 迭代次数是
+$k-1=\lceil align/2\rceil$；当 $align=0$ 时该次数确实为 0，但仍要经过前置、收尾
+和结果广播，不能把“0 次迭代”写成“0 周期延迟”。
 
 | 项 | 取值 |
 |---|---|
@@ -196,7 +228,7 @@ $$\rho=\frac{a}{r-1}\Big|_{a=2,\,r=4}=\frac23,\qquad
 | QDS 硬件 | 4 次 $\le9$ bit 比较，**无 ROM、无乘法、无除法** |
 | 全长进位传播 | **迭代环路 0 次**；后处理 1～2 次 |
 
-#### 4.4.2 位宽三兄弟：$B_d$、$SW$、$PW$
+#### 4.4.2 三类位宽的辨析：$B_d$、$SW$、$PW$
 
 $$\boxed{B_d=\text{位宽}(D_{\text{dp}})=32+shiftD}\qquad SW=B_d+1\qquad PW=SW+2=B_d+3$$
 
@@ -253,6 +285,10 @@ $$\frac{2^{align}}{4^{k-1}}=2^{-shiftD}\quad\Longrightarrow\quad \boxed{P_1=X\cd
 **首拍不左移**（先减后移）：两种奇偶下 $P_1/D\subset(-8/3,8/3)$，**同一套判据直接吃下**。
 
 #### 4.4.4 QDS：常数法 + 共享 ulp
+
+截断部分余数/除数进行高基数商数字选择的理论背景见 Atkins 与
+Ercegovac/Lang [[11]](#back-ref-11)[[12]](#back-ref-12)。本节的 5-bit `dSlice`、
+9-bit `estBits` 和四比较器常数法是项目穷举后冻结的实例。
 
 不想比较 $P$ 与 $(q-\rho)D$（ρ 是分数，要乘法器），改为判 $P$ vs $mid_kD$，窗口
 $mid_k\in[k-\rho,\ k-1+\rho]$，**窗口宽 = 重叠宽**。取中点 $mid_k=k-\frac12$（与 $\rho$ 无关、
@@ -331,7 +367,7 @@ $estP$ 恒 8 bit signed、4 次 $\le9$ bit 比较）、余量分析一次。**�
 `DIV.cpp` 的 `prepare + loopTimes=(align+1)>>1` 即此口径。
 
 ```cpp
-// ── 阶段 0：前置（纯组合，0 拍；每条除法一次）──────────────────────
+// ── 阶段 0：算法前置（每条除法一次；实现中由 receive/prepare 锁存）────
 x = |x0|;  d = |d0|                          // 取幅值；符号留到阶段 2
 clzX = clz(x);  clzD = clz(d);  align = clzD - clzX;  shiftD = align & 1
 k   = ((align + 1) >> 1) + 1                     // 总拍数 = ⌈align/2⌉+1
@@ -411,7 +447,8 @@ rem = ((R >> 2) >> shiftD) >> clzD                       // 先把 P 域的 /4 �
 
 #### 4.4.7 on-the-fly 商转换（`A`/`B` 双寄存器）
 
-维护 $A[j]=Q[j]$、$B[j]=Q[j]-1\,\mathrm{ulp}$，避免末拍全长减法（radix-4 每拍拼 2 bit）：
+on-the-fly 冗余商转换的通用方法见 Ercegovac/Lang [[13]](#back-ref-13)。本实现维护
+$A[j]=Q[j]$、$B[j]=Q[j]-1\,\mathrm{ulp}$，避免末拍全长减法（radix-4 每拍拼 2 bit）：
 
 $$A[j{+}1]=\begin{cases}(A[j],\,q) & q\ge0\\ (B[j],\,r-|q|) & q<0\end{cases}\qquad
 B[j+1]=\begin{cases}(A[j],\,q-1) & q>0\\ (B[j],\,r-1-|q|) & q\le0\end{cases}$$
@@ -473,19 +510,24 @@ $$\boxed{A' = 4A + q\ (\text{数字串拼接}),\qquad B' = A'-1\ (\text{悲观�
 
 | 层次 | 能否流水 | 原因 |
 |---|---|---|
-| 单条除法内部 | **绝对不能** | $W[j+1]$ 依赖 $W[j]$，闭环递推 |
-| 多条除法之间 | 理论能，实践几乎不做 | 迭代数可变、$dSlice$ 每指令私有、收益小 |
+| 单条除法内部 | 不能按普通前馈流水重叠 | $W[j+1]$ 依赖 $W[j]$，存在环路携带依赖；可用展开、重定时或切分 QDS/CSA 提频 |
+| 多条除法之间 | 可交错或复制上下文 | 需要保存每条指令私有的余数、`dSlice` 与迭代状态；本项目未实现 |
 | 除法 vs 乘法 | 乘法天然可流水 | 乘法是单向 DAG，除法是反馈环 |
 
-- `canAccept(){return !busy && !resultValid;}`——**既算着、又还没广播出去**，都得拒；
-- 延迟 $3+k$（对阶 + 符号 + 末拍转换 + $k$ 拍迭代）；满宽 17 拍 → **20 周期**；
+- `canAccept(){return !(prepareValid || loopValid || fullAdderValid) && !resultValid;}`——三个阶段任一在算、或结果还没广播出去，都得拒；独立 `busy` 状态已由三阶段 valid 的 OR 精确替代；
+- 一般路径从派发到 divCDB 的延迟为 $3+k$；满宽 $k=17$ → **20 周期**。
+  其中 `prepare` 产生 $q_1$，`loop()` 只运行 $k-1$ 次；$align=0$ 的一般路径因此
+  是 **0 次 `loop()`**，但不是 0-cycle；
+- RISC-V 特判路径在 `receive()` 直接锁存 `resultValid`，绕过 `prepare/loop/calculateResult`，
+  即 **0 次 SRT 迭代**；结果仍须跨周期变为可见并经 divCDB 广播，也不是组合零延迟；
 - 对照 MUL：乘法器是流水线 + 4 槽输出缓冲，派发只需 `!isFull()` 一道门，
-  **MUL 侧无 `canAccept()`**（§4.3(d)）；DIV 则必须反过来用 `busy` 与 `resultValid`
-  双门控——这是两者唯一的结构性差异，也是 `DispatchArbiter` 里 MUL 走 `isFull()`、
+  **MUL 侧无 `canAccept()`**（§4.3(d)）；DIV 则必须反过来用三阶段 valid 归约与 `resultValid`
+  双门控——这是两者在派发准入上的差异，也是 `DispatchArbiter` 里 MUL 走 `isFull()`、
   DIV 走 `canAccept()` 的原因；
 - 无输出缓冲（不像 MUL 有 `outputBuffer[MUL_CAP]`），结果靠 `resultValid` 单发。
 
-（SRT 可切成 2 段流水——QDS 段 / CSA 段——提频率，但整数除法动态占比通常 $<1\%$，不值得。）
+SRT 可把 QDS 与 CSA 切级、展开多拍或交错多条指令；是否值得取决于综合关键路径、面积和
+目标负载的动态除法占比。本项目选择最小面积的单上下文迭代实现，不把该取舍泛化为通用结论。
 
 #### 4.4.9 定稿配置卡
 
@@ -514,7 +556,7 @@ $estBits{=}8/9/10$ 在小操作数全域（523,776）+ 定向 213 + 随机 32 �
 > 最紧格永远是 $dSlice{=}16$（除数最小、重叠窗最薄），被推到 $|V|=\frac83D$ 的角点（零余量），
 > **每个 $estBits$ 都有**，$estBits$ 增大消不掉。
 
-**Pentium FDIV 三条纪律**（本项目采纳）：① don't-care 必须**证明**不可达（可达性分析 / 整数格点穷举）；
+**Pentium FDIV 三条纪律**（本项目据其失效模式归纳）[[14]](#back-ref-14)：① don't-care 必须**证明**不可达（可达性分析 / 整数格点穷举）；
 ② 生成脚本的输出必须与**独立实现**的参考逐格 diff，不能只抽样；③ 定向测试必须覆盖
 $\varepsilon_{\max}$ 最小的那一列。**结构性好处**：没有表，就没有"漏填的格"——比较网络从结构上
 **不可能漏格**，正确性退化为一个可穷举证明的整数不等式。
@@ -535,12 +577,12 @@ $\varepsilon_{\max}$ 最小的那一列。**结构性好处**：没有表，就�
 
 | 函数 | 对应 | 要点 |
 |---|---|---|
-| `receive()` | §4.4.6 阶段 0 前置 | RISC-V 特判（$d{=}0$/`INT_MIN÷-1`/$x<d$/$x{=}d$）+ 取幅值 + 置 `busy` |
+| `receive()` | §4.4.6 阶段 0 入口 | RISC-V 特判直接置 `resultValid`；一般路径取幅值并置 `prepareValid` |
 | `prepare()` | 阶段 0 尾 | clz / 对阶 / `loopTimes=(align+1)>>1` / `shiftD=align&1` / `unsignedDivisor <<= shiftD` / `dSlice` / 三分支种子（$q_1=2/1/0$，含 `regA/regB`）。**已吃掉 $q_1$，故 `loop()` 只跑 $k-1$ 拍** |
 | `loop()` | 阶段 1 迭代 | 9 bit 双切片相加 → `slice = (int32_t)(((sum9 & 0x1FFu) ^ 0x100u) - 0x100u) & ~1`（掩码 + 补码折叠 + `estPShift=1` 的 `>>1` **折进 `&~1`**）→ 五分支 $q$；`mask = shiftD ? (1ull<<36)-1 : (1ull<<35)-1` |
 | `calculateResult()` | 阶段 2 收尾 | `Pk = (oldRegS+oldRegC) & mask` → bit35/34 符号修正 → `(Pk>>63)==0 ? (A, (Pk>>2>>shiftD)>>clzD) : (B, ((Pk+(unsignedDivisor<<2))>>2>>shiftD)>>clzD)` |
 
-**RISC-V 特判表**（`receive()` 命中即返回，0 拍）：
+**RISC-V 特判表**（`receive()` 命中即绕过 SRT 前置/迭代/后处理；“0 次迭代”不等于“0 周期”）[[4]](#back-ref-4)：
 
 | 条件 | `div` | `divu` | `rem` | `remu` |
 |---|---|---|---|---|
@@ -549,8 +591,9 @@ $\varepsilon_{\max}$ 最小的那一列。**结构性好处**：没有表，就�
 | $x=d$ | $1$ | $1$ | $0$ | $0$ |
 | `INT_MIN / -1` | `INT_MIN`（不 trap） | — | $0$ | — |
 
-⚠️ **只截 QDS 输入，$W$ 通路一位都不能丢**——整数要求商与余数逐位精确
-（浮点商末位允许 1 ulp 误差，整数 QDS 出错即直接错）。
+⚠️ **只截 QDS 输入，$W$ 通路一位都不能丢**——整数要求商与余数逐位精确；
+浮点除法通常按 IEEE 754 的正确舍入规则处理，不能把“允许 1 ulp”当作这里的
+正确性口径 [[16]](#back-ref-16)。
 
 #### 4.4.11 阶段 2：后处理
 
@@ -663,7 +706,7 @@ if (slice >= (1<<(estBits-1))) slice -= (1<<estBits);                    // 补�
 > 另：$|S|,|C|$ 各自峰值 $=2^{PW-1}$（**两位都会吃满寄存器**），靠模 $2^{PW}$ 抵消才表达出
 > $|P|\le\frac83D_{\text{dp}}$ ⟹ **位宽不可缩，估计器必须按补码取高位**。
 
-> ⚙️ **C++ 语义三条（动 DIV 单元前先读）**：
+> ⚙️ **C++ 语义三条（动 DIV 单元前先读）** [[15]](#back-ref-15)：
 > ① `fold(...) << (-estPShift)` 一支在定稿 $estBits{=}9$ 下是**死分支**，但 `estPShift` 是 constexpr，
 > 编译器仍会实例化该表达式——**有符号左移在 C++20 前是 UB**。本项目按 C++20 编译；移植回 C++17
 > 工具链时这一支必须先转 `u32` 再移位。
@@ -720,8 +763,11 @@ B = (q >  0) ? ((oldA << 2) + (q - 1)  ) : ((oldB << 2) + (3 + q));
 
 ## 5. 写回：四路结果总线
 
-结果总线载荷定义在 `CDB.hpp`：`aluCDB` / `lqCDB` / `mulCDB` / `divCDB`——ALU、Load(LQ)、
-MUL、DIV 各驱动一根，**源之间无跨单元仲裁**，每周期至多四个结果并行广播：
+结果广播/标签唤醒的基本思想来自 Tomasulo 算法 [[1]](#back-ref-1)。本实现的结果总线
+载荷定义在 `CDB.hpp`：`aluCDB` / `lqCDB` / `mulCDB` / `divCDB`——ALU、Load(LQ)、
+MUL、DIV 各驱动一根，**源之间无跨单元仲裁**，每周期至多四个结果并行广播。
+重命名保证同时在飞的目的寄存器使用不同物理标签，消除同地址写冲突；PRF/ROB
+仍按四个逻辑写回端口消费这些并行结果：
 
 - 消费端：PRF 完成写口（置 ready + 写值）、ROB 完成置位（`isCommitReady`）、
   LQ 完成口（`lqCDB` 带 `memIndex`，见 [访存](memory.md)）、BPU 训练
@@ -730,8 +776,7 @@ MUL、DIV 各驱动一根，**源之间无跨单元仲裁**，每周期至多四
   该总线上检测 JALR 目标误预测；
 - **mulCDB 恒每拍可发**（MUL 有 4 槽输出缓冲，取最老 robTag）；
   **divCDB 受 `resultValid` 门控**（DIV 无输出缓冲，单发），被消费后
-  `tick()` 内先清 `resultValid` 再 `calculateResult`——即"上一拍的结果这拍被吃掉，
-  这拍的末拍结果这拍产出"，单发不丢；
+  周期更新清 `resultValid`；完成计算则在另一状态分支置位结果，单发不丢；
 - `VERBOSE=cdb` 输出争用统计（both / 仅单侧 / 若单总线谁胜出），用于量化
   多总线 vs 单总线的收益边界。
 
@@ -747,22 +792,25 @@ MUL、DIV 各驱动一根，**源之间无跨单元仲裁**，每周期至多四
 
 ### 6.1 按序提交
 
+ROB 头按序退休用于把乱序完成重新收敛为精确架构状态 [[2]](#back-ref-2)[[3]](#back-ref-3)。
 ROB 头就绪即提交（每周期至多 1 条）：`REGISTER` 类型释放 `oldPhy` 回 PRF
 自由表；`STORE` 类型在提交点经访存路径写缓存（见 [访存](memory.md)）；
 halt 条目（`0x0ff00513`）提交后 `haltCommitted`，停机条件 = halt 已提交 ∧
-FQ/IQ/ROB 全空；进程输出停机时 `x10` 低 8 位。
+FQ/IQ/ROB/SQ 全空 ∧ DCache 非 busy ∧ DMEM 读写双口均空闲。后三级 drain 条件
+保证 halt 前已提交的 store 真正进入缓存，且相关回填/脏写回不会被进程退出截断。
+进程输出停机时 `x10` 低 8 位。
 
 ### 6.2 FlushArbiter（squash 排队）
 
 有状态仲裁器，拥有 4 项 squash 请求队列，一个周期内按固定顺序检测：
 
-1. **BRU 分支误测**（BRU 队首结果 vs 预测）；
+1. **BRU 分支误测**（BRU 最老有效结果 vs 预测）；
 2. **CDB JALR 误测**（ALU 总线上 `isControl` 载荷 vs 预测）；
 3. **记忆违例 MDP**（更老 store 地址解析发现更年轻 load 已越过，见
    [访存](memory.md) §4）——同一周期多源请求时**最老优先**。
 
 `arbitResult()` 产出全局 `squashDetect{SquashTag, SquashPC, CkptId}`，随后每个
-模块在自己的 tick 内按该窗口恢复：
+模块在自己的周期更新内按该窗口恢复：
 
 | 模块 | 恢复动作 |
 |------|----------|
@@ -771,7 +819,7 @@ FQ/IQ/ROB 全空；进程输出停机时 `x10` 低 8 位。
 | `BPU` | 按 `ckptId` 恢复 `BPUSnapshot`（GHR/AlignQueue/RAS_top），折叠视图重算（见 [frontend.md](frontend.md) §4.3） |
 | `FQ/IQ/RS/LQ/SQ` | 各按 ROB 条目记录的尾快照回卷（RS 释放槽位、LQ/SQ 按 `getTailSnapshot` 截断） |
 | `MUL` | `flush(tag)`：清 `partialRes/scRes` 的 valid + 清 `outputBuffer` 中不早于 tag 的槽位 |
-| `DIV` | `flush(tag)`：**整机清零**（`busy`/`resultValid`/`regS`/`regC`/`regA`/`regB`/`dSlice`/`loopTimes`/`prepareValid` 全归零）——单实例无缓冲，被 squash 即在算的那条已经作废 |
+| `DIV` | `flush(tag)`：**整机清零**（`resultValid`/`regS`/`regC`/`regA`/`regB`/`dSlice`/`loopTimes`/`prepareValid`/`loopValid`/`fullAdderValid` 全归零）——单实例无缓冲，被 squash 即在算的那条已经作废 |
 | `FetchUnit` | 清 `haltFetched`（若被回卷）并从 `SquashPC` 重启取指 |
 
 误预测惩罚 = squash 排队到前端重启取指之间的固定拍数 + 重执行时间；分支预测
@@ -790,19 +838,22 @@ FQ/IQ/ROB 全空；进程输出停机时 `x10` 低 8 位。
 | ROB / PRF / RAT | 64 / 128 / 32 |
 | 保留站 | Integer 8 · Multiply 4 · **Divide 4** · Load 4 · StoreAddr 4 · StoreValue 4 · Branch 4 |
 | 发射 | 每周期至多 1 条（IQ 头，单口 rename） |
-| 执行/写回 | ALU·AGU·BRU·MUL 各 4 槽；DIV 单实例（`busy` 背压）；每源每周期 1 个队首结果 |
+| 执行/写回 | ALU·AGU·BRU·MUL 各 4 槽；DIV 单实例（三阶段 valid 归约背压）；派发与多槽输出均按 ROB 年龄选最老就绪/有效项 |
 | 结果总线 | 4 根（aluCDB / lqCDB / mulCDB / **divCDB**），无跨单元仲裁 |
 | MUL | Booth radix-4 + 3:2 CSA 压缩树（19 行 → 17 cell → S+C），3 级流水；`mul/mulh/mulhu/mulhsu`；派发门控 = `isFull()`（4 槽 > 在飞 3，无需背压） |
 | DIV | SRT radix-4，$bitsD{=}5,\ estBits{=}9$，共享 ulp 常数法 QDS，on-the-fly 商转换；**单实例非流水** |
 | DIV 位宽 | $B_d=32/33$，$SW=33/34$，$PW=35/36$（寄存器持 $P=4W$）；`MASK` 硬下界 $=PW$ |
 | DIV 延迟 | $3+k$（满宽 17 拍 → **20 周期**）；迭代环路全长进位传播 0 次 |
-| DIV 特判 | $d{=}0$ / `INT_MIN÷-1` / $x<d$ / $x{=}d$ 全部 0 拍短路返回 |
+| DIV 特判 | $d{=}0$ / `INT_MIN÷-1` / $x<d$ / $x{=}d$ 均为 0 次 SRT 迭代；结果仍经寄存器与 divCDB 广播 |
 | FlushArbiter | 4 项请求队列；检测序 = BRU 误测 → CDB JALR 误测 → MDP；最老优先 |
-| 停机 | halt 字 `0x0ff00513` 提交后整机清空停机；出口 = `x10 & 0xFF` |
+| 停机 | halt 提交后继续 drain，直至 FQ/IQ/ROB/SQ 空、DCache 空闲、DMEM 双口空闲；出口 = `x10 & 0xFF` |
 
 ---
 
 ## 附 A：SRT 符号映射
+
+下表用于把本文记号映射到 Parhami 的计算机算术教材 [[8]](#back-ref-8)；标为“—”的项
+是本项目数据通路派生量，不应理解为教材中的原始符号。
 
 | 本文件 | Parhami | 含义 |
 |---|---|---|
@@ -906,8 +957,66 @@ $0\text{xFF000000}\div0\text{x01000000}$（$k{=}5$）、$0\text{xFFFFFFFF}\div1$
 
 ## 相关文档
 
-- [`../README.md`](../README.md) — 数据通路图 / 周期模型（comb/tick）
+- [`../README.md`](../README.md) — 数据通路图 / 周期模型
 - [`frontend.md`](frontend.md) — 预测 checkpoint 的语义与恢复（GHR/RAS）
 - [`memory.md`](memory.md) — LQ/SQ 尾快照的推进、MDP 违例上报（squash 来源之一）
 - [`cache.md`](cache.md) — store 提交落缓存 / load 回填的存储侧行为
-- [`benchmarks.md`](benchmarks.md) — 各用例 x10/clock 参考值（golden 唯一来源）
+- 仓库根目录 `docs/benchmarks.md` — 各用例 x10/clock 参考值（golden 唯一来源）
+
+## 参考文献
+
+1. <a id="back-ref-1"></a>R. M. Tomasulo, “An Efficient Algorithm for
+   Exploiting Multiple Arithmetic Units,” *IBM Journal of Research and
+   Development*, vol. 11, no. 1, pp. 25–33, 1967.
+   https://doi.org/10.1147/rd.111.0025
+2. <a id="back-ref-2"></a>J. E. Smith and A. R. Pleszkun, “Implementation
+   of Precise Interrupts in Pipelined Processors,” in *Proceedings of ISCA ’85*,
+   pp. 36–44, 1985. https://doi.org/10.1145/327070.327125
+3. <a id="back-ref-3"></a>K. C. Yeager, “The MIPS R10000 Superscalar
+   Microprocessor,” *IEEE Micro*, vol. 16, no. 2, pp. 28–41, 1996.
+   https://doi.org/10.1109/40.491460
+4. <a id="back-ref-4"></a>RISC-V International, *The RISC-V Instruction Set
+   Manual, Volume I: Unprivileged Architecture*, “M” Extension Version 2.0,
+   2026. https://docs.riscv.org/reference/isa/v20260120/unpriv/m-st-ext.html
+5. <a id="back-ref-5"></a>A. D. Booth, “A Signed Binary Multiplication
+   Technique,” *The Quarterly Journal of Mechanics and Applied Mathematics*,
+   vol. 4, no. 2, pp. 236–240, 1951.
+   https://doi.org/10.1093/qjmam/4.2.236
+6. <a id="back-ref-6"></a>O. L. MacSorley, “High-Speed Arithmetic in Binary
+   Computers,” *Proceedings of the IRE*, vol. 49, no. 1, pp. 67–91, 1961.
+   https://doi.org/10.1109/JRPROC.1961.287779
+7. <a id="back-ref-7"></a>C. S. Wallace, “A Suggestion for a Fast
+   Multiplier,” *IEEE Transactions on Electronic Computers*, vol. EC-13,
+   no. 1, pp. 14–17, 1964. https://doi.org/10.1109/PGEC.1964.263830
+8. <a id="back-ref-8"></a>Behrooz Parhami, *Computer Arithmetic: Algorithms
+   and Hardware Designs*, 2nd ed., Oxford University Press, 2010.
+   https://www.ece.ucsb.edu/~parhami/text_comp_arit.htm
+9. <a id="back-ref-9"></a>J. E. Robertson, “A New Class of Digital Division
+   Methods,” *IRE Transactions on Electronic Computers*, vol. EC-7, no. 3,
+   pp. 218–222, 1958. https://doi.org/10.1109/TEC.1958.5222579
+10. <a id="back-ref-10"></a>K. D. Tocher, “Techniques of Multiplication and
+    Division for Automatic Binary Computers,” *The Quarterly Journal of
+    Mechanics and Applied Mathematics*, vol. 11, no. 3, pp. 364–384, 1958.
+    https://doi.org/10.1093/qjmam/11.3.364
+11. <a id="back-ref-11"></a>D. E. Atkins, “Higher-Radix Division Using
+    Estimates of the Divisor and Partial Remainders,” *IEEE Transactions on
+    Computers*, vol. C-17, no. 10, pp. 925–934, 1968.
+    https://doi.org/10.1109/TC.1968.226439
+12. <a id="back-ref-12"></a>M. D. Ercegovac and T. Lang, *Division and Square
+    Root: Digit-Recurrence Algorithms and Implementations*, Kluwer Academic
+    Publishers, 1994. https://link.springer.com/book/9780792394389
+13. <a id="back-ref-13"></a>M. D. Ercegovac and T. Lang, “On-the-Fly
+    Conversion of Redundant into Conventional Representations,” *IEEE
+    Transactions on Computers*, vol. C-36, no. 7, pp. 895–897, 1987.
+    https://doi.org/10.1109/TC.1987.1676986
+14. <a id="back-ref-14"></a>T. Coe, T. Mathisen, C. Moler, and V. Pratt,
+    “Computational Aspects of the Pentium Affair,” *IEEE Computational Science
+    & Engineering*, vol. 2, no. 1, pp. 18–30, 1995.
+    https://doi.org/10.1109/99.372929
+15. <a id="back-ref-15"></a>ISO/IEC 14882:2020, *Programming Languages — C++*,
+    §7.6.7 `[expr.shift]`, 2020. https://eel.is/c++draft/expr.shift
+16. <a id="back-ref-16"></a>IEEE, *IEEE Standard for Floating-Point
+    Arithmetic*, IEEE Std 754-2019, 2019.
+    https://doi.org/10.1109/IEEESTD.2019.8766229
+17. <a id="back-ref-17"></a>纸上谈芯, “基4 SRT除法器,” 知乎专栏, 2021.
+    https://zhuanlan.zhihu.com/p/397563781

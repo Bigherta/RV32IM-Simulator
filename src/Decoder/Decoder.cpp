@@ -107,8 +107,6 @@ void UopQueue::push(Uop inst) {
   tail = (tail + 1) & (IQ_CAP - 1);
 }
 void UopQueue::pop() { head = (head + 1) & (IQ_CAP - 1); }
-uint8_t UopQueue::getHead() const { return head; }
-uint8_t UopQueue::getTail() const { return tail; }
 void UopQueue::clear() {
   std::memset(this, 0, sizeof(*this));
   head = tail = 0;

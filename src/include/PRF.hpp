@@ -51,8 +51,5 @@ public:
   int32_t getOperandValue(const Operand &op) const {
     return op.tag == InvalidPhy ? op.imm : getValue(op.tag);
   }
-  uint32_t head() const { return headSeq & (PRF_CAP - 1); }
-  uint32_t tail() const { return tailSeq & (PRF_CAP - 1); }
-  uint32_t size() const { return tailSeq - headSeq; }
   void tick(const PRFInput &, systemState &);
 };

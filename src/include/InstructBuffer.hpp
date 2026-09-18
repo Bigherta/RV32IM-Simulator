@@ -42,8 +42,6 @@ public:
   int headpc() const;
   int32_t headPredictedPC() const;
   uint8_t headCkptId() const;
-  uint8_t getHead() const;
-  uint8_t getTail() const;
   lastPush getLastPush() const { return pushCache; }
   void tick(const FQInput &, systemState &);
 };
