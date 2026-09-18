@@ -1,0 +1,3 @@
+[submodule "RISC-V-Simulator-Template"]
+	path = RISC-V-Simulator-Template
+	url = https://github.com/CPU-2026/CPU-Simulator.git
