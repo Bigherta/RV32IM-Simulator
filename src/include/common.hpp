@@ -1,7 +1,5 @@
 #pragma once
 #include <bit>
-#ifndef COMMON_HPP
-#define COMMON_HPP
 #include <cstdint>
 using RobTag = uint8_t;
 constexpr int INTEGERRS_CAP = 4;
@@ -23,8 +21,8 @@ constexpr uint32_t ROB_CAP = 16;
 // so its width is bit_width(ROB_CAP-1); the extra top bit is the epoch.
 // ROB_CAP is not required to be a power of two: invalid slot codes between
 // ROB_CAP and the field mask are never allocated (see robNextTag).
-template <typename T> constexpr int ROB_TAG_BITWIDTH(T cap) {
-  return std::bit_width(cap - 1) + 1;
+template <typename T> constexpr uint8_t ROB_TAG_BITWIDTH(T cap) {
+  return std::bit_width(static_cast<uint32_t>(cap - 1)) + 1;
 }
 constexpr int ROB_TAG_WIDTH = ROB_TAG_BITWIDTH(ROB_CAP);
 constexpr int ROB_INDEX_MASK = (1 << (ROB_TAG_WIDTH - 1)) - 1;
@@ -60,7 +58,25 @@ constexpr int LOCAL_HISTORY_BIT = 5;
 constexpr int TARGETCACHE_CAP = 1 << LOCAL_HISTORY_BIT;
 constexpr int RAS_CAP = 8;
 constexpr int ALIGNQ_CAP = 16;
-constexpr int PRF_CAP = 64;
+constexpr uint8_t PRF_CAP = 64;
+template <typename T> constexpr uint8_t PRF_SEQ_BITWIDTH(T cap) {
+  return std::bit_width(static_cast<uint32_t>(cap - 1)) + 1;
+}
+using PrfSeq = uint8_t;
+constexpr uint8_t PRF_SEQ_WIDTH = PRF_SEQ_BITWIDTH(PRF_CAP);
+constexpr uint8_t PRF_INDEX_WIDTH = PRF_SEQ_WIDTH - 1;
+constexpr int PRF_INDEX_MASK = (1 << PRF_INDEX_WIDTH) - 1;
+constexpr int PRF_SEQ_MASK = (1 << PRF_SEQ_WIDTH) - 1;
+
+constexpr uint32_t prfSlot(PrfSeq seq) { return seq & PRF_INDEX_MASK; }
+
+constexpr PrfSeq prfSeqNext(PrfSeq seq) {
+  return static_cast<PrfSeq>((seq + 1) & PRF_SEQ_MASK);
+}
+
+constexpr uint32_t prfSeqDistance(PrfSeq from, PrfSeq to) {
+  return (to - from) & PRF_SEQ_MASK;
+}
 static_assert(INTEGERRS_CAP > 0 && (INTEGERRS_CAP & (INTEGERRS_CAP - 1)) == 0);
 static_assert(MULTIPLYRS_CAP > 0 &&
               (MULTIPLYRS_CAP & (MULTIPLYRS_CAP - 1)) == 0);
@@ -350,4 +366,3 @@ struct FetchTypeInfo {
   bool valid, isCall, isRet, jalTargetValid;
   uint32_t pc, jalTarget;
 };
-#endif // COMMON_HPP

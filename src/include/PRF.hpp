@@ -23,21 +23,19 @@ class PRF {
 private:
   PRFEntry PhysicalRegs[PRF_CAP];
   uint8_t freeList[PRF_CAP];
-  uint32_t PRFHeadCkpt[CKPT_CAP];
-  uint32_t headSeq = 0;
-  uint32_t tailSeq = 0;
+  PrfSeq PRFHeadCkpt[CKPT_CAP];
+  PrfSeq headSeq = 0;
+  PrfSeq tailSeq = 0;
   uint8_t pop();
   void push(int index);
-  void restoreHead(uint32_t ckptHeadSeq);
+  void restoreHead(PrfSeq ckptHeadSeq);
   void write(int index, int32_t value);
 
 public:
   PRF();
   bool isFreeListEmpty() const;
-  uint32_t getHeadSeq() const;
-  uint8_t getFreeListSlot(uint32_t seq) const {
-    return freeList[seq & (PRF_CAP - 1)];
-  }
+  PrfSeq getHeadSeq() const;
+  uint8_t getFreeListSlot(PrfSeq seq) const { return freeList[prfSlot(seq)]; }
   bool isReady(int index) const;
   int32_t getValue(int index) const;
   // Operand resolves either a physical register (tag != InvalidPhy) or an

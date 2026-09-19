@@ -159,6 +159,7 @@ TAGE 与 BTB 为第二梯队且有明显交互；LHT 与 Target Cache 在当前�
 | 2026-09-19 | BPU Small 容量复评（4×128 TAGE、BTB64、T0 256、LHT128、TC32） | 两次 18/18 x10 全对且统计逐位一致；总 clock **12,112,587**（相对活动基线 **+1.058249%**，非预计的 +0.112%），加权 IPC **0.559431**，分支正确率 **94.9334%**；完整状态 **26,021 bit**。恢复活动 BPU 配置 |
 | 2026-09-19 | BPU 控制变量定案：保留 T0 1024，其余按 Small 缩容 | 活动配置 TAGE 4×128 / BTB64 / T0 1024 / LHT128 / TC32；两树 Release **18/18 x10+clock** 与独立 IPC 语料 **6/6** 逐项一致。总 clock **12,035,747**（相对缩容前 +0.417154%），加权 IPC **0.563003**，分支正确率 **95.7317%**，完整状态 **27,557 bit** |
 | 2026-09-19 | RobTag 非二次幂参数化 + SQ 显式 committed + squash 同拍提交 | `ROB_TAG_WIDTH=bit_width(ROB_CAP-1)+1`，当前 ROB16 的模板硬件载体由 7 bit 收紧为 5 bit；CAP12 双仓库 18/18 x10 与 cycles 逐项一致。活动 ROB16 双仓库 18/18 一致，总 clock **12,036,972**，加权 IPC **0.562945**，分支正确率 **95.7208%**；`magic` 因严格更老 head 可与 squash 同拍提交而更新 golden |
+| 2026-09-19 | PRF 自由表序号 packed 化（`{epoch,index}`，PRF64 为 7 bit）+ checkpoint canonical 化 | 纯表示变换：两树 Release **18/18 x10+cycles**、模板 `_DEBUG` 全量 18/18 零断言，总 clock 保持 **12,036,972**、加权 IPC **0.562945**、分支正确率 **95.7208%**；模板 PRF seq/checkpoint 载体由 2112 bit 收紧到 462 bit |
 
 取数命令（WSL ELF 构建，逐用例）：
 

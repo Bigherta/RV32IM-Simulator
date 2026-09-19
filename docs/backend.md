@@ -106,11 +106,16 @@ ROB push / RS 占槽 / LQ/SQ push（访存指令）/ IQ pop。每周期**至多�
 
 ## 3. 物理寄存器与就绪模型
 
-- PRF 以**循环序号**（headSeq/tailSeq）管理自由表，条目 `{value, ready}`；
+- PRF 以**packed 循环序号**（`headSeq`/`tailSeq`）管理自由表，条目 `{value, ready}`。
+  序号为 `{1-bit epoch, bit_width(PRF_CAP-1)-bit index}`：当前 PRF64 宽 7 bit，槽位
+  `prfSlot(seq) = seq & (PRF_CAP-1)`，`prfSeqNext()` 以掩码归一化推进，回绕周期
+  `2*PRF_CAP`，全程只有移位/掩码/加减。checkpoint 保存**分配后的 canonical head**
+  （`allocDest ? prfSeqNext(head) : head`），恢复守卫为
+  `prfSeqDistance(ckptHead, tailSeq) <= PRF_CAP`；
 - **保留站不缓存值**：就绪判定 `isOperandReady` 与取值 `getOperandValue` 直接
   查询 PRF（或返回立即数）。依赖唤醒的延迟表现为：结果经 CDB 写入 PRF 的下一
   拍，依赖它的保留站自然就绪——**总线数量不再是依赖链长度的上限**；
-- 提交时释放 `oldPhy` 回自由表（循环序号语义天然支持 checkpoint `restoreHead`）。
+- 提交时释放 `oldPhy` 回自由表（packed 循环序号语义天然支持 checkpoint `restoreHead`）。
 
 ---
 
@@ -828,7 +833,7 @@ squash 回卷 `next`，提交推进 `head`，两者可同拍发生：若 ROB 头
 | 模块 | 恢复动作 |
 |------|----------|
 | `RAT` | 从被 squash 的最老 ROB 条目的 checkpoint 快照整表回滚 |
-| `PRF` | 按 ROB 条目 checkpoint 的 `headSeq` `restoreHead`，回卷自由表（未提交分配全部作废） |
+| `PRF` | 按 ROB 条目 checkpoint 的 packed `headSeq`（分配后 canonical 值）`restoreHead`，回卷自由表（未提交分配全部作废） |
 | `BPU` | 按 `ckptId` 恢复 `BPUSnapshot`（GHR/AlignQueue/RAS_top），折叠视图重算（见 [frontend.md](frontend.md) §4.3） |
 | `FQ/IQ/RS/LQ/SQ` | 各按 ROB 条目记录的尾快照回卷（RS 释放槽位、LQ/SQ 按 `getTailSnapshot` 截断） |
 | `MUL` | `flush(tag)`：清 `partialRes/scRes` 的 valid + 清 `outputBuffer` 中不早于 tag 的槽位 |
