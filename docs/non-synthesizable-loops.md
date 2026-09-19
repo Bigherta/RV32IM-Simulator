@@ -41,7 +41,7 @@ SRT DIV 是当前范本：商位递推由 `loopTimes` 和阶段 valid 驱动，�
 
 以下循环属于宿主仿真，不应进入硬件顶层：
 
-- `Memory::load_ins()` 解析标准输入中的课程镜像。
+- `Memory::load_ins()` 解析标准输入中的 RV32IM 测试镜像。
 - `debug::parseVerbose()` 解析环境变量并驱动宿主日志。
 - `CPU::run()` 循环调用每周期仿真入口，直到测试程序停机。
 

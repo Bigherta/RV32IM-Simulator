@@ -3,21 +3,29 @@
 #define COMMON_HPP
 #include <cstdint>
 using RobTag = uint8_t;
-constexpr int INTEGERRS_CAP = 8;
-constexpr int MULTIPLYRS_CAP = 4;
-constexpr int DIVIDERS_CAP = 4;
+constexpr int INTEGERRS_CAP = 4;
+constexpr int MULTIPLYRS_CAP = 2;
+constexpr int DIVIDERS_CAP = 1;
 constexpr int STORERS_CAP = 4;
 constexpr int LOADRS_CAP = 4;
 constexpr int BRANCHRS_CAP = 4;
-constexpr int LQ_CAP = 16;
-constexpr int SQ_CAP = 16;
-constexpr int MEMQ_SCAN_WINDOW = 8;
+constexpr int LQ_CAP = 8;
+constexpr int SQ_CAP = 8;
+constexpr int LQ_MASK = LQ_CAP - 1;
+constexpr int SQ_MASK = SQ_CAP - 1;
+constexpr int MEMQ_SCAN_WINDOW = SQ_CAP < 8 ? SQ_CAP : 8;
 constexpr uint8_t MEM_STORE_BIT = 0x40;
 inline bool isStoreMem(uint8_t m) { return (m & MEM_STORE_BIT) != 0; }
 inline uint8_t memSlot(uint8_t m) { return m & 0x3F; }
-constexpr int ROB_CAP = 64;
-constexpr int FQ_CAP = 8;
-constexpr int IQ_CAP = 16;
+constexpr int ROB_CAP = 16;
+constexpr int ROB_INDEX_MASK = ROB_CAP - 1;
+constexpr int ROB_TAG_MASK = 0x7F;
+constexpr int ROB_TAG_HALF_RANGE = 0x40;
+inline constexpr uint8_t robSlot(RobTag tag) {
+  return tag & ROB_INDEX_MASK;
+}
+constexpr int FQ_CAP = 4;
+constexpr int IQ_CAP = 4;
 constexpr int REGISTER_CAP = 32;
 constexpr int FLUSHARBITER_CAP = 4;
 constexpr int ALU_CAP = 4;
@@ -25,23 +33,42 @@ constexpr int MUL_CAP = 4;
 constexpr int AGU_CAP = 4;
 constexpr int BRU_CAP = 4;
 constexpr int PC_Direct_CAP = 1 << 12;
-constexpr int BTB_CAP = 256;
+constexpr int BTB_CAP = 64;
 constexpr int BHT_CAP = 1 << 8;
 constexpr int T0_CAP = 1 << 10;  // local base table, (pc ^ LHT) hashed index
-constexpr int LHT_CAP = 1 << 9;  // per-PC local history table, pc[11:2] index
+constexpr int LHT_CAP = 1 << 7;  // per-PC local history table, pc[8:2] index
 constexpr int CONDSEEN_CAP = 1 << 9; // "this PC is a conditional" filter
 constexpr uint64_t HISTORY_MASK = ~UINT64_C(0);
-constexpr int LOCAL_HISTORY_BIT = 7;
+constexpr int LOCAL_HISTORY_BIT = 5;
 constexpr int TARGETCACHE_CAP = 1 << LOCAL_HISTORY_BIT;
 constexpr int RAS_CAP = 8;
 constexpr int ALIGNQ_CAP = 16;
-constexpr int PRF_CAP = 128;
+constexpr int PRF_CAP = 64;
+static_assert(INTEGERRS_CAP > 0 &&
+              (INTEGERRS_CAP & (INTEGERRS_CAP - 1)) == 0);
+static_assert(MULTIPLYRS_CAP > 0 &&
+              (MULTIPLYRS_CAP & (MULTIPLYRS_CAP - 1)) == 0);
+static_assert(DIVIDERS_CAP > 0 &&
+              (DIVIDERS_CAP & (DIVIDERS_CAP - 1)) == 0);
+static_assert(BRANCHRS_CAP > 0 &&
+              (BRANCHRS_CAP & (BRANCHRS_CAP - 1)) == 0);
+static_assert(LQ_CAP >= 2 && LQ_CAP <= 64 && (LQ_CAP & LQ_MASK) == 0);
+static_assert(SQ_CAP >= 2 && SQ_CAP <= 64 && (SQ_CAP & SQ_MASK) == 0);
+static_assert(MEMQ_SCAN_WINDOW <= SQ_CAP);
+static_assert(ROB_CAP > 0 && (ROB_CAP & ROB_INDEX_MASK) == 0 &&
+              ROB_CAP <= ROB_TAG_HALF_RANGE);
+static_assert(FQ_CAP >= 2 && FQ_CAP <= 256 &&
+              (FQ_CAP & (FQ_CAP - 1)) == 0);
+static_assert(IQ_CAP >= 2 && IQ_CAP <= 256 &&
+              (IQ_CAP & (IQ_CAP - 1)) == 0);
+static_assert(PRF_CAP > REGISTER_CAP &&
+              (PRF_CAP & (PRF_CAP - 1)) == 0 && PRF_CAP <= 128);
 // Sentinel for "no physical register" across the whole phy-tag domain
 // (RAT entries, freeList empty slots, Operand.tag immediates, ROB
 // oldPhy/newPhy, IssuePacket.phy). Load-bearing invariant: P0 is never
 // allocated (freeList only ever holds 32..PRF_CAP-1) and never mapped
 // (RAT binds x1-x31 at reset; rd==0 never allocates), so real tags are
-// always in 1..127 and 0 is unambiguous. Guarded by asserts in PRF::pop,
+// always in 1..PRF_CAP-1 and 0 is unambiguous. Guarded by asserts in PRF::pop,
 // PRF::push, RAT::setRAT_PRF and IssueArbiter::resolveSrc.
 inline constexpr int InvalidPhy = 0;
 constexpr int IMEM_CAP = 16;
@@ -101,9 +128,7 @@ enum class Operation {
   MULH,
   MULHU,
   MULHSU,
-  // M-extension divide/remainder: enum reserves the full funct3 space so the
-  // decode table is complete; stage A only *decodes+issues* funct3 0..3 and
-  // deliberately stalls funct3 4..7 (no DIV unit yet, no silent-0 trap).
+  // M-extension divide/remainder operations execute in the dedicated DIV unit.
   DIV,
   DIVU,
   REM,
@@ -220,7 +245,7 @@ struct BPUSnapshot {
   // SARAS: the checkpoint keeps GHR, AlignQueue head+tail, and RAS_top.
   // With RASEntry{retPC,times}, the height != call/ret depth, so RAS_top
   // is checkpointed directly. All three are uint8_t — ring counters wrap
-  // at 256 (8× ALIGNQ_CAP / 16× RAS_CAP, safe for in-flight <64).
+  // at 256, well beyond the current ROB_CAP and local queue capacities.
   // The TAGE folded views are NOT checkpointed: they are pure functions
   // of GHR, so recoverCheckPoint() refolds them from the restored
   // register instead of carrying a second copy of the truth.

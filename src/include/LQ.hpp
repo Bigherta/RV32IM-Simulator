@@ -60,7 +60,7 @@ public:
   // exactly one entry at [tail] later this cycle). Distinct from the raw
   // tail: memIndex wants "my slot" (= old tail), squash snapshots want
   // "the border that keeps me alive" (= old tail + 1).
-  uint8_t getTailSnapshot() const { return (tail + 1) & 0x0F; }
+  uint8_t getTailSnapshot() const { return (tail + 1) & LQ_MASK; }
   auto getAddress(int index) const -> uint32_t;
   auto getValue(int index) const -> int32_t;
   auto headRobTag() const -> uint8_t;

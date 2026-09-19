@@ -6,22 +6,23 @@
 
 bool SQ::isEmpty() const { return tail == head; }
 
-bool SQ::isFull() const { return ((tail + 1) & 0x0F) == head; }
+bool SQ::isFull() const { return ((tail + 1) & SQ_MASK) == head; }
 
 bool SQ::isActive(uint8_t index) const {
   if (head == tail)
     return false;
-  return ((index - head + SQ_CAP) & 0x0F) < ((tail - head + SQ_CAP) & 0x0F);
+  return ((index - head + SQ_CAP) & SQ_MASK) <
+         ((tail - head + SQ_CAP) & SQ_MASK);
 }
 
-void SQ::pop() { head = (head + 1) & 0x0F; }
+void SQ::pop() { head = (head + 1) & SQ_MASK; }
 
 void SQ::pushStore(RobTag robTag, int n_bytes) {
   SQqueue[tail] = {};
   SQqueue[tail].robTag = robTag;
   SQqueue[tail].n_bytes = n_bytes;
   SQqueue[tail].isAddressReady = false;
-  tail = (tail + 1) & 0x0F;
+  tail = (tail + 1) & SQ_MASK;
 }
 
 uint8_t SQ::getHead() const { return head; }
@@ -69,10 +70,10 @@ auto SQ::planDataForward(int index, int32_t value) const -> StoreNotify {
   bool FoundKnownSameAddressOldest = false;
   bool FoundUnknownOldest = false;
   for (int k = 1; k <= SQ_CAP; ++k) {
-    uint8_t i = (index + k) & 0x0F;
+    uint8_t i = (index + k) & SQ_MASK;
     if (i == index || !isActive(i))
       continue;
-    if (((i - index) & 0x0F) >= ((tail - index) & 0x0F))
+    if (((i - index) & SQ_MASK) >= ((tail - index) & SQ_MASK))
       continue;
     if (SQqueue[i].address == SQqueue[index].address &&
         SQqueue[i].isAddressReady && !FoundKnownSameAddressOldest) {
@@ -103,10 +104,10 @@ auto SQ::planAddressForward(int index, uint32_t address) const -> StoreNotify {
   bool FoundKnownSameAddressOldest = false;
   bool FoundUnknownOldest = false;
   for (int k = 1; k <= SQ_CAP; ++k) {
-    uint8_t i = (index + k) & 0x0F;
+    uint8_t i = (index + k) & SQ_MASK;
     if (i == index || !isActive(i))
       continue;
-    if (((i - index) & 0x0F) >= ((tail - index) & 0x0F))
+    if (((i - index) & SQ_MASK) >= ((tail - index) & SQ_MASK))
       continue;
     if (SQqueue[i].address == address && SQqueue[i].isAddressReady &&
         !FoundKnownSameAddressOldest) {
@@ -134,7 +135,7 @@ auto SQ::replyToLoadRequest(uint32_t addr,
   bool FoundUnknown = false;
   bool SameAddrValueReady = false;
   for (int k = 0; k < SQ_CAP; k++) {
-    int index = (head + k) & 0x0F;
+    int index = (head + k) & SQ_MASK;
     if (!isActive(index))
       break;
     if (ROB::isYounger(SQqueue[index].robTag, loadTag))
@@ -163,7 +164,7 @@ bool SQ::canDispatchLoad(uint32_t addr, RobTag loadTag) const {
   for (int k = 0; k < SQ_CAP; k++) {
     if (hasSameAddressStore)
       continue;
-    uint8_t cur = (head + k) & 0x0F;
+    uint8_t cur = (head + k) & SQ_MASK;
     if (!isActive(cur))
       continue;
     if (!ROB::isOlder(SQqueue[cur].robTag, loadTag))
@@ -221,6 +222,6 @@ void SQ::tick(const SQInput &input, systemState &CPUstate) {
   // flush on squash
   if (input.squashDetect.needSquash) {
     CPUstate.SQModule.flush(
-        input.ROBModule.getSqtTailSnapshot(input.squashDetect.SquashTag & 0x3F));
+        input.ROBModule.getSqtTailSnapshot(robSlot(input.squashDetect.SquashTag)));
   }
 }

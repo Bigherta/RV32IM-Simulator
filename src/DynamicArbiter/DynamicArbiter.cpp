@@ -75,7 +75,7 @@ void FlushArbiter::tick(const FlushArbiterInput &input, systemState &CPUstate) {
         (input.squashDetect.needSquash &&
          ROB::isOlder(brRobTag, input.squashDetect.SquashTag))) {
       auto actualPC = pcResult;
-      if (actualPC != input.ROBModule.getPredictedPC(((brRobTag) & 0x3F))) {
+      if (actualPC != input.ROBModule.getPredictedPC(robSlot(brRobTag))) {
         if (debug::enabled(debug::TOPIC_BPMISS))
           debug::print("squash tag=%u pc=%u (from %u)\n", brRobTag, actualPC,
                        pcFrom);
@@ -83,7 +83,7 @@ void FlushArbiter::tick(const FlushArbiterInput &input, systemState &CPUstate) {
         BranchSquash.SquashPC = actualPC;
         BranchSquash.SquashTag = brRobTag;
         BranchSquash.CkptId =
-            input.ROBModule.getCkptId(BranchSquash.SquashTag & 0x3F);
+            input.ROBModule.getCkptId(robSlot(BranchSquash.SquashTag));
       }
     }
     if (BranchSquash.needSquash)
@@ -101,14 +101,14 @@ void FlushArbiter::tick(const FlushArbiterInput &input, systemState &CPUstate) {
           isControl) {
         SquashInfo JumpSquash;
         const auto pc = static_cast<uint32_t>(cdbOut.value);
-        if (pc != input.ROBModule.getPredictedPC(((cdbOut.robTag) & 0x3F))) {
+        if (pc != input.ROBModule.getPredictedPC(robSlot(cdbOut.robTag))) {
           if (debug::enabled(debug::TOPIC_BPMISS))
             debug::print("squash tag=%u pc=%u (jalr)\n", cdbOut.robTag, pc);
           JumpSquash.needSquash = true;
           JumpSquash.SquashPC = pc;
           JumpSquash.SquashTag = cdbOut.robTag;
           JumpSquash.CkptId =
-              input.ROBModule.getCkptId(JumpSquash.SquashTag & 0x3F);
+              input.ROBModule.getCkptId(robSlot(JumpSquash.SquashTag));
         }
         if (JumpSquash.needSquash)
           CPUstate.flushArbiter.receive(JumpSquash);
@@ -126,7 +126,7 @@ void FlushArbiter::tick(const FlushArbiterInput &input, systemState &CPUstate) {
       auto lqHead = input.LQModule.getHead();
       bool violationHandled = false;
       for (int k = 0; k < LQ_CAP; ++k) {
-        uint8_t i = (lqHead + k) & 0x0F;
+        uint8_t i = (lqHead + k) & LQ_MASK;
         if (violationHandled)
           continue;
         if (!input.LQModule.isActive(i))
@@ -144,8 +144,8 @@ void FlushArbiter::tick(const FlushArbiterInput &input, systemState &CPUstate) {
             SquashInfo viol;
             viol.needSquash = true;
             viol.SquashTag = violTag;
-            viol.SquashPC = input.ROBModule.getPC(viol.SquashTag & 0x3F);
-            viol.CkptId = input.ROBModule.getCkptId(viol.SquashTag & 0x3F);
+            viol.SquashPC = input.ROBModule.getPC(robSlot(viol.SquashTag));
+            viol.CkptId = input.ROBModule.getCkptId(robSlot(viol.SquashTag));
             CPUstate.flushArbiter.receive(viol);
             violationHandled = true;
           }

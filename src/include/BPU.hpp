@@ -10,7 +10,7 @@ constexpr int TAGE_NTABLES = 4;
 static_assert((TAGE_NTABLES & (TAGE_NTABLES - 1)) == 0,
               "TAGE_NTABLES must be a power of two (allocation uses & (N-1))");
 constexpr int TAGE_HIST[TAGE_NTABLES] = {6, 12, 24, 48};
-constexpr int TAGE_IDX_BIT = 9; // 512 entries per table
+constexpr int TAGE_IDX_BIT = 7; // 128 entries per table
 constexpr int TAGE_TAG_BIT = 8;
 constexpr uint8_t BANKTICK_MAX = 63;
 constexpr uint8_t LFSR_TAPS = 0xB8; // 8-bit Galois taps
@@ -27,8 +27,8 @@ static_assert(TAGE_NTABLES == 4, "folded-history unroll assumes 4 TAGE tables");
 static_assert(TAGE_HIST[0] == 6 && TAGE_HIST[1] == 12 && TAGE_HIST[2] == 24 &&
                   TAGE_HIST[3] == 48,
               "folded-history unroll hardcodes H: must track TAGE_HIST");
-static_assert(TAGE_IDX_BIT == 9 && TAGE_TAG_BIT == 8,
-              "folded-history unroll hardcodes W: must track IDX/TAG bit widths");
+static_assert(TAGE_IDX_BIT == 7 && TAGE_TAG_BIT == 8,
+               "folded-history unroll hardcodes W: must track IDX/TAG bit widths");
 struct BRU;
 struct ROB;
 struct systemState;
@@ -86,7 +86,7 @@ struct TageEntry {
 struct DirectionPred {
   uint8_t t0[T0_CAP] = {};
   uint16_t LHT[LHT_CAP] = {}; // per-PC local history (12b), non-speculative
-  TageEntry tn[TAGE_NTABLES][512];
+  TageEntry tn[TAGE_NTABLES][1 << TAGE_IDX_BIT];
   uint8_t useAltOnNa[128]; // ctor memset 0b1000
   TAGESCMeta tmeta[CKPT_CAP];
   uint64_t GHR = 0;
@@ -102,7 +102,7 @@ struct DirectionPred {
   // Invariant: fh*[i] always equals refoldView(GHR, TAGE_HIST[i], W), so the
   // checkpoint/recover path stays GHR-only -- recoverFolds() rebuilds them.
   //
-  // Unlike the template tree (Register<9>/<8>/<7>, which truncate on
+  // Unlike the template tree (fixed-width Register fields, which truncate on
   // assignment), these are plain integer fields, so EVERY update in
   // stepFolds() must mask explicitly. The widths must stay < 32 and the
   // histories must stay within the 64-bit GHR window; both are load-bearing
@@ -123,8 +123,8 @@ struct DirectionPred {
 
 // Target prediction ("where to jump"): BTB (targets + jump type) and the
 // SARAS ring return-address stack with its correction queue. All three
-// ring counters are uint8_t and wrap at 256 (safe: in-flight <64, and
-// ALIGNQ_CAP=32/RAS_CAP=16).
+// ring counters are uint8_t and wrap at 256, well beyond the current
+// ROB_CAP=16 and local queue capacities (ALIGNQ_CAP=16/RAS_CAP=8).
 struct TargetPred {
   uint8_t BHT[BHT_CAP] = {};
   uint32_t TargetCache[TARGETCACHE_CAP] = {};

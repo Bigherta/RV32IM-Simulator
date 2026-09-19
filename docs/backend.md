@@ -50,10 +50,10 @@ M 扩展的两个执行单元（**乘法**、**除法**）在 §4.3 / §4.4 给�
 |------|------|
 | `IssueArbiter`（StaticArbiter） | 组合构建每周期至多 1 个发射包（rename 决策） |
 | `DispatchArbiter`（StaticArbiter） | 保留站 → 执行单元的乱序派发（五独立通道） |
-| `RS` | 七个物理池：Integer 8 / Multiply 4 / **Divide 4** / Load 4 / StoreAddr 4 / StoreValue 4 / Branch 4 |
-| `PRF` | 物理寄存器堆 128：循环序号自由表、完成写口、checkpoint 恢复 |
+| `RS` | 七个物理池：Integer 4 / Multiply 2 / **Divide 1** / Load 4 / StoreAddr 4 / StoreValue 4 / Branch 4 |
+| `PRF` | 物理寄存器堆 64：循环序号自由表、完成写口、checkpoint 恢复 |
 | `RAT` | 架构寄存器 → 物理寄存器映射 |
-| `ROB` | 重排序缓冲 64：按序提交、checkpoint 快照宿主、squash 边界 |
+| `ROB` | 重排序缓冲 16：按序提交、checkpoint 快照宿主、squash 边界 |
 | `ALU` | 算术/逻辑/移位 + JALR 目标（`isControl` 载荷） |
 | `MUL` | M 扩展乘法单元（Booth → CSA → 最终加，3 级流水）——见 §4.3 |
 | `DIV` | M 扩展除法单元（SRT radix-4，单实例迭代，非流水）——见 §4.4 |
@@ -125,9 +125,9 @@ DIV 通道停发；MUL 则只检查自己的输出缓冲是否已满（见 §4.3
 
 | 单元 | 输入候选 | 结果保持 | 行为 |
 |------|----------|----------|------|
-| `ALU` | Integer RS 8 | 4 槽输出缓冲 | 算术/逻辑/移位；**JALR** 目标计算（`isControl` 载荷，经 aluCDB 供 FlushArbiter/BPU 消费） |
-| `MUL` | Multiply RS 4 | 3 级流水 + 4 槽输出缓冲 | RV32M 乘法族：radix-4 **Booth** 19 行部分积 → **3:2 CSA 压缩树**（17 cell）→ 最终全宽加法 [[5]](#back-ref-5)[[6]](#back-ref-6)[[7]](#back-ref-7)。**详见 §4.3** |
-| `DIV` | Divide RS 4 | 单个 `resultValid` 结果寄存器 | RV32M 除法族（`div/divu/rem/remu`）：**SRT radix-4** 数字递推，carry-save 冗余表示 + 常数法 QDS + on-the-fly 商转换 [[9]](#back-ref-9)[[10]](#back-ref-10)[[12]](#back-ref-12)[[13]](#back-ref-13)；**单实例、非流水**（三阶段 valid 归约拒绝新指令）。**详见 §4.4** |
+| `ALU` | Integer RS 4 | 4 槽输出缓冲 | 算术/逻辑/移位；**JALR** 目标计算（`isControl` 载荷，经 aluCDB 供 FlushArbiter/BPU 消费） |
+| `MUL` | Multiply RS 2 | 3 级流水 + 4 槽输出缓冲 | RV32M 乘法族：radix-4 **Booth** 19 行部分积 → **3:2 CSA 压缩树**（17 cell）→ 最终全宽加法 [[5]](#back-ref-5)[[6]](#back-ref-6)[[7]](#back-ref-7)。**详见 §4.3** |
+| `DIV` | Divide RS 1 | 单个 `resultValid` 结果寄存器 | RV32M 除法族（`div/divu/rem/remu`）：**SRT radix-4** 数字递推，carry-save 冗余表示 + 常数法 QDS + on-the-fly 商转换 [[9]](#back-ref-9)[[10]](#back-ref-10)[[12]](#back-ref-12)[[13]](#back-ref-13)；**单实例、非流水**（三阶段 valid 归约拒绝新指令）。**详见 §4.4** |
 | `AGU` | Load RS 4 + StoreAddr RS 4 | 4 槽输出缓冲 | load/store 地址 = base+offset；最老有效结果为 store 时组合广播地址事件 |
 | `BRU` | Branch RS 4 | 4 槽输出缓冲 | 条件分支：最老有效 `BranchResult{pcFrom, pcResult, robTag}` 供误预测检测 |
 
@@ -835,8 +835,8 @@ FQ/IQ/ROB/SQ 全空 ∧ DCache 非 busy ∧ DMEM 读写双口均空闲。后三�
 
 | 项 | 规格 |
 |----|------|
-| ROB / PRF / RAT | 64 / 128 / 32 |
-| 保留站 | Integer 8 · Multiply 4 · **Divide 4** · Load 4 · StoreAddr 4 · StoreValue 4 · Branch 4 |
+| ROB / PRF / RAT | 16 / 64 / 32 |
+| 保留站 | Integer 4 · Multiply 2 · **Divide 1** · Load 4 · StoreAddr 4 · StoreValue 4 · Branch 4 |
 | 发射 | 每周期至多 1 条（IQ 头，单口 rename） |
 | 执行/写回 | ALU·AGU·BRU·MUL 各 4 槽；DIV 单实例（三阶段 valid 归约背压）；派发与多槽输出均按 ROB 年龄选最老就绪/有效项 |
 | 结果总线 | 4 根（aluCDB / lqCDB / mulCDB / **divCDB**），无跨单元仲裁 |

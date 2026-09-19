@@ -7,15 +7,16 @@
 
 bool LQ::isEmpty() const { return tail == head; }
 
-bool LQ::isFull() const { return ((tail + 1) & 0x0F) == head; }
+bool LQ::isFull() const { return ((tail + 1) & LQ_MASK) == head; }
 
 bool LQ::isActive(uint8_t index) const {
   if (head == tail)
     return false;
-  return ((index - head + LQ_CAP) & 0x0F) < ((tail - head + LQ_CAP) & 0x0F);
+  return ((index - head + LQ_CAP) & LQ_MASK) <
+         ((tail - head + LQ_CAP) & LQ_MASK);
 }
 
-void LQ::pop() { head = (head + 1) & 0x0F; }
+void LQ::pop() { head = (head + 1) & LQ_MASK; }
 
 void LQ::pushLoad(RobTag robTag, int n_bytes, bool isUnsigned) {
   LQqueue[tail] = {};
@@ -24,7 +25,7 @@ void LQ::pushLoad(RobTag robTag, int n_bytes, bool isUnsigned) {
   LQqueue[tail].isUnsigned = isUnsigned;
   LQqueue[tail].isAddressReady = false;
   LQqueue[tail].valueState = ValueState::NOTREADY;
-  tail = (tail + 1) & 0x0F;
+  tail = (tail + 1) & LQ_MASK;
 }
 
 uint8_t LQ::getHead() const { return head; }
@@ -85,7 +86,7 @@ int LQ::LoadDetect() const {
   int UnloadIndex = 0;
   bool foundUnload = false;
   for (int k = 0; k < LQ_CAP; k++) {
-    uint8_t cur = (head + k) & 0x0F;
+    uint8_t cur = (head + k) & LQ_MASK;
     if (!isActive(cur) || foundUnload)
       continue;
     if (LQqueue[cur].isAddressReady &&
@@ -103,7 +104,7 @@ int LQ::CDBDetect() const {
   bool found = false;
   int detectedIndex = 0xFFFFFFFF;
   for (int k = 0; k < LQ_CAP; ++k) {
-    uint8_t cur = (head + k) & 0x0F;
+    uint8_t cur = (head + k) & LQ_MASK;
     if (!isActive(cur) || found)
       continue;
     if (LQqueue[cur].isAddressReady &&
@@ -118,7 +119,7 @@ int LQ::CDBDetect() const {
 
 void LQ::applyStoreForward(const StoreNotify &notify) {
   for (int k = 0; k < LQ_CAP; ++k) {
-    uint8_t i = (head + k) & 0x0F;
+    uint8_t i = (head + k) & LQ_MASK;
     if (!isActive(i))
       break;
     if (!LQqueue[i].isAddressReady)
@@ -193,5 +194,5 @@ void LQ::tick(const LQInput &input, systemState &CPUstate) {
   // flush on squash
   if (input.squashDetect.needSquash)
     CPUstate.LQModule.flush(
-        input.ROBModule.getLqtTailSnapshot(input.squashDetect.SquashTag & 0x3F));
+        input.ROBModule.getLqtTailSnapshot(robSlot(input.squashDetect.SquashTag)));
 }

@@ -170,7 +170,7 @@ MemDispatchDecision MemArbiter::arbitrate(const LQ &LQ, const SQ &SQ,
     auto storeTag = SQ.headRobTag();
     bool committed = rob.isEmpty() || ROB::isOlder(storeTag, rob.getHead());
     bool atHeadReady = !committed && SQ.headRobTag() == rob.getHead() &&
-                       rob.isCommitReadyAt(((SQ.headRobTag() & 0x3F)));
+                       rob.isCommitReadyAt(robSlot(SQ.headRobTag()));
     if (committed || atHeadReady) {
       MemRequest newRequest{};
       newRequest.address = SQ.getAddress(SQ.getHead());

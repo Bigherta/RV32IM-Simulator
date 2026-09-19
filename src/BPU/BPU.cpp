@@ -31,28 +31,55 @@ constexpr uint32_t refoldViewT(uint64_t ghr) {
 // XOR tree -- no runtime loop survives.
 constexpr uint32_t foldIdx(int i, uint64_t ghr) {
   switch (i) {
-  case 0: return refoldViewT<TAGE_HIST[0], TAGE_IDX_BIT>(ghr);
-  case 1: return refoldViewT<TAGE_HIST[1], TAGE_IDX_BIT>(ghr);
-  case 2: return refoldViewT<TAGE_HIST[2], TAGE_IDX_BIT>(ghr);
-  default: return refoldViewT<TAGE_HIST[3], TAGE_IDX_BIT>(ghr);
+  case 0:
+    return refoldViewT<TAGE_HIST[0], TAGE_IDX_BIT>(ghr);
+  case 1:
+    return refoldViewT<TAGE_HIST[1], TAGE_IDX_BIT>(ghr);
+  case 2:
+    return refoldViewT<TAGE_HIST[2], TAGE_IDX_BIT>(ghr);
+  default:
+    return refoldViewT<TAGE_HIST[3], TAGE_IDX_BIT>(ghr);
   }
 }
 constexpr uint32_t foldTag8(int i, uint64_t ghr) {
   switch (i) {
-  case 0: return refoldViewT<TAGE_HIST[0], TAGE_TAG_BIT>(ghr);
-  case 1: return refoldViewT<TAGE_HIST[1], TAGE_TAG_BIT>(ghr);
-  case 2: return refoldViewT<TAGE_HIST[2], TAGE_TAG_BIT>(ghr);
-  default: return refoldViewT<TAGE_HIST[3], TAGE_TAG_BIT>(ghr);
+  case 0:
+    return refoldViewT<TAGE_HIST[0], TAGE_TAG_BIT>(ghr);
+  case 1:
+    return refoldViewT<TAGE_HIST[1], TAGE_TAG_BIT>(ghr);
+  case 2:
+    return refoldViewT<TAGE_HIST[2], TAGE_TAG_BIT>(ghr);
+  default:
+    return refoldViewT<TAGE_HIST[3], TAGE_TAG_BIT>(ghr);
   }
 }
 constexpr uint32_t foldTag7(int i, uint64_t ghr) {
   switch (i) {
-  case 0: return refoldViewT<TAGE_HIST[0], TAGE_TAG_BIT - 1>(ghr);
-  case 1: return refoldViewT<TAGE_HIST[1], TAGE_TAG_BIT - 1>(ghr);
-  case 2: return refoldViewT<TAGE_HIST[2], TAGE_TAG_BIT - 1>(ghr);
-  default: return refoldViewT<TAGE_HIST[3], TAGE_TAG_BIT - 1>(ghr);
+  case 0:
+    return refoldViewT<TAGE_HIST[0], TAGE_TAG_BIT - 1>(ghr);
+  case 1:
+    return refoldViewT<TAGE_HIST[1], TAGE_TAG_BIT - 1>(ghr);
+  case 2:
+    return refoldViewT<TAGE_HIST[2], TAGE_TAG_BIT - 1>(ghr);
+  default:
+    return refoldViewT<TAGE_HIST[3], TAGE_TAG_BIT - 1>(ghr);
   }
 }
+
+// Incremental-step wrap amount (H % W) per table, computed by the compiler from
+// the real constants. A constexpr table keeps `%` out of the datapath while
+// preserving H % W == 0 rows, where `disc << 0` is plain `disc` rather than an
+// absent term.
+constexpr int wrapShiftIdx[TAGE_NTABLES] = {
+    TAGE_HIST[0] % TAGE_IDX_BIT, TAGE_HIST[1] % TAGE_IDX_BIT,
+    TAGE_HIST[2] % TAGE_IDX_BIT, TAGE_HIST[3] % TAGE_IDX_BIT}; // {6,3,6,3}
+constexpr int wrapShiftTag8[TAGE_NTABLES] = {
+    TAGE_HIST[0] % TAGE_TAG_BIT, TAGE_HIST[1] % TAGE_TAG_BIT,
+    TAGE_HIST[2] % TAGE_TAG_BIT, TAGE_HIST[3] % TAGE_TAG_BIT}; // {6,4,0,0}
+constexpr int wrapShiftTag7[TAGE_NTABLES] = {
+    TAGE_HIST[0] % (TAGE_TAG_BIT - 1), TAGE_HIST[1] % (TAGE_TAG_BIT - 1),
+    TAGE_HIST[2] % (TAGE_TAG_BIT - 1),
+    TAGE_HIST[3] % (TAGE_TAG_BIT - 1)}; //{6,5,3,6}
 } // namespace
 
 FetchDecision FetchDecision::build(const BPU &bp, uint32_t pc,
@@ -140,8 +167,8 @@ PredictInfo BPU::predict(int32_t pc) const {
   bool taken = tagePred;
 
   const auto BTB_index = p2 & (BTB_CAP - 1);
-  bool btbHit =
-      tgt.BTB[BTB_index].valid && tgt.BTB[BTB_index].actualPC == static_cast<uint32_t>(pc);
+  bool btbHit = tgt.BTB[BTB_index].valid &&
+                tgt.BTB[BTB_index].actualPC == static_cast<uint32_t>(pc);
   if (btbHit && tgt.BTB[BTB_index].unconditional)
     taken = true;
   else if (!btbHit)
@@ -155,9 +182,9 @@ PredictInfo BPU::predict(int32_t pc) const {
   const uint32_t tcHash = (p2 ^ bhr) & (TARGETCACHE_CAP - 1);
   const bool tcUsable = btbHit && tgt.BTB[BTB_index].isIndirect &&
                         !tgt.BTB[BTB_index].isCall &&
-                        !tgt.BTB[BTB_index].isRet &&
-                        tgt.TargetValid[tcHash];
-  // RET with empty RAS: don't use BTB target 0, treat as not taken (wild fetch fix)
+                        !tgt.BTB[BTB_index].isRet && tgt.TargetValid[tcHash];
+  // RET with empty RAS: don't use BTB target 0, treat as not taken (wild fetch
+  // fix)
   bool isRet = tgt.BTB[BTB_index].isRet;
   bool rasEmpty = tgt.RAS_top == 0;
   if (isRet && rasEmpty) {
@@ -203,9 +230,9 @@ void BPU::update(int32_t pc, bool taken, int32_t target, uint64_t ghr,
   for (int i = 0; i < TAGE_NTABLES; ++i) {
     idx[i] = (foldIdx(i, gh) ^ (p2 & ((1u << TAGE_IDX_BIT) - 1))) &
              ((1u << TAGE_IDX_BIT) - 1);
-    tags[i] = static_cast<uint8_t>(
-        (foldTag8(i, gh) ^ foldTag7(i, gh) ^ (p2 & ((1u << TAGE_TAG_BIT) - 1))) &
-        ((1u << TAGE_TAG_BIT) - 1));
+    tags[i] = static_cast<uint8_t>((foldTag8(i, gh) ^ foldTag7(i, gh) ^
+                                    (p2 & ((1u << TAGE_TAG_BIT) - 1))) &
+                                   ((1u << TAGE_TAG_BIT) - 1));
     const auto &e = dir.tn[i][idx[i]];
     hit[i] = e.valid && e.tag == tags[i];
   }
@@ -402,9 +429,11 @@ void BPU::shiftGHR(bool taken) {
 //      i.e. plain `disc`, and still XORs a bit into position 0.
 //   2. The rotate must be masked to W bits. At W < 32, `v << 1` can carry the
 //      top bit past position W-1 before `>> (W - 1)` brings it back; storing
-//      the result in a type wider than W (uint8_t holding 7 bits) leaves it set.
-// Computing `TAGE_HIST[i] % W` at compile time and masking explicitly keeps
-// both correct by construction instead of by my arithmetic.
+//      the result in a type wider than W (uint8_t holding 7 bits) leaves it
+//      set.
+// The per-table `H % W` values are computed only in constexpr initializers;
+// the datapath selects a shift amount from those constant candidates. Explicit
+// masking keeps the rotate correct by construction instead of by arithmetic.
 void BPU::stepFolds(uint64_t ghrBefore, bool taken) {
   const uint32_t b = taken ? 1u : 0u;
   const uint32_t d5 = static_cast<uint32_t>(ghrBefore >> 5) & 1u;   // H=6
@@ -419,31 +448,31 @@ void BPU::stepFolds(uint64_t ghrBefore, bool taken) {
   for (int i = 0; i < TAGE_NTABLES; ++i) {
     constexpr uint32_t W = TAGE_IDX_BIT, M = (1u << TAGE_IDX_BIT) - 1u;
     const uint32_t v = dir.fhIdx[i];
-    dir.fhIdx[i] = ((((v << 1) | (v >> (W - 1))) & M) ^ b ^
-                    (disc[i] << (TAGE_HIST[i] % W))) &
-                   M;
+    dir.fhIdx[i] =
+        ((((v << 1) | (v >> (W - 1))) & M) ^ b ^ (disc[i] << wrapShiftIdx[i])) &
+        M;
   }
 
   // W = TAGE_TAG_BIT. Where H % W == 0 the wrap term is `disc << 0` == disc;
-  // it does NOT vanish. Deriving the shift as a compile-time `%` removes the
-  // chance of hand-evaluating that case wrong (it was wrong twice before).
+  // it does NOT vanish. Deriving the table entries with compile-time `%`
+  // removes the chance of hand-evaluating that case wrong (it was wrong twice
+  // before).
   for (int i = 0; i < TAGE_NTABLES; ++i) {
     constexpr uint32_t W = TAGE_TAG_BIT, M = (1u << TAGE_TAG_BIT) - 1u;
     const uint32_t v = dir.fhTag8[i];
-    dir.fhTag8[i] = static_cast<uint8_t>(
-        ((((v << 1) | (v >> (W - 1))) & M) ^ b ^
-         (disc[i] << (TAGE_HIST[i] % W))) &
-        M);
+    dir.fhTag8[i] = static_cast<uint8_t>(((((v << 1) | (v >> (W - 1))) & M) ^
+                                          b ^ (disc[i] << wrapShiftTag8[i])) &
+                                         M);
   }
 
   // W = TAGE_TAG_BIT - 1 (7). Distinct W, so re-derive mask and shift.
   for (int i = 0; i < TAGE_NTABLES; ++i) {
-    constexpr uint32_t W = TAGE_TAG_BIT - 1, M = (1u << (TAGE_TAG_BIT - 1)) - 1u;
+    constexpr uint32_t W = TAGE_TAG_BIT - 1,
+                       M = (1u << (TAGE_TAG_BIT - 1)) - 1u;
     const uint32_t v = dir.fhTag7[i];
-    dir.fhTag7[i] = static_cast<uint8_t>(
-        ((((v << 1) | (v >> (W - 1))) & M) ^ b ^
-         (disc[i] << (TAGE_HIST[i] % W))) &
-        M);
+    dir.fhTag7[i] = static_cast<uint8_t>(((((v << 1) | (v >> (W - 1))) & M) ^
+                                          b ^ (disc[i] << wrapShiftTag7[i])) &
+                                         M);
   }
 }
 
@@ -485,8 +514,8 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
       ++CPUstate.BPUModule.branchTotal;
       // BRU resolves conditional branches only -> class = cond.
       ++CPUstate.BPUModule.condTotal;
-      bool correct = pcResult == input.ROBModule.getPredictedPC(
-                                     ((brRobTag) & 0x3F));
+      bool correct =
+          pcResult == input.ROBModule.getPredictedPC(robSlot(brRobTag));
       if (correct) {
         ++CPUstate.BPUModule.branchCorrect;
         ++CPUstate.BPUModule.condCorrect;
@@ -499,17 +528,16 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
         bru.pc = pcFrom;
         bru.taken = pcResult != pcFrom + 4;
         bru.target = pcResult;
-        const uint8_t cid = input.ROBModule.getCkptId(
-            ((brRobTag) & 0x3F));
+        const uint8_t cid = input.ROBModule.getCkptId(robSlot(brRobTag));
         bru.ghr = bpCkpt[cid].GHR_snapshot;
         bru.meta = dir.tmeta[cid];
       }
     }
   }
-  const auto& cdbOut = input.cdbOut;
+  const auto &cdbOut = input.cdbOut;
   if (cdbOut.valid && cdbOut.isControl && !input.ROBModule.isEmpty() &&
       !ROB::isOlder(cdbOut.robTag, input.ROBModule.getHead())) {
-    auto robIdx = ((cdbOut.robTag) & 0x3F);
+    auto robIdx = robSlot(cdbOut.robTag);
     const auto pc = static_cast<uint32_t>(cdbOut.value);
     if (!input.squashDetect.needSquash ||
         (input.squashDetect.needSquash &&

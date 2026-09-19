@@ -21,7 +21,7 @@
                  ┌──────────────── 前端 ─────────────────────────┐
   FetchDecision ─►│ FetchUnit(PC/halt) → ICache* → IMEM*         │
   （BPU 预测）     │        ▼                                    │
-                   │ InstructBuffer(FQ, 8槽/7可用) → IQ(16槽/15可用)│
+                   │ InstructBuffer(FQ, 4槽/3可用) → IQ(4槽/3可用)│
                    └──────────────┬──────────────────────────────┘
                                   ▼（进入后端发射）
 ```
@@ -29,8 +29,8 @@
 | 模块 | 职责 | 备注 |
 |------|------|------|
 | `FetchUnit` | PC 寄存器与 halt 闩锁（`programCounter` / `haltFetched`） | 每周期一个 `FetchDecision` 有效即推进 PC |
-| `InstructBuffer`（FQ） | 8 个物理槽、最多 7 条有效指令的环形取指队列，条目为 `{raw, pc, predictedPC, ckptId}` | 预译码为 RAS/BTB 提供精确跳转类型 |
-| `Decoder` / `DecodeUnit` | 指令译码 + Uop 环形队列 IQ（16 个物理槽、最多 15 条有效 Uop） | `Uop` 携带执行与恢复元数据 |
+| `InstructBuffer`（FQ） | 4 个物理槽、最多 3 条有效指令的环形取指队列，条目为 `{raw, pc, predictedPC, ckptId}` | 预译码为 RAS/BTB 提供精确跳转类型 |
+| `Decoder` / `DecodeUnit` | 指令译码 + Uop 环形队列 IQ（4 个物理槽、最多 3 条有效 Uop） | `Uop` 携带执行与恢复元数据 |
 | `BPU` | 方向预测（TAGE）+ 目标预测（BTB/TargetCache/RAS/SARAS） | 见 §4 |
 
 ---
@@ -109,9 +109,9 @@ ckptId），压入 IQ。FQ 头是否可被消费由 IQ 的周期初满状态决�
 
 | 部件 | 配置 | 说明 |
 |------|------|------|
-| 基表 T0 | 1024 × 2-bit | 索引 = `PC ⊕ LHT[PC]`；LHT 为 512 条目 × 12-bit **每 PC 局部历史**（非推测更新），是本项目采用的局部两级兜底预测器 [[4]](#front-ref-4) |
+| 基表 T0 | 1024 × 2-bit | 索引 = `PC ⊕ LHT[PC]`；LHT 为 128 条目 × 12-bit **每 PC 局部历史**（非推测更新），是本项目采用的局部两级兜底预测器 [[4]](#front-ref-4) |
 | condSeen 过滤器 | 512 × 1-bit | 条件分支解析时置位；取指侧 `btbHit ∨ condSeen` 才移位 GHR——避免"从不 taken 的分支不留历史、BTB 驻留漂移改变历史成员"两类缺口 |
-| 标签表 T1–T4 | 每表 512 条目 × 8-bit tag | 历史长度 {6, 12, 24, 48}；9-bit 索引与 8-bit tag 使用不同宽度的折叠历史并与 `pc` 混合；几何历史长度、部分标签和折叠历史来自 TAGE [[2]](#front-ref-2)[[3]](#front-ref-3) |
+| 标签表 T1–T4 | 每表 128 条目 × 8-bit tag | 历史长度 {6, 12, 24, 48}；7-bit 索引与 8-bit tag 使用不同宽度的折叠历史并与 `pc` 混合；几何历史长度、部分标签和折叠历史来自 TAGE [[2]](#front-ref-2)[[3]](#front-ref-3) |
 | TageEntry | `{valid, tag(8b), ctr(3b), u(2b)}` | provider = 最长命中的历史表；alt = 次长命中（无次命中回退 T0），沿用 TAGE 的 provider/alternate 结构 [[2]](#front-ref-2)[[3]](#front-ref-3) |
 | useAltOnNa | 128 条目 × 4-bit（初值偏 alt） | 弱 provider（`ctr==3/4`）时学习"此 PC 改用 alt 是否更准"；机制来自 TAGE，容量与索引是项目配置 [[3]](#front-ref-3) |
 | 分配/老化 | 8-bit Galois LFSR（taps `0xB8`）抽签 | TAGE 用 usefulness 位约束替换并通过老化回收表项 [[2]](#front-ref-2)[[3]](#front-ref-3)；LFSR、候选扫描及每 64 次 `u >>= 1` 是项目策略 |
@@ -124,8 +124,8 @@ ckptId），压入 IQ。FQ 头是否可被消费由 IQ 的周期初满状态决�
 
 | 部件 | 配置 | 说明 |
 |------|------|------|
-| BTB | 256 条目 | 经典 Branch Target Buffer 的项目实现 [[5]](#front-ref-5)；携带 `unconditional/isCall/isRet/isIndirect` 类型，命中且无条件 ⇒ 必 taken |
-| Target Cache | 128 条目 | JALR 专用，采用"同一静态间接跳转可有多个上下文相关目标"的 Target Cache 思路 [[6]](#front-ref-6)；本实现用 256×8b 提交级局部历史 BHR，按 `pc ⊕ BHR` 哈希 |
+| BTB | 64 条目 | 经典 Branch Target Buffer 的项目实现 [[5]](#front-ref-5)；携带 `unconditional/isCall/isRet/isIndirect` 类型，命中且无条件 ⇒ 必 taken |
+| Target Cache | 32 条目 | JALR 专用，采用"同一静态间接跳转可有多个上下文相关目标"的 Target Cache 思路 [[6]](#front-ref-6)；本实现用 256×8b 提交级局部历史 BHR，按 `pc ⊕ BHR` 哈希 |
 | RAS | 8 条目 `{retPC, times}` | RAS 用 call 压入的返回地址预测 return [[7]](#front-ref-7)；`times` 将连续相同返回地址压成计数项，是项目的递归去重策略；投机错位与修复机制见 [[8]](#front-ref-8) |
 | SARAS | 16 条目 `{addr, index, times}` | 受 Self-Aligning Return Address Stack 启发的恢复日志 [[9]](#front-ref-9)；论文使用传统 RAS、自对齐队列与栈顶计数器，本项目字段和 call-dedup/ret 撤销规则是具体适配，不宣称逐字段等同 |
 
@@ -164,10 +164,10 @@ ckptId），压入 IQ。FQ 头是否可被消费由 IQ 的周期初满状态决�
 | 项 | 规格 |
 |----|------|
 | 取指带宽 | 每周期至多 1 条（FQ 有空位且无背压/无 squash/未闩锁 halt 时） |
-| FQ / IQ | 物理槽 8 / 16；环形队列保留一个空槽判满，实际最多容纳 7 / 15 条 |
-| 方向预测 | T0 1024×2b · LHT 512×12b · T1–T4 各 512 项（8b tag，hist {6,12,24,48}）· useAltOnNa 128×4b |
-| 目标预测 | BTB 256 · Target Cache 128（BHR 256×8b）· RAS 8 · SARAS 16 |
-| checkpoint | ckptId 池 64（≥ ROB 64，static_assert 守护） |
+| FQ / IQ | 物理槽 4 / 4；环形队列保留一个空槽判满，实际最多容纳 3 / 3 条 |
+| 方向预测 | T0 1024×2b · LHT 128×12b · T1–T4 各 128 项（8b tag，hist {6,12,24,48}）· useAltOnNa 128×4b |
+| 目标预测 | BTB 64 · Target Cache 32（BHR 256×8b）· RAS 8 · SARAS 16 |
+| checkpoint | ckptId 池 64（≥ ROB 16，static_assert 守护） |
 | 预译码 | FQ 尾 jal/jalr 静态分类（call/ret/indirect + 静态 jal 目标） |
 | halt | ICache 头 = `0x0ff00513` ⇒ latch haltFetched 停取 |
 

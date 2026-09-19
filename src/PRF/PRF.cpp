@@ -16,7 +16,7 @@ PRF::PRF() {
   // makes InvalidPhy=0 a valid "no register" sentinel everywhere.
   for (int i = 0; i < REGISTER_CAP; ++i)
     PhysicalRegs[i].ready = true;
-  // P32-P127 enter the free list; empty tail slots stay InvalidPhy (=0)
+  // P32..P(PRF_CAP-1) enter the free list; empty tail slots stay InvalidPhy.
   memset(freeList, 0, sizeof(freeList));
   for (int i = REGISTER_CAP; i < PRF_CAP; ++i)
     freeList[(tailSeq++) & (PRF_CAP - 1)] = i;
@@ -58,7 +58,7 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
   if (input.cdbOfALU.valid) {
     if (!input.squashDetect.needSquash ||
         ROB::isOlder(input.cdbOfALU.robTag, input.squashDetect.SquashTag)) {
-      auto robIdx = ((input.cdbOfALU.robTag) & 0x3F);
+      auto robIdx = robSlot(input.cdbOfALU.robTag);
       auto isControl = input.cdbOfALU.isControl;
       if (!isControl) {
         auto value = input.cdbOfALU.value;
@@ -72,7 +72,7 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
   if (input.cdbOfLQ.valid) {
     if (!input.squashDetect.needSquash ||
         ROB::isOlder(input.cdbOfLQ.robTag, input.squashDetect.SquashTag)) {
-      auto robIdx = ((input.cdbOfLQ.robTag) & 0x3F);
+      auto robIdx = robSlot(input.cdbOfLQ.robTag);
       auto value = input.cdbOfLQ.value;
       int newPhy = input.ROBModule.getNewPhy(robIdx);
       if (newPhy != InvalidPhy) {
@@ -83,7 +83,7 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
   if (input.cdbOfMul.valid) {
     if (!input.squashDetect.needSquash ||
         ROB::isOlder(input.cdbOfMul.robTag, input.squashDetect.SquashTag)) {
-      auto robIdx = ((input.cdbOfMul.robTag) & 0x3F);
+      auto robIdx = robSlot(input.cdbOfMul.robTag);
       auto value = input.cdbOfMul.value;
       int newPhy = input.ROBModule.getNewPhy(robIdx);
       if (newPhy != InvalidPhy) {
@@ -97,7 +97,7 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
   if (input.cdbOfDiv.valid) {
     if (!input.squashDetect.needSquash ||
         ROB::isOlder(input.cdbOfDiv.robTag, input.squashDetect.SquashTag)) {
-      auto robIdx = ((input.cdbOfDiv.robTag) & 0x3F);
+      auto robIdx = robSlot(input.cdbOfDiv.robTag);
       auto value = input.cdbOfDiv.value;
       int newPhy = input.ROBModule.getNewPhy(robIdx);
       if (newPhy != InvalidPhy) {
@@ -124,7 +124,7 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
     }
   }
   if (input.squashDetect.needSquash) {
-    auto index = input.squashDetect.SquashTag & 0x3F;
+    auto index = robSlot(input.squashDetect.SquashTag);
     if (index >= 0) {
       auto ckptHead = PRFHeadCkpt[input.squashDetect.CkptId];
       CPUstate.PRFModule.restoreHead(ckptHead);
@@ -133,7 +133,7 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
   }
   if (input.ROBModule.isEmpty() || !input.ROBModule.isHeadCommitReady())
     return;
-  int headIdx = ((input.ROBModule.getHead() & 0x3F));
+  int headIdx = robSlot(input.ROBModule.getHead());
   if (!input.ROBModule.isHeadHalt() &&
       (input.ROBModule.headType() == ROBType::REGISTER ||
        input.ROBModule.headType() == ROBType::LINK)) {

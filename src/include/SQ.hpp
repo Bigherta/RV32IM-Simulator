@@ -67,7 +67,7 @@ public:
   uint8_t getHead() const;
   uint8_t getTail() const;
   // Occupancy boundary AFTER this cycle's own enqueue (see LQ::getTailSnapshot).
-  uint8_t getTailSnapshot() const { return (tail + 1) & 0x0F; }
+  uint8_t getTailSnapshot() const { return (tail + 1) & SQ_MASK; }
   bool isReadyToCommit(int index) const;
   auto getAddress(int index) const -> uint32_t;
   auto getValue(int index) const -> int32_t;
