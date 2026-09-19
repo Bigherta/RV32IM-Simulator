@@ -107,11 +107,15 @@ ROB push / RS 占槽 / LQ/SQ push（访存指令）/ IQ pop。每周期**至多�
 ## 3. 物理寄存器与就绪模型
 
 - PRF 以**packed 循环序号**（`headSeq`/`tailSeq`）管理自由表，条目 `{value, ready}`。
-  序号为 `{1-bit epoch, bit_width(PRF_CAP-1)-bit index}`：当前 PRF64 宽 7 bit，槽位
-  `prfSlot(seq) = seq & (PRF_CAP-1)`，`prfSeqNext()` 以掩码归一化推进，回绕周期
-  `2*PRF_CAP`，全程只有移位/掩码/加减。checkpoint 保存**分配后的 canonical head**
+  序号为 `{1-bit epoch, bit_width(PRF_CAP-1)-bit index}`，槽位由
+  `prfSlot(seq) = seq & PRF_INDEX_MASK` 投影；index 仅使用 `0..PRF_CAP-1`，字段内更高编码
+  是永不分配的空洞。`prfSeqNext()` 在末槽翻转 epoch 并归零 index，2 的幂容量时精确
+  退化为 masked `seq+1`。`prfSeqDistance()` 以 index 差和 epoch 差对应的
+  `±PRF_CAP` 重建模 `2*PRF_CAP` 逻辑距离，避免空洞污染 checkpoint 过期检测；全程只有
+  移位/掩码/加减。checkpoint 保存**分配后的 canonical head**
   （`allocDest ? prfSeqNext(head) : head`），恢复守卫为
-  `prfSeqDistance(ckptHead, tailSeq) <= PRF_CAP`；
+  `prfSeqDistance(ckptHead, tailSeq) <= PRF_CAP`。参数约束为 `PRF_CAP>REGISTER_CAP`、
+  `ROB_CAP<2*PRF_CAP` 且 `PRF_SEQ_WIDTH<=8`；
 - **保留站不缓存值**：就绪判定 `isOperandReady` 与取值 `getOperandValue` 直接
   查询 PRF（或返回立即数）。依赖唤醒的延迟表现为：结果经 CDB 写入 PRF 的下一
   拍，依赖它的保留站自然就绪——**总线数量不再是依赖链长度的上限**；

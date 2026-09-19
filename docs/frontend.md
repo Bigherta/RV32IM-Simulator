@@ -134,8 +134,10 @@ ckptId），压入 IQ。FQ 头是否可被消费由 IQ 的周期初满状态决�
 - **GHR 移位**：取指侧在 `btbHit ∨ condSeen` 时随预测结果移位（`FetchDecision`
   携带 `shift/shiftValue`）；条件分支的解析结果也回填历史——历史成员资格不依赖
   BTB 驻留。
-- **checkpoint**：每次取指消耗一个 `ckptId`（池 `CKPT_CAP=64 ≥ ROB_CAP`，
-  有 `static_assert` 守护）。`BPUSnapshot` 存 **GHR / AlignQueue 头尾 / RAS_top**
+- **checkpoint**：每次取指消耗一个 `ckptId`。活动池 `CKPT_CAP=32`，大于
+  `CKPT_LIVE_MAX = ROB16 + ICache request4 + FQ3 + IQ3 = 26`，由 `static_assert`
+  守住不会在仍存活时复用 ID；逻辑 ID 为 5 bit，模板既有 6/8-bit 运输载体有意保留。
+  `BPUSnapshot` 存 **GHR / AlignQueue 头尾 / RAS_top**
   三项（均为 uint8 环绕指针）；TAGE 折叠视图**不做 checkpoint**——它们是 GHR
   快照的纯函数，`recoverCheckPoint()` 恢复寄存器后直接 `refold` 重算。
 - **元数据传递**：`TAGESCMeta{provIdx, provCtr, provU, altPred, tagePred,
@@ -167,7 +169,7 @@ ckptId），压入 IQ。FQ 头是否可被消费由 IQ 的周期初满状态决�
 | FQ / IQ | 物理槽 4 / 4；环形队列保留一个空槽判满，实际最多容纳 3 / 3 条 |
 | 方向预测 | T0 1024×2b · LHT 128×12b · T1–T4 各 128 项（8b tag，hist {6,12,24,48}）· useAltOnNa 128×4b |
 | 目标预测 | BTB 64 · Target Cache 32（BHR 256×8b）· RAS 8 · SARAS 16 |
-| checkpoint | ckptId 池 64（≥ ROB 16，static_assert 守护） |
+| checkpoint | ckptId 池 32（存活上界 26；逻辑 5 bit，模板运输载体保留 6/8 bit） |
 | 预译码 | FQ 尾 jal/jalr 静态分类（call/ret/indirect + 静态 jal 目标） |
 | halt | ICache 头 = `0x0ff00513` ⇒ latch haltFetched 停取 |
 

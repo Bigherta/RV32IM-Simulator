@@ -15,11 +15,8 @@ constexpr int TAGE_TAG_BIT = 8;
 constexpr uint8_t BANKTICK_MAX = 63;
 constexpr uint8_t LFSR_TAPS = 0xB8; // 8-bit Galois taps
 constexpr uint8_t LFSR_SEED = 0xAC;
-// The per-ckptId metadata pool must outlive every in-flight branch's
-// resolve; ids are consumed one per fetch and at most ROB_CAP
-// instructions can be in flight, so equal capacities guarantee no id is
-// recycled before its meta is consumed.
-static_assert(CKPT_CAP >= ROB_CAP, "ckpt pool too small for ROB window");
+// The common-header CKPT_LIVE_MAX guard covers every checkpoint retained in
+// ROB, ICache, FQ, or IQ before an ID can be recycled.
 // The hand-unrolled folded-history update (BPU.cpp) hardcodes these H/W pairs
 // as literal shift amounts and masks. If any of them move, the unroll must be
 // regenerated -- make that a compile error instead of a silent mispredict.
