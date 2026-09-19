@@ -192,7 +192,8 @@ void LQ::tick(const LQInput &input, systemState &CPUstate) {
     }
   }
   // flush on squash
-  if (input.squashDetect.needSquash)
+  if (input.squashDetect.needSquash &&
+      input.ROBModule.matchesTag(input.squashDetect.SquashTag))
     CPUstate.LQModule.flush(
-        input.ROBModule.getLqtTailSnapshot(robSlot(input.squashDetect.SquashTag)));
+        input.ROBModule.getLqTailSnapshot(robSlot(input.squashDetect.SquashTag)));
 }

@@ -66,7 +66,8 @@ void FlushArbiter::tick(const FlushArbiterInput &input, systemState &CPUstate) {
   if (input.squashDetect.needSquash)
     CPUstate.flushArbiter.clear(input.squashDetect.SquashTag);
 
-  if (!input.BRUModule.isEmpty()) {
+  if (!input.BRUModule.isEmpty() &&
+      input.ROBModule.matchesTag(input.BRUModule.headRobTag())) {
     SquashInfo BranchSquash;
     uint8_t brRobTag = input.BRUModule.headRobTag();
     int pcResult = input.BRUModule.headPCResult();
@@ -91,7 +92,7 @@ void FlushArbiter::tick(const FlushArbiterInput &input, systemState &CPUstate) {
   }
 
   const auto &cdbOut = input.cdbOut;
-  if (cdbOut.valid) {
+  if (cdbOut.valid && input.ROBModule.matchesTag(cdbOut.robTag)) {
     if (!input.squashDetect.needSquash ||
         ROB::isOlder(cdbOut.robTag, input.squashDetect.SquashTag)) {
       auto isControl = cdbOut.isControl;
@@ -139,8 +140,7 @@ void FlushArbiter::tick(const FlushArbiterInput &input, systemState &CPUstate) {
           auto violTag = input.LQModule.getRobTag(i);
           if ((!input.squashDetect.needSquash ||
                ROB::isOlder(violTag, input.squashDetect.SquashTag)) &&
-              !input.ROBModule.isEmpty() &&
-              !ROB::isOlder(violTag, input.ROBModule.getHead())) {
+               input.ROBModule.matchesTag(violTag)) {
             SquashInfo viol;
             viol.needSquash = true;
             viol.SquashTag = violTag;

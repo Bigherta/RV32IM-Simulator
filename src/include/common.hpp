@@ -1,4 +1,5 @@
 #pragma once
+#include <bit>
 #ifndef COMMON_HPP
 #define COMMON_HPP
 #include <cstdint>
@@ -17,13 +18,29 @@ constexpr int MEMQ_SCAN_WINDOW = SQ_CAP < 8 ? SQ_CAP : 8;
 constexpr uint8_t MEM_STORE_BIT = 0x40;
 inline bool isStoreMem(uint8_t m) { return (m & MEM_STORE_BIT) != 0; }
 inline uint8_t memSlot(uint8_t m) { return m & 0x3F; }
-constexpr int ROB_CAP = 16;
-constexpr int ROB_INDEX_MASK = ROB_CAP - 1;
-constexpr int ROB_TAG_MASK = 0x7F;
-constexpr int ROB_TAG_HALF_RANGE = 0x40;
-inline constexpr uint8_t robSlot(RobTag tag) {
-  return tag & ROB_INDEX_MASK;
+constexpr uint32_t ROB_CAP = 16;
+// Packed tag = {1-bit epoch, slot field}. The slot field holds 0..ROB_CAP-1,
+// so its width is bit_width(ROB_CAP-1); the extra top bit is the epoch.
+// ROB_CAP is not required to be a power of two: invalid slot codes between
+// ROB_CAP and the field mask are never allocated (see robNextTag).
+template <typename T> constexpr int ROB_TAG_BITWIDTH(T cap) {
+  return std::bit_width(cap - 1) + 1;
 }
+constexpr int ROB_TAG_WIDTH = ROB_TAG_BITWIDTH(ROB_CAP);
+constexpr int ROB_INDEX_MASK = (1 << (ROB_TAG_WIDTH - 1)) - 1;
+constexpr int ROB_TAG_MASK = (1 << ROB_TAG_WIDTH) - 1;
+inline constexpr uint8_t robSlot(RobTag tag) { return tag & ROB_INDEX_MASK; }
+// Successor in the packed tag space: slots advance 0..ROB_CAP-1, then the
+// epoch bit flips and the slot restarts at 0. Mask-only, no divider, and for
+// power-of-two ROB_CAP it degenerates to a plain (tag+1) modulo counter.
+inline constexpr uint8_t robNextTag(RobTag tag) {
+  return (tag & ROB_INDEX_MASK) == static_cast<int>(ROB_CAP) - 1
+             ? static_cast<uint8_t>((~tag & ROB_TAG_MASK) & ~ROB_INDEX_MASK)
+             : static_cast<uint8_t>((tag + 1) & ROB_TAG_MASK);
+}
+static_assert(ROB_CAP >= 2, "ROB needs at least two slots for age ordering");
+static_assert(ROB_TAG_WIDTH <= 8,
+              "RobTag is uint8_t: packed tag must fit in 8 bits");
 constexpr int FQ_CAP = 4;
 constexpr int IQ_CAP = 4;
 constexpr int REGISTER_CAP = 32;
@@ -35,8 +52,8 @@ constexpr int BRU_CAP = 4;
 constexpr int PC_Direct_CAP = 1 << 12;
 constexpr int BTB_CAP = 64;
 constexpr int BHT_CAP = 1 << 8;
-constexpr int T0_CAP = 1 << 10;  // local base table, (pc ^ LHT) hashed index
-constexpr int LHT_CAP = 1 << 7;  // per-PC local history table, pc[8:2] index
+constexpr int T0_CAP = 1 << 10; // local base table, (pc ^ LHT) hashed index
+constexpr int LHT_CAP = 1 << 7; // per-PC local history table, pc[8:2] index
 constexpr int CONDSEEN_CAP = 1 << 9; // "this PC is a conditional" filter
 constexpr uint64_t HISTORY_MASK = ~UINT64_C(0);
 constexpr int LOCAL_HISTORY_BIT = 5;
@@ -44,25 +61,18 @@ constexpr int TARGETCACHE_CAP = 1 << LOCAL_HISTORY_BIT;
 constexpr int RAS_CAP = 8;
 constexpr int ALIGNQ_CAP = 16;
 constexpr int PRF_CAP = 64;
-static_assert(INTEGERRS_CAP > 0 &&
-              (INTEGERRS_CAP & (INTEGERRS_CAP - 1)) == 0);
+static_assert(INTEGERRS_CAP > 0 && (INTEGERRS_CAP & (INTEGERRS_CAP - 1)) == 0);
 static_assert(MULTIPLYRS_CAP > 0 &&
               (MULTIPLYRS_CAP & (MULTIPLYRS_CAP - 1)) == 0);
-static_assert(DIVIDERS_CAP > 0 &&
-              (DIVIDERS_CAP & (DIVIDERS_CAP - 1)) == 0);
-static_assert(BRANCHRS_CAP > 0 &&
-              (BRANCHRS_CAP & (BRANCHRS_CAP - 1)) == 0);
+static_assert(DIVIDERS_CAP > 0 && (DIVIDERS_CAP & (DIVIDERS_CAP - 1)) == 0);
+static_assert(BRANCHRS_CAP > 0 && (BRANCHRS_CAP & (BRANCHRS_CAP - 1)) == 0);
 static_assert(LQ_CAP >= 2 && LQ_CAP <= 64 && (LQ_CAP & LQ_MASK) == 0);
 static_assert(SQ_CAP >= 2 && SQ_CAP <= 64 && (SQ_CAP & SQ_MASK) == 0);
 static_assert(MEMQ_SCAN_WINDOW <= SQ_CAP);
-static_assert(ROB_CAP > 0 && (ROB_CAP & ROB_INDEX_MASK) == 0 &&
-              ROB_CAP <= ROB_TAG_HALF_RANGE);
-static_assert(FQ_CAP >= 2 && FQ_CAP <= 256 &&
-              (FQ_CAP & (FQ_CAP - 1)) == 0);
-static_assert(IQ_CAP >= 2 && IQ_CAP <= 256 &&
-              (IQ_CAP & (IQ_CAP - 1)) == 0);
-static_assert(PRF_CAP > REGISTER_CAP &&
-              (PRF_CAP & (PRF_CAP - 1)) == 0 && PRF_CAP <= 128);
+static_assert(FQ_CAP >= 2 && FQ_CAP <= 256 && (FQ_CAP & (FQ_CAP - 1)) == 0);
+static_assert(IQ_CAP >= 2 && IQ_CAP <= 256 && (IQ_CAP & (IQ_CAP - 1)) == 0);
+static_assert(PRF_CAP > REGISTER_CAP && (PRF_CAP & (PRF_CAP - 1)) == 0 &&
+              PRF_CAP <= 128);
 // Sentinel for "no physical register" across the whole phy-tag domain
 // (RAT entries, freeList empty slots, Operand.tag immediates, ROB
 // oldPhy/newPhy, IssuePacket.phy). Load-bearing invariant: P0 is never

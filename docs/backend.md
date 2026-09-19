@@ -70,6 +70,13 @@ M 扩展的两个执行单元（**乘法**、**除法**）在 §4.3 / §4.4 给�
 > 逻辑派发总线含 `alu/bru/mul/div` 四个普通载荷，以及额外携带 `rsType` 的
 > `agu` 载荷。
 
+ROB 身份采用 packed `{epoch, slot}`：slot 宽度为 `bit_width(ROB_CAP-1)`，总
+`ROB_TAG_WIDTH` 再加 1 个 epoch bit。`robNextTag()` 在 slot 到达 `ROB_CAP-1`
+后翻转 epoch 并跳回 slot 0，因此 `ROB_CAP` 无需是 2 的幂；slot 字段中的空洞编码
+永不分配。模板仓库所有 RobTag `Wire/Register` 均使用该参数宽度（ROB16 为 5 bit），
+phy tag、`memIndex` 等独立域保持各自宽度。任何外部完成或恢复请求在按 `robSlot(tag)`
+访问条目前都校验条目保存的完整 tag，避免复用槽被旧身份写入。
+
 ---
 
 ## 2. 发射（Issue / Rename）
@@ -799,6 +806,12 @@ halt 条目（`0x0ff00513`）提交后 `haltCommitted`，停机条件 = halt 已
 FQ/IQ/ROB/SQ 全空 ∧ DCache 非 busy ∧ DMEM 读写双口均空闲。后三级 drain 条件
 保证 halt 前已提交的 store 真正进入缓存，且相关回填/脏写回不会被进程退出截断。
 进程输出停机时 `x10` 低 8 位。
+
+squash 回卷 `next`，提交推进 `head`，两者可同拍发生：若 ROB 头**严格早于**
+`SquashTag` 且已就绪，则该头项属于保留窗口，可以提交；`head == SquashTag` 时禁止
+提交，以保住 MDP 目标 load 的重放边界。`ROB::willCommit` 是 ROB pop、PRF 释放
+`oldPhy` 与 SQ store committed 通知的共同谓词；PRF 同拍执行 checkpoint `restoreHead`
+和自由表 tail 回收，二者不互斥。
 
 ### 6.2 FlushArbiter（squash 排队）
 

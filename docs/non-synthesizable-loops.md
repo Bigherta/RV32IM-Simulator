@@ -60,7 +60,7 @@ SRT DIV 是当前范本：商位递推由 `loopTimes` 和阶段 valid 驱动，�
 | --- | --- | --- |
 | 字节装配与 store 合并 | 已完成 | 主树 DMEM/DCache 与模板树 DCache 使用固定四 lane；`n`/`n_bytes` 只控制 lane 使能。1B/2B 符号扩展使用显式掩码 |
 | FlushArbiter 有序插入 | 已完成 | 两树均以 `FLUSHARBITER_CAP` 固定扫描和固定后移网络实现；`scanning`、`w`、`pos` 只参与选择和写使能 |
-| ROB ready 去重 | 已完成 | 模板树使用零初始化的 `readyBits[ROB_CAP]` 幂等归约，再固定遍历 ROB 槽，每槽至多一次寄存器写；已移除 `seen[]/nSeen` 可变长度查找 |
+| ROB ready 去重 | 已完成 | 模板树使用零初始化的逐槽 `readyWrite[]/readyData[]` 写意图幂等归约，再固定遍历 ROB 槽，每槽至多一次寄存器写；已移除 `seen[]/nSeen` 可变长度查找 |
 | TAGE folded history | 已完成 | 两树均使用 `refoldViewT<H,W>` 的编译期边界重建，并维护 4 表 × 3 视图的增量折叠状态；稳态不再使用运行期 `histLen/foldWidth` 循环 |
 | SRT DIV 递推 | 设计正确，无需改写为组合展开 | 两树均以固定宽度计数器和阶段 valid 实现多周期 FSM |
 | 模板 BPU `Plan::nTab` | **仍需处理** | merge、查重、Tn-U 查找和 apply 仍有 `q < src.nTab`、`m < merged.nTab` 等运行期循环边界 |

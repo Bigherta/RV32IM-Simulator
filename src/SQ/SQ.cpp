@@ -22,6 +22,8 @@ void SQ::pushStore(RobTag robTag, int n_bytes) {
   SQqueue[tail].robTag = robTag;
   SQqueue[tail].n_bytes = n_bytes;
   SQqueue[tail].isAddressReady = false;
+  SQqueue[tail].isValueReady = false;
+  SQqueue[tail].isCommitted = false;
   tail = (tail + 1) & SQ_MASK;
 }
 
@@ -128,23 +130,26 @@ auto SQ::planAddressForward(int index, uint32_t address) const -> StoreNotify {
 
 auto SQ::replyToLoadRequest(uint32_t addr,
                             uint8_t loadTag) const -> StoreResponse {
-  uint8_t youngestSameAddrTag = 0;
-  uint8_t youngestUnknownTag = 0;
+  int youngestSameAddrOrder = -1;
+  int youngestUnknownOrder = -1;
   int forwardValue = 0;
   bool FoundSameAddr = false;
-  bool FoundUnknown = false;
   bool SameAddrValueReady = false;
+  bool reachedYoungerStore = false;
   for (int k = 0; k < SQ_CAP; k++) {
     int index = (head + k) & SQ_MASK;
     if (!isActive(index))
-      break;
-    if (ROB::isYounger(SQqueue[index].robTag, loadTag))
-      break;
+      continue;
+    if (!SQqueue[index].isCommitted &&
+        ROB::isYounger(SQqueue[index].robTag, loadTag)) {
+      reachedYoungerStore = true;
+    }
+    if (reachedYoungerStore)
+      continue;
     if (!SQqueue[index].isAddressReady) {
-      youngestUnknownTag = SQqueue[index].robTag;
-      FoundUnknown = true;
+      youngestUnknownOrder = k;
     } else if (SQqueue[index].address == addr) {
-      youngestSameAddrTag = SQqueue[index].robTag;
+      youngestSameAddrOrder = k;
       FoundSameAddr = true;
       SameAddrValueReady = SQqueue[index].isValueReady;
       if (SQqueue[index].isValueReady)
@@ -152,9 +157,8 @@ auto SQ::replyToLoadRequest(uint32_t addr,
     }
   }
   StoreResponse reply{};
-  reply.valid = (SameAddrValueReady && FoundSameAddr && !FoundUnknown) ||
-                (SameAddrValueReady && FoundSameAddr && FoundUnknown &&
-                 ROB::isYounger(youngestSameAddrTag, youngestUnknownTag));
+  reply.valid = SameAddrValueReady && FoundSameAddr &&
+                youngestSameAddrOrder > youngestUnknownOrder;
   reply.value = forwardValue;
   return reply;
 }
@@ -166,6 +170,8 @@ bool SQ::canDispatchLoad(uint32_t addr, RobTag loadTag) const {
       continue;
     uint8_t cur = (head + k) & SQ_MASK;
     if (!isActive(cur))
+      continue;
+    if (SQqueue[cur].isCommitted)
       continue;
     if (!ROB::isOlder(SQqueue[cur].robTag, loadTag))
       continue;
@@ -219,9 +225,19 @@ void SQ::tick(const SQInput &input, systemState &CPUstate) {
     storeDispatched = true;
   if (storeDispatched)
     CPUstate.SQModule.pop();
+  if (input.ROBModule.storeWillCommit(input.squashDetect)) {
+    const auto storeTag = input.ROBModule.getHead();
+    for (int i = 0; i < SQ_CAP; ++i) {
+      if (isActive(i) && SQqueue[i].robTag == storeTag &&
+          !SQqueue[i].isCommitted) {
+        CPUstate.SQModule.setCommitted(i);
+      }
+    }
+  }
   // flush on squash
-  if (input.squashDetect.needSquash) {
-    CPUstate.SQModule.flush(
-        input.ROBModule.getSqtTailSnapshot(robSlot(input.squashDetect.SquashTag)));
+  if (input.squashDetect.needSquash &&
+      input.ROBModule.matchesTag(input.squashDetect.SquashTag)) {
+    CPUstate.SQModule.flush(input.ROBModule.getSqTailSnapshot(
+        robSlot(input.squashDetect.SquashTag)));
   }
 }

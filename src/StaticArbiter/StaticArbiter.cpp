@@ -168,9 +168,9 @@ MemDispatchDecision MemArbiter::arbitrate(const LQ &LQ, const SQ &SQ,
   MemDispatchDecision memDecision{};
   if (!dcache.isBusy() && !SQ.isEmpty()) {
     auto storeTag = SQ.headRobTag();
-    bool committed = rob.isEmpty() || ROB::isOlder(storeTag, rob.getHead());
-    bool atHeadReady = !committed && SQ.headRobTag() == rob.getHead() &&
-                       rob.isCommitReadyAt(robSlot(SQ.headRobTag()));
+    bool committed = SQ.isCommitted(SQ.getHead());
+    bool atHeadReady = !committed && rob.storeWillCommit(squash) &&
+                       storeTag == rob.getHead();
     if (committed || atHeadReady) {
       MemRequest newRequest{};
       newRequest.address = SQ.getAddress(SQ.getHead());
@@ -253,7 +253,7 @@ IssuePacket IssueArbiter::issue_IntegerRS(const IssueArbiterInput &input,
   p.robEntry.dest = destination;
   p.robEntry.pc = inst.pc;
   p.robEntry.predictedPC = inst.predictedPC;
-  p.robEntry.lqtTailSnapshot = input.LQModule.getTail();
+  p.robEntry.lqTailSnapshot = input.LQModule.getTail();
   p.robEntry.sqTailSnapshot = input.SQModule.getTail();
   p.robEntry.ckptId = inst.ckptId;
   p.robEntry.oldPhy = inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
@@ -307,7 +307,7 @@ IssuePacket IssueArbiter::issue_Multiply(const IssueArbiterInput &input,
   p.robEntry.dest = destination;
   p.robEntry.pc = inst.pc;
   p.robEntry.predictedPC = inst.predictedPC;
-  p.robEntry.lqtTailSnapshot = input.LQModule.getTail();
+  p.robEntry.lqTailSnapshot = input.LQModule.getTail();
   p.robEntry.sqTailSnapshot = input.SQModule.getTail();
   p.robEntry.ckptId = inst.ckptId;
   p.robEntry.oldPhy = inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
@@ -353,7 +353,7 @@ IssuePacket IssueArbiter::issue_Divide(const IssueArbiterInput &input,
   p.robEntry.dest = destination;
   p.robEntry.pc = inst.pc;
   p.robEntry.predictedPC = inst.predictedPC;
-  p.robEntry.lqtTailSnapshot = input.LQModule.getTail();
+  p.robEntry.lqTailSnapshot = input.LQModule.getTail();
   p.robEntry.sqTailSnapshot = input.SQModule.getTail();
   p.robEntry.ckptId = inst.ckptId;
   p.robEntry.oldPhy = inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
@@ -398,7 +398,7 @@ IssuePacket IssueArbiter::issue_UandJ(const IssueArbiterInput &input,
   p.robEntry.dest = destination;
   p.robEntry.pc = inst.pc;
   p.robEntry.predictedPC = inst.predictedPC;
-  p.robEntry.lqtTailSnapshot = input.LQModule.getTail();
+  p.robEntry.lqTailSnapshot = input.LQModule.getTail();
   p.robEntry.sqTailSnapshot = input.SQModule.getTail();
   p.robEntry.ckptId = inst.ckptId;
   p.robEntry.oldPhy = inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
@@ -440,7 +440,7 @@ IssuePacket IssueArbiter::issue_B(const IssueArbiterInput &input,
   p.robEntry = ROBEntry(ROBType::BRANCH);
   p.robEntry.pc = inst.pc;
   p.robEntry.predictedPC = inst.predictedPC;
-  p.robEntry.lqtTailSnapshot = input.LQModule.getTail();
+  p.robEntry.lqTailSnapshot = input.LQModule.getTail();
   p.robEntry.sqTailSnapshot = input.SQModule.getTail();
   p.robEntry.ckptId = inst.ckptId;
   p.branchRS.robTag = p.robTag;
@@ -485,7 +485,7 @@ IssuePacket IssueArbiter::issue_Load(const IssueArbiterInput &input,
   // Include-self boundary (see LQ::getTailSnapshot): an exclusive snapshot
   // let a LoadViolation squash -- whose target is the load itself -- rewind
   // the LQ over its own entry, freezing retirement at that row.
-  p.robEntry.lqtTailSnapshot = input.LQModule.getTailSnapshot();
+  p.robEntry.lqTailSnapshot = input.LQModule.getTailSnapshot();
   p.robEntry.sqTailSnapshot = input.SQModule.getTail();
   p.robEntry.oldPhy = inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
   p.robEntry.newPhy = p.phy;
@@ -528,8 +528,8 @@ IssuePacket IssueArbiter::issue_Store(const IssueArbiterInput &input,
   p.robEntry = ROBEntry(ROBType::STORE);
   p.robEntry.pc = inst.pc;
   // Include-self boundary on the SQ side; the store never enters the LQ,
-  // so its lqtTailSnapshot stays the raw tail.
-  p.robEntry.lqtTailSnapshot = input.LQModule.getTail();
+  // so its lqTailSnapshot stays the raw tail.
+  p.robEntry.lqTailSnapshot = input.LQModule.getTail();
   p.robEntry.sqTailSnapshot = input.SQModule.getTailSnapshot();
   p.robEntry.ckptId = inst.ckptId;
   p.storeAddrRS.robTag = p.robTag;

@@ -250,7 +250,7 @@ void CPU::run() {
     const uint32_t headAfter =
         static_cast<uint32_t>(CPUstate.ROBModule.getHead());
     const bool haltAfter = CPUstate.ROBModule.isHaltCommitted();
-    const uint32_t committed = (headAfter - headBefore) & 0x7F;
+    const uint32_t committed = headAfter != headBefore;
     const bool haltCommitted = !haltBefore && haltAfter;
     assert(!haltCommitted || committed != 0);
     if (!ipcFrozen) {

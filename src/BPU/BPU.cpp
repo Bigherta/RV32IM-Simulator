@@ -506,7 +506,8 @@ void BPU::recoverCheckPoint(const BPUSnapshot &ckpt) {
 
 void BPU::tick(const BPUInput &input, systemState &CPUstate) {
   Cand bru, cdb;
-  if (!input.BRUModule.isEmpty()) {
+  if (!input.BRUModule.isEmpty() &&
+      input.ROBModule.matchesTag(input.BRUModule.headRobTag())) {
     uint8_t brRobTag = input.BRUModule.headRobTag();
     int pcResult = input.BRUModule.headPCResult();
     int pcFrom = input.BRUModule.headPCFrom();
@@ -535,8 +536,8 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
     }
   }
   const auto &cdbOut = input.cdbOut;
-  if (cdbOut.valid && cdbOut.isControl && !input.ROBModule.isEmpty() &&
-      !ROB::isOlder(cdbOut.robTag, input.ROBModule.getHead())) {
+  if (cdbOut.valid && cdbOut.isControl &&
+      input.ROBModule.matchesTag(cdbOut.robTag)) {
     auto robIdx = robSlot(cdbOut.robTag);
     const auto pc = static_cast<uint32_t>(cdbOut.value);
     if (!input.squashDetect.needSquash ||

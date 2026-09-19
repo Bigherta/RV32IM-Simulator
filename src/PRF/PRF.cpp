@@ -55,7 +55,8 @@ void PRF::write(int index, int32_t value) {
 }
 
 void PRF::tick(const PRFInput &input, systemState &CPUstate) {
-  if (input.cdbOfALU.valid) {
+  if (input.cdbOfALU.valid &&
+      input.ROBModule.matchesTag(input.cdbOfALU.robTag)) {
     if (!input.squashDetect.needSquash ||
         ROB::isOlder(input.cdbOfALU.robTag, input.squashDetect.SquashTag)) {
       auto robIdx = robSlot(input.cdbOfALU.robTag);
@@ -69,7 +70,8 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
       }
     }
   }
-  if (input.cdbOfLQ.valid) {
+  if (input.cdbOfLQ.valid &&
+      input.ROBModule.matchesTag(input.cdbOfLQ.robTag)) {
     if (!input.squashDetect.needSquash ||
         ROB::isOlder(input.cdbOfLQ.robTag, input.squashDetect.SquashTag)) {
       auto robIdx = robSlot(input.cdbOfLQ.robTag);
@@ -80,7 +82,8 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
       }
     }
   }
-  if (input.cdbOfMul.valid) {
+  if (input.cdbOfMul.valid &&
+      input.ROBModule.matchesTag(input.cdbOfMul.robTag)) {
     if (!input.squashDetect.needSquash ||
         ROB::isOlder(input.cdbOfMul.robTag, input.squashDetect.SquashTag)) {
       auto robIdx = robSlot(input.cdbOfMul.robTag);
@@ -94,7 +97,8 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
       }
     }
   }
-  if (input.cdbOfDiv.valid) {
+  if (input.cdbOfDiv.valid &&
+      input.ROBModule.matchesTag(input.cdbOfDiv.robTag)) {
     if (!input.squashDetect.needSquash ||
         ROB::isOlder(input.cdbOfDiv.robTag, input.squashDetect.SquashTag)) {
       auto robIdx = robSlot(input.cdbOfDiv.robTag);
@@ -129,9 +133,8 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
       auto ckptHead = PRFHeadCkpt[input.squashDetect.CkptId];
       CPUstate.PRFModule.restoreHead(ckptHead);
     }
-    return;
   }
-  if (input.ROBModule.isEmpty() || !input.ROBModule.isHeadCommitReady())
+  if (!input.ROBModule.willCommit(input.squashDetect))
     return;
   int headIdx = robSlot(input.ROBModule.getHead());
   if (!input.ROBModule.isHeadHalt() &&

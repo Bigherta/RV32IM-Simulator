@@ -13,7 +13,7 @@ enum class ROBType {
 struct ROBEntry {
   ROBType type = ROBType::REGISTER;
   bool isCommitReady = false;
-  uint8_t tag;
+  uint8_t tag = 0xFF;
   int dest = 0; // if type is REGISTER, record its destination
   uint32_t predictedPC = 0;
   int32_t pc = 0;
@@ -21,7 +21,7 @@ struct ROBEntry {
   bool isCall = false; // JAL rd==1
   bool isRet = false;  // JALR x0, 0(x1)
   bool isIndirect = false; // JALR variant: target from reg, not static imm
-  uint8_t lqtTailSnapshot = 0;
+  uint8_t lqTailSnapshot = 0;
   uint8_t sqTailSnapshot = 0;
   uint8_t ckptId = 0;
   int newPhy = InvalidPhy; // InvalidPhy = instruction allocates no destination
@@ -50,7 +50,7 @@ private:
   void updateNextTag();
   int push(ROBEntry entry);
   void pop();
-  void setROBCommitReady(int index);
+  void setROBCommitReady(RobTag tag);
   void flush(RobTag squashTag);
 
 public:
@@ -58,6 +58,9 @@ public:
   static bool isYounger(RobTag tag_a, RobTag tag_b);
   bool isFull() const;
   bool isEmpty() const;
+  bool matchesTag(RobTag tag) const;
+  bool willCommit(const SquashInfo &squash) const;
+  bool storeWillCommit(const SquashInfo &squash) const;
   bool isHaltCommitted() const;
   int getHaltRd() const;
   bool isHeadCommitReady() const;
@@ -72,8 +75,8 @@ public:
   bool isHalt(int index) const;
   uint8_t getCkptId(int index) const;
   int getPredictedPC(int index) const;
-  uint8_t getLqtTailSnapshot(int index) const;
-  uint8_t getSqtTailSnapshot(int index) const;
+  uint8_t getLqTailSnapshot(int index) const;
+  uint8_t getSqTailSnapshot(int index) const;
   int getNewPhy(int index) const;
   int getOldPhy(int index) const;
   bool isCall(int index) const;

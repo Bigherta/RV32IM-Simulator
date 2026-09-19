@@ -37,7 +37,7 @@
 | 结构 | 容量 | 职责 |
 |------|-----:|------|
 | `LQ` | 8 个物理槽 / 7 个可用项 | load 条目：地址/值独立就绪、store 转发落值、违例报告、完成总线 |
-| `SQ` | 8 个物理槽 / 7 个可用项 | store 条目：地址/数据两段就绪；是转发的**事实源**（查询周期初视图回答“是否存在更老同址 store”） |
+| `SQ` | 8 个物理槽 / 7 个可用项 | store 条目：地址/数据两段就绪 + 显式 `committed`；是转发的**事实源**（查询周期初视图回答“是否存在更老同址 store”） |
 | `MemArbiter` | —（无状态） | 每周期准入 1 个访存请求；**store 优先**、DCache busy 时停发 |
 | StoreValue RS | 4 | store 数据源（数据就绪事件的发生地） |
 
@@ -72,6 +72,10 @@ FETCHING ────────── store 转发 ─────────
   因而不会覆盖更新鲜的转发值；
 - AGU 首次解析 load 地址时，SQ 只在“最年轻的更老同址 store 数据已就绪，且它与
   load 之间没有地址未知 store”时立即转发；
+- store 离开 ROB 后可能因 DCache busy 继续留在 SQ，因此提交状态由 ROB commit
+  显式置位，不再用 retained `robTag` 与当前 ROB head 推断。转发的新旧关系按 SQ
+  从 head 到 tail 的队列位置确定；只有未提交、仍在 ROB 活跃窗内的 store 才做
+  RobTag 年龄比较；
 - **地址未知的更老 store 不会阻塞 cache 请求**。`SQ::canDispatchLoad` 只阻塞已经
   确认同址的更老 store，因此 load 可以投机越过未解析 store；若后者随后解析为
   同址，由 §4 的违例恢复纠正。这与“遇到未知地址就保守停发”的实现不同。
@@ -97,8 +101,9 @@ cache 准入时阻塞已知同址 store；未解析 store 则由上述投机 + �
 `MemArbiter::arbitrate(LQ, SQ, ROB, DCache, squash)` 每周期给出至多 1 个
 `MemDispatchDecision`：
 
-- **store 优先互斥**：已经提交、或正位于 ROB 头且提交就绪的 SQ 头 store 优先于
-  乱序 load；后者允许在同一周期完成 ROB 提交并进入 DCache；
+- **store 优先互斥**：`SQ.head.committed`，或正位于 ROB 头且满足统一
+  `storeWillCommit` 谓词的 SQ 头 store，优先于乱序 load；后者允许在同一周期完成
+  ROB 提交并进入 DCache。squash 周期仅允许严格早于 `SquashTag` 的 ready head 提交；
 - **busy 门控**：DCache `isBusy()`（缺失在途）时**不准入**——DCache 注释保证
   "`!isBusy()` 时必须无条件接受 decision"，因为该拍 store 已从 SQ 弹出；
 - 请求携带完整身份：`{op, value/address, isSigned, n_bytes, robTag, memIndex}`
