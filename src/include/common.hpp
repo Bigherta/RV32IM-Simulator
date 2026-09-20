@@ -58,12 +58,7 @@ constexpr int LOCAL_HISTORY_BIT = 5;
 constexpr int TARGETCACHE_CAP = 1 << LOCAL_HISTORY_BIT;
 constexpr int RAS_CAP = 8;
 constexpr int ALIGNQ_CAP = 16;
-#ifndef PRF_CAP_N
-#define PRF_CAP_N 64
-#endif
-static_assert(PRF_CAP_N > REGISTER_CAP && PRF_CAP_N <= 128,
-              "PRF_CAP_N must fit the 7-bit physical-tag domain");
-constexpr uint8_t PRF_CAP = PRF_CAP_N;
+constexpr uint8_t PRF_CAP = ROB_CAP + REGISTER_CAP;
 // Packed free-list sequence = {1-bit epoch, index}. Only indices
 // 0..PRF_CAP-1 are allocated; codes PRF_CAP..PRF_INDEX_MASK are holes.
 // For power-of-two capacities the helpers below reduce exactly to masked

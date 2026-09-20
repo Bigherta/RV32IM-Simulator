@@ -117,8 +117,10 @@ basicopt1/bulgarian/magic/superloop/tak 的 x10、clock 与分支统计也逐项
 **27,557 bit**（相对缩容前 -60.685%）。Small 的五个标题结构本身为 14,688 bit，其余
 11,333 bit 来自 BHR、condSeen、useAltOnNa、折叠历史、训练元数据、RAS/SARAS 和 64 份
 checkpoint 等状态。后续 CKPT64→32 单独节省 3,200 bit，当前活动配置为 **24,357 bit**；
-对应 Small/缩容前配置分别为 22,821 / 66,893 bit。逻辑 ckptId 收紧为 5 bit，但既有
-6/8-bit 运输载体保留，不计入该数组深度节省。
+对应 Small/缩容前配置分别为 22,821 / 66,893 bit。逻辑 ckptId 收紧为 5 bit；模板运输
+载体随后也按派生宽度整体收紧（phy tag 7→6 bit、ckptId 6/8→5 bit、队列指针与 LSQ
+快照就紧），全模板另省 **1,253 bit** 状态位（phy 1,178 + ckpt 33 + 指针/快照 42），
+行为与周期逐位不变。
 
 #### 五项控制变量
 
@@ -163,7 +165,8 @@ TAGE 与 BTB 为第二梯队且有明显交互；LHT 与 Target Cache 在当前�
 | 2026-09-19 | BPU 控制变量定案：保留 T0 1024，其余按 Small 缩容 | 活动配置 TAGE 4×128 / BTB64 / T0 1024 / LHT128 / TC32；两树 Release **18/18 x10+clock** 与独立 IPC 语料 **6/6** 逐项一致。总 clock **12,035,747**（相对缩容前 +0.417154%），加权 IPC **0.563003**，分支正确率 **95.7317%**，完整状态 **27,557 bit** |
 | 2026-09-19 | RobTag 非二次幂参数化 + SQ 显式 committed + squash 同拍提交 | `ROB_TAG_WIDTH=bit_width(ROB_CAP-1)+1`，当前 ROB16 的模板硬件载体由 7 bit 收紧为 5 bit；CAP12 双仓库 18/18 x10 与 cycles 逐项一致。活动 ROB16 双仓库 18/18 一致，总 clock **12,036,972**，加权 IPC **0.562945**，分支正确率 **95.7208%**；`magic` 因严格更老 head 可与 squash 同拍提交而更新 golden |
 | 2026-09-19 | PRF 自由表序号 packed 化（`{epoch,index}`，PRF64 为 7 bit）+ checkpoint canonical 化 | 纯表示变换：两树 Release **18/18 x10+cycles**、模板 `_DEBUG` 全量 18/18 零断言，总 clock 保持 **12,036,972**、加权 IPC **0.562945**、分支正确率 **95.7208%**；模板 PRF seq/checkpoint 载体由 2112 bit 收紧到 462 bit |
-| 2026-09-19 | PRF_CAP 非 2 次幂参数化（空洞 index）+ CKPT64→32 | `PRF_CAP_N` 支持 33..128：P64 在 CKPT32 终态下主树/模板 Release/模板 `_DEBUG` 均 **18/18 x10+cycles** 对 golden；P48 Release **18/18** 双树逐拍一致，`_DEBUG` 的 magic/qsort/tak 3/3；P65 Release 重点+快用例 12/12、`_DEBUG` 3/3；P33 极限停顿 3/3（clock：magic **1,459,187** / qsort **3,432,364** / tak **3,130,845**），均 x10 对 golden且双树 clock 一致，pi 按计划跳过。CKPT32 下 PRF seq/checkpoint 存储为 P33..64 **238 bit**、P65..128 **272 bit**；三类 checkpoint 数组总计再省 **10,592 bit** |
+| 2026-09-19 | PRF_CAP 非 2 次幂参数化（空洞 index）+ CKPT64→32 | 空洞-index helper 已验证容量 33..128；活动值取 `REGISTER_CAP+ROB_CAP=48`。P64 在 CKPT32 下主树/模板 Release/模板 `_DEBUG` 均 **18/18 x10+cycles** 对 golden；P48 Release **18/18** 双树逐拍一致，`_DEBUG` 的 magic/qsort/tak 3/3；P65 Release 重点+快用例 12/12、`_DEBUG` 3/3；P33 极限停顿 3/3（clock：magic **1,459,187** / qsort **3,432,364** / tak **3,130,845**），均 x10 对 golden且双树 clock 一致，pi 按计划跳过。CKPT32 下 PRF seq/checkpoint 存储为 P33..64 **238 bit**、P65..128 **272 bit**；三类 checkpoint 数组总计再省 **10,592 bit** |
+| 2026-09-19 | 运输载体按派生宽度收紧（phy 7→6 / ckpt 6/8→5 / 队列指针与 LSQ 快照就紧） | 纯载体收窄：新增 `PHY_TAG_WIDTH`/`CKPT_ID_WIDTH`/`FQ·IQ·LQ·SQ_PTR_WIDTH` 集中常量与 `static_assert`，模板共省 **1,253 bit**。模板 Release **18/18 x10+cycles** 对 golden，`_DEBUG` 定向 5/5 零断言；IPC 语料双树逐位一致（cycles 加权 IPC **0.696150**），并首次用当前基线刷新 `ipc_benchmarks.md`（旧表为更早容量配置遗留） |
 
 取数命令（WSL ELF 构建，逐用例）：
 

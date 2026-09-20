@@ -74,7 +74,8 @@ ROB 身份采用 packed `{epoch, slot}`：slot 宽度为 `bit_width(ROB_CAP-1)`�
 `ROB_TAG_WIDTH` 再加 1 个 epoch bit。`robNextTag()` 在 slot 到达 `ROB_CAP-1`
 后翻转 epoch 并跳回 slot 0，因此 `ROB_CAP` 无需是 2 的幂；slot 字段中的空洞编码
 永不分配。模板仓库所有 RobTag `Wire/Register` 均使用该参数宽度（ROB16 为 5 bit），
-phy tag、`memIndex` 等独立域保持各自宽度。任何外部完成或恢复请求在按 `robSlot(tag)`
+phy tag 使用派生 `PHY_TAG_WIDTH`（当前 P48 为 6 bit），`memIndex` 保持 7-bit 编码。
+任何外部完成或恢复请求在按 `robSlot(tag)`
 访问条目前都校验条目保存的完整 tag，避免复用槽被旧身份写入。
 
 ---
