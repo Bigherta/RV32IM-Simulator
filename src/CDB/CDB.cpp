@@ -14,7 +14,7 @@ aluCDB aluCDB::build(const ALU &alu, const SquashInfo &squash) {
     uint8_t tag = alu.headRobTag();
     if (!squash.needSquash || ROB::isOlder(tag, squash.SquashTag)) {
       alucdb.valid = true;
-      alucdb.value = alu.headValue();
+      alucdb.value = static_cast<int32_t>(alu.headValue());
       alucdb.robTag = tag;
       alucdb.isControl = alu.headIsControl();
     }
@@ -27,7 +27,7 @@ mulCDB mulCDB::build(const MUL &mul, const SquashInfo &squash) {
     uint8_t tag = mul.headRobTag();
     if (!squash.needSquash || ROB::isOlder(tag, squash.SquashTag)) {
       mulcdb.valid = true;
-      mulcdb.value = mul.headValue();
+      mulcdb.value = static_cast<int32_t>(mul.headValue());
       mulcdb.robTag = tag;
       if (debug::enabled(debug::TOPIC_EXEC))
         debug::print("mul cdb broadcast rob=%u val=%08x\n", tag,
@@ -42,7 +42,7 @@ divCDB divCDB::build(const DIV &div, const SquashInfo &squash) {
     uint8_t tag = div.getResultRobtag();
     if (!squash.needSquash || ROB::isOlder(tag, squash.SquashTag)) {
       divcdb.valid = true;
-      divcdb.value = div.getValue();
+      divcdb.value = static_cast<int32_t>(div.getValue());
       divcdb.robTag = tag;
     }
   }

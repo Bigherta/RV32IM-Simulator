@@ -19,7 +19,7 @@ class MUL {
 
 private:
   struct MultiplyCalculateResult {
-    int32_t value = 0;
+    uint32_t value = 0;
     uint8_t robTag = 0;
   };
   struct PartialProductResult {
@@ -48,7 +48,7 @@ private:
   SCResult scRes;
   MultiplyCalculateResult outputBuffer[MUL_CAP];
   bool slotValid[MUL_CAP] = {};
-  void calculateBooth(int32_t op1, int32_t op2, RobTag robTag, Operation op);
+  void calculateBooth(uint32_t op1, uint32_t op2, RobTag robTag, Operation op);
   void calculateSC(const PartialProductResult &partial);
   void calculateMulRes(const SCResult &sc);
   void remove(uint8_t robTag);

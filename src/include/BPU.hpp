@@ -17,8 +17,7 @@ struct BPUInput {
   SquashInfo squashDetect;
   FetchDecision fetchDecision;
   FetchTypeInfo fetchInfo;
-  BPUInput(const BRU &bru, const ROB &rob)
-      : BRUModule(bru), ROBModule(rob) {}
+  BPUInput(const BRU &bru, const ROB &rob) : BRUModule(bru), ROBModule(rob) {}
 };
 
 // SARAS correction queue entry: the address, its LIFO position, and the
@@ -55,9 +54,6 @@ struct DirectionPred {
 // ring counters are uint8_t and wrap at 256, well beyond the current
 // ROB_CAP=16 and local queue capacities (ALIGNQ_CAP=16/RAS_CAP=8).
 struct TargetPred {
-  uint8_t BHT[BHT_CAP] = {};
-  uint32_t TargetCache[TARGETCACHE_CAP] = {};
-  bool TargetValid[TARGETCACHE_CAP] = {};
   BTBEntry BTB[BTB_CAP] = {};
   RASEntry RAS[RAS_CAP] = {};
   uint8_t RAS_top = 0; // ring write pointer (wraps at 256)
@@ -80,9 +76,7 @@ private:
     int32_t target = 0;
     uint16_t ghr = 0;
     bool cond = true;
-    bool isCall = false;
     bool isRet = false;
-    bool isIndirect = false;
   };
   DirectionPred dir;
   TargetPred tgt;
@@ -112,8 +106,7 @@ private:
   }
 
   void update(int32_t pc, bool taken, int32_t target, uint16_t ghr);
-  void updateJump(int32_t pc, int32_t target, bool isCall, bool isRet,
-                   bool isIndirect);
+  void updateJump(int32_t pc, int32_t target, bool isRet);
   void shiftGHR(bool taken);
 
 public:

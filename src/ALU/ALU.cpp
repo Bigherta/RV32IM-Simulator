@@ -2,11 +2,17 @@
 #include "../include/CPU.hpp"
 #include "../include/common.hpp"
 #include <cstdint>
-void ALU::push(int32_t op1, int32_t op2, Operation op, RobTag robTag,
+void ALU::push(uint32_t op1, uint32_t op2, Operation op, RobTag robTag,
                bool isControl) {
-  int32_t value;
+  // Operands and the result are uint32 bit vectors (RTL semantics).
+  // Signedness is selected by the instruction: only SLT/SLTI and SRA
+  // interpret the operand as int32_t; every other op is pure bit-vector
+  // arithmetic.
+  uint32_t value;
   if (isControlOp(op)) {
-    value = op1 + op2;
+    // JALR clears the target's bit 0 (RISC-V: (rs1 + imm) & ~1). J-type
+    // imm bit0 is always 0, so the same mask is harmless for JAL.
+    value = (op1 + op2) & 0xFFFFFFFEu;
   } else {
     switch (op) {
     case Operation::ADD:
@@ -26,19 +32,20 @@ void ALU::push(int32_t op1, int32_t op2, Operation op, RobTag robTag,
       value = op1 & op2;
       break;
     case Operation::SL:
-      value = static_cast<int32_t>(static_cast<uint32_t>(op1) << (op2 & 0x1F));
+      value = op1 << (op2 & 0x1F);
       break;
     case Operation::SRL:
-      value = static_cast<int32_t>(static_cast<uint32_t>(op1) >> (op2 & 0x1F));
-      break;
-    case Operation::SRA:
       value = op1 >> (op2 & 0x1F);
       break;
+    case Operation::SRA:
+      // C++20: right shift of a negative signed value is arithmetic.
+      value = static_cast<uint32_t>(static_cast<int32_t>(op1) >> (op2 & 0x1F));
+      break;
     case Operation::SLT:
-      value = op1 < op2 ? 1 : 0;
+      value = static_cast<int32_t>(op1) < static_cast<int32_t>(op2) ? 1u : 0u;
       break;
     case Operation::SLTU:
-      value = static_cast<uint32_t>(op1) < static_cast<uint32_t>(op2) ? 1 : 0;
+      value = op1 < op2 ? 1u : 0u;
       break;
     case Operation::LUI:
       value = op2;
@@ -60,7 +67,7 @@ void ALU::push(int32_t op1, int32_t op2, Operation op, RobTag robTag,
     }
 }
 
-int32_t ALU::headValue() const {
+uint32_t ALU::headValue() const {
   int best = -1;
   for (int i = 0; i < ALU_CAP; i++) {
     if (slotValid[i] &&
@@ -125,10 +132,10 @@ void ALU::flush(uint8_t tag) {
 void ALU::tick(const ALUInput &input, systemState &CPUstate) {
   if (input.dispatch.valid) {
     auto &rs = input.RSModule.integerRS[input.dispatch.rsIndex];
-    CPUstate.ALUModule.push(input.PRFModule.getOperandValue(rs.src1),
-                            input.PRFModule.getOperandValue(rs.src2),
-                            rs.op, input.dispatch.robTag,
-                            isControlOp(rs.op));
+    CPUstate.ALUModule.push(
+        static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
+        static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
+        rs.op, input.dispatch.robTag, isControlOp(rs.op));
   }
   // ALU writeBack: consume this unit's own grant on the CDB result.
   if (input.cdbOutput.valid) {

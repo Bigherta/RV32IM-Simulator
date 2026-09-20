@@ -1,7 +1,7 @@
 #include "../include/CPU.hpp"
 #include <cstdint>
 
-void BRU::BRUExecute(int32_t op1, int32_t op2, int32_t pc, int32_t imm,
+void BRU::BRUExecute(uint32_t op1, uint32_t op2, uint32_t pc, uint32_t imm,
                      Operation op, RobTag robTag) {
   bool taken = false;
   switch (op) {
@@ -12,22 +12,23 @@ void BRU::BRUExecute(int32_t op1, int32_t op2, int32_t pc, int32_t imm,
     taken = (op1 != op2);
     break;
   case Operation::LT:
-    taken = (op1 < op2);
+    taken = (static_cast<int32_t>(op1) < static_cast<int32_t>(op2));
     break;
   case Operation::GE:
-    taken = (op1 >= op2);
+    taken = (static_cast<int32_t>(op1) >= static_cast<int32_t>(op2));
     break;
   case Operation::LTU:
-    taken = (static_cast<uint32_t>(op1) < static_cast<uint32_t>(op2));
+    taken = (op1 < op2);
     break;
   case Operation::GEU:
-    taken = (static_cast<uint32_t>(op1) >= static_cast<uint32_t>(op2));
+    taken = (op1 >= op2);
     break;
   default:
     taken = false;
     break;
   }
-  push({pc, taken ? pc + imm : pc + 4, robTag});
+  // uint32 bit-vector add: the target wraps at 32 bits by construction.
+  push({pc, taken ? pc + imm : pc + 4u, robTag});
 }
 
 void BRU::push(BranchResult result) {
@@ -39,7 +40,7 @@ void BRU::push(BranchResult result) {
     }
 }
 
-int32_t BRU::headPCFrom() const {
+uint32_t BRU::headPCFrom() const {
   int best = -1;
   for (int i = 0; i < BRU_CAP; i++) {
     if (slotValid[i] &&
@@ -49,7 +50,7 @@ int32_t BRU::headPCFrom() const {
   }
   return best >= 0 ? outputBuffer[best].pcFrom : 0;
 }
-int32_t BRU::headPCResult() const {
+uint32_t BRU::headPCResult() const {
   int best = -1;
   for (int i = 0; i < BRU_CAP; i++) {
     if (slotValid[i] &&
@@ -107,10 +108,11 @@ void BRU::tick(const BRUInput &input, systemState &CPUstate) {
   // DispatchArbiter snapshot side; RS slot release is handled by RSUnit.tick)
   if (input.dispatch.valid) {
     auto &rs = input.RSModule.branchRS[input.dispatch.rsIndex];
-    CPUstate.BRUModule.BRUExecute(input.PRFModule.getOperandValue(rs.src1),
-                                  input.PRFModule.getOperandValue(rs.src2),
-                                  rs.pc, rs.imm, rs.op,
-                                  input.dispatch.robTag);
+    CPUstate.BRUModule.BRUExecute(
+        static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
+        static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
+        static_cast<uint32_t>(rs.pc), static_cast<uint32_t>(rs.imm), rs.op,
+        input.dispatch.robTag);
   }
   // BRU writeBack
   if (!isEmpty()) {

@@ -157,11 +157,10 @@ void LQ::tick(const LQInput &input, systemState &CPUstate) {
         (input.squashDetect.needSquash &&
          ROB::isOlder(aguRobTag, input.squashDetect.SquashTag))) {
       auto aguMemIndex = input.AGUModule.headMemIndex();
-      auto value = input.AGUModule.headValue();
+      const uint32_t value = input.AGUModule.headValue();
       auto index = memSlot(aguMemIndex);
-      CPUstate.LQModule.writeAddress(static_cast<uint32_t>(value), index);
-      auto reply = input.SQModule.replyToLoadRequest(
-          static_cast<uint32_t>(value), aguRobTag);
+      CPUstate.LQModule.writeAddress(value, index);
+      auto reply = input.SQModule.replyToLoadRequest(value, aguRobTag);
       if (reply.valid) {
         CPUstate.LQModule.writeValue(reply.value, index);
       }

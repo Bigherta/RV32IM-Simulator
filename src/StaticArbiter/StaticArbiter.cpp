@@ -11,7 +11,8 @@
 DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
                                        const AGU &agu, const BRU &bru,
                                        const MUL &mul, const DIV &div,
-                                       const PRF &prf, const SquashInfo &squash) {
+                                       const PRF &prf,
+                                       const SquashInfo &squash) {
   DispatchBus dispatch;
   // ALU channel: oldest operand-ready integerRS entry (I-extension ALU ops).
   if (!alu.isFull()) {
@@ -163,14 +164,14 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
 }
 
 MemDispatchDecision MemArbiter::arbitrate(const LQ &LQ, const SQ &SQ,
-                                         const ROB &rob, const DCache &dcache,
-                                         const SquashInfo &squash) {
+                                          const ROB &rob, const DCache &dcache,
+                                          const SquashInfo &squash) {
   MemDispatchDecision memDecision{};
   if (!dcache.isBusy() && !SQ.isEmpty()) {
     auto storeTag = SQ.headRobTag();
     bool committed = SQ.isCommitted(SQ.getHead());
-    bool atHeadReady = !committed && rob.storeWillCommit(squash) &&
-                       storeTag == rob.getHead();
+    bool atHeadReady =
+        !committed && rob.storeWillCommit(squash) && storeTag == rob.getHead();
     if (committed || atHeadReady) {
       MemRequest newRequest{};
       newRequest.address = SQ.getAddress(SQ.getHead());
@@ -197,7 +198,8 @@ MemDispatchDecision MemArbiter::arbitrate(const LQ &LQ, const SQ &SQ,
         newRequest.robTag = LQ.getRobTag(loadIndex);
         newRequest.memIndex = static_cast<uint8_t>(loadIndex);
         if (!squash.needSquash ||
-            (squash.needSquash && ROB::isOlder(newRequest.robTag, squash.SquashTag))) {
+            (squash.needSquash &&
+             ROB::isOlder(newRequest.robTag, squash.SquashTag))) {
           memDecision.valid = true;
           memDecision.request = newRequest;
         }
@@ -214,7 +216,8 @@ static Operand resolveSrc(const IssueArbiterInput &input, int regNum) {
   auto op = input.RATModule.readOperand(regNum);
   if (op.ready) // x0: constant zero
     return {.tag = InvalidPhy, .imm = op.value};
-  assert(op.phyRegIndex != InvalidPhy); // P0 is never mapped (P0-dead invariant)
+  assert(op.phyRegIndex !=
+         InvalidPhy); // P0 is never mapped (P0-dead invariant)
   return {.tag = op.phyRegIndex, .imm = 0};
 }
 
@@ -256,7 +259,8 @@ IssuePacket IssueArbiter::issue_IntegerRS(const IssueArbiterInput &input,
   p.robEntry.lqTailSnapshot = input.LQModule.getTail();
   p.robEntry.sqTailSnapshot = input.SQModule.getTail();
   p.robEntry.ckptId = inst.ckptId;
-  p.robEntry.oldPhy = inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
+  p.robEntry.oldPhy =
+      inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
   p.robEntry.newPhy = p.phy;
   if (debug::enabled(debug::TOPIC_PRF) && inst.allocDest)
     debug::print("PRF rename x%d <- P%d (old=P%d)\n", destination, p.phy,
@@ -310,7 +314,8 @@ IssuePacket IssueArbiter::issue_Multiply(const IssueArbiterInput &input,
   p.robEntry.lqTailSnapshot = input.LQModule.getTail();
   p.robEntry.sqTailSnapshot = input.SQModule.getTail();
   p.robEntry.ckptId = inst.ckptId;
-  p.robEntry.oldPhy = inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
+  p.robEntry.oldPhy =
+      inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
   p.robEntry.newPhy = p.phy;
   if (debug::enabled(debug::TOPIC_PRF) && inst.allocDest)
     debug::print("PRF rename x%d <- P%d (old=P%d)\n", destination, p.phy,
@@ -324,7 +329,7 @@ IssuePacket IssueArbiter::issue_Multiply(const IssueArbiterInput &input,
 // optional dest rename) -- only the RS pool and the executing unit differ.
 
 IssuePacket IssueArbiter::issue_Divide(const IssueArbiterInput &input,
-                                         const UopView &inst) {
+                                       const UopView &inst) {
   IssuePacket p{};
   if (input.ROBModule.isFull()) {
     return p;
@@ -356,7 +361,8 @@ IssuePacket IssueArbiter::issue_Divide(const IssueArbiterInput &input,
   p.robEntry.lqTailSnapshot = input.LQModule.getTail();
   p.robEntry.sqTailSnapshot = input.SQModule.getTail();
   p.robEntry.ckptId = inst.ckptId;
-  p.robEntry.oldPhy = inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
+  p.robEntry.oldPhy =
+      inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
   p.robEntry.newPhy = p.phy;
   if (debug::enabled(debug::TOPIC_PRF) && inst.allocDest)
     debug::print("PRF rename x%d <- P%d (old=P%d)\n", destination, p.phy,
@@ -387,7 +393,8 @@ IssuePacket IssueArbiter::issue_UandJ(const IssueArbiterInput &input,
   p.integerRS.op = decodeOp(inst);
   auto destination = inst.rd;
   if (has_PC) {
-    p.integerRS.src1 = {.tag = InvalidPhy, .imm = static_cast<int32_t>(inst.pc)};
+    p.integerRS.src1 = {.tag = InvalidPhy,
+                        .imm = static_cast<int32_t>(inst.pc)};
   }
   p.integerRS.src2 = {.tag = InvalidPhy, .imm = inst.imm};
   if (inst.allocDest && !input.PRFModule.isFreeListEmpty()) {
@@ -401,7 +408,8 @@ IssuePacket IssueArbiter::issue_UandJ(const IssueArbiterInput &input,
   p.robEntry.lqTailSnapshot = input.LQModule.getTail();
   p.robEntry.sqTailSnapshot = input.SQModule.getTail();
   p.robEntry.ckptId = inst.ckptId;
-  p.robEntry.oldPhy = inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
+  p.robEntry.oldPhy =
+      inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
   p.robEntry.newPhy = p.phy;
   if (debug::enabled(debug::TOPIC_PRF) && inst.allocDest)
     debug::print("PRF rename x%d <- P%d (old=P%d)\n", destination, p.phy,
@@ -410,8 +418,6 @@ IssuePacket IssueArbiter::issue_UandJ(const IssueArbiterInput &input,
     p.isControl = true;
     p.pc = inst.pc;
     p.robEntry.type = ROBType::LINK;
-    if (inst.rd == 1)
-      p.robEntry.isCall = true; // JAL with return address register
   }
   p.integerRS.robTag = p.robTag;
   return p;
@@ -487,7 +493,8 @@ IssuePacket IssueArbiter::issue_Load(const IssueArbiterInput &input,
   // the LQ over its own entry, freezing retirement at that row.
   p.robEntry.lqTailSnapshot = input.LQModule.getTailSnapshot();
   p.robEntry.sqTailSnapshot = input.SQModule.getTail();
-  p.robEntry.oldPhy = inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
+  p.robEntry.oldPhy =
+      inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
   p.robEntry.newPhy = p.phy;
   p.robEntry.ckptId = inst.ckptId;
   if (debug::enabled(debug::TOPIC_PRF) && inst.allocDest)
@@ -515,7 +522,8 @@ IssuePacket IssueArbiter::issue_Store(const IssueArbiterInput &input,
   p.storeValueSlot = storeValueSlot;
   p.nBytes = n_bytes;
   p.robTag = input.ROBModule.getNextTag();
-  p.storeAddrRS.memIndex = static_cast<uint8_t>(input.SQModule.getTail() | MEM_STORE_BIT);
+  p.storeAddrRS.memIndex =
+      static_cast<uint8_t>(input.SQModule.getTail() | MEM_STORE_BIT);
   p.storeValueRS.memIndex = p.storeAddrRS.memIndex;
   p.storeAddrRS.free = false;
   p.storeAddrRS.op = decodeOp(inst);
@@ -694,6 +702,10 @@ IssuePacket IssueArbiter::build(const IssueArbiterInput &input) {
   case RISC_V::I: {
     if (inst.opcode == 0b0010011) {
       if (inst.isHalt) {
+        // HALT still consumes a ROB slot: issuing into a full ROB would
+        // overwrite the head entry (robSlot of next equals robSlot of head).
+        if (input.ROBModule.isFull())
+          return issuePacket;
         issuePacket.valid = true;
         issuePacket.isHalt = true;
         issuePacket.robTag = input.ROBModule.getNextTag();
@@ -777,7 +789,9 @@ IssuePacket IssueArbiter::build(const IssueArbiterInput &input) {
     break;
   }
   case RISC_V::RV_INVALID: {
-    issuePacket.valid = true;
+    // The invalid row still consumes a ROB slot: never push when full.
+    if (!input.ROBModule.isFull())
+      issuePacket.valid = true;
     break;
   }
   }

@@ -45,7 +45,7 @@ private:
   bool fullAdderValid = false;
   bool shiftD = false;
   bool resultValid = false;
-  void receive(int32_t op1, int32_t op2, RobTag robTag, Operation op);
+  void receive(uint32_t op1, uint32_t op2, RobTag robTag, Operation op);
   void prepare();
   void loop(uint64_t oldRegS, uint64_t oldRegC, uint32_t oldRegA,
             uint32_t oldRegB);
@@ -65,23 +65,17 @@ public:
     return !prepareValid && !loopValid && !fullAdderValid && !resultValid;
   }
   uint8_t getResultRobtag() const { return robTag; }
-  int32_t getValue() const {
+  uint32_t getValue() const {
+    // Results are uint32 bit vectors. The sign fixups run on uint32 so that
+    // INT32_MIN never invokes host signed negate UB (no -fwrapv).
     if (operationType == Operation::DIV) {
-      if (isResultNegative) {
-        return -static_cast<int32_t>(quotient);
-      } else {
-        return quotient;
-      }
+      return isResultNegative ? 0u - quotient : quotient;
     }
     if (operationType == Operation::DIVU) {
       return quotient;
     }
     if (operationType == Operation::REM) {
-      if (isDividendNegative) {
-        return -static_cast<int32_t>(remain);
-      } else {
-        return remain;
-      }
+      return isDividendNegative ? 0u - remain : remain;
     }
     if (operationType == Operation::REMU) {
       return remain;

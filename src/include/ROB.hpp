@@ -18,7 +18,6 @@ struct ROBEntry {
   uint32_t predictedPC = 0;
   int32_t pc = 0;
   bool halt = false;
-  bool isCall = false; // JAL rd==1
   bool isRet = false;  // JALR x0, 0(x1)
   bool isIndirect = false; // JALR variant: target from reg, not static imm
   uint8_t lqTailSnapshot = 0;
@@ -79,7 +78,6 @@ public:
   uint8_t getSqTailSnapshot(int index) const;
   int getNewPhy(int index) const;
   int getOldPhy(int index) const;
-  bool isCall(int index) const;
   bool isRet(int index) const;
   bool isIndirect(int index) const;
   void tick(const ROBInput &, systemState &);

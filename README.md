@@ -69,7 +69,7 @@ DCache 命中 1 拍自答），缺失回填与脏逐出统一走 **20 周期主�
 
 | 子系统 | 功能 | 关键规格 | 详设 |
 |---|---|---|---|
-| 前端 | 分支预测 → 取指 → 预译码 → 译码 | 8 KB 直映 ICache；FQ 4 / IQ 4；Tournament 方向 + BTB/Target Cache + SARAS | [`frontend.md`](docs/frontend.md) |
+| 前端 | 分支预测 → 取指 → 预译码 → 译码 | 8 KB 直映 ICache；FQ 4 / IQ 4；Tournament 方向 + BTB/RAS/SARAS | [`frontend.md`](docs/frontend.md) |
 | 后端 | 发射 rename → 乱序执行 → 写回 → 按序提交 | ROB 16 / PRF 64 / RAT 32；RS 七个物理池共 23 槽；四路独立结果总线；MUL Booth 三级流水、DIV SRT 单实例背压 | [`backend.md`](docs/backend.md) |
 | 访存 | LQ/SQ、store→load 转发、MDP 违例、访存准入 | LQ 8 / SQ 8；每周期 1 个请求（store 优先）；store 提交点落缓存 | [`memory.md`](docs/memory.md) |
 | 缓存 | L1I / L1D / 片上主存 | L1I 8 KB 直映；L1D 64 KB 4 路写回+写分配；主存 20 周期 | [`cache.md`](docs/cache.md) |
@@ -189,8 +189,9 @@ BP_BIN=/path/to/code ./test_IPC.sh   # 指定二进制
   `dark::Module` 框架把同一架构逐模块改写为可综合风格；两树共用 golden，clock 逐位对拍一致是迁移硬门禁。
 - **DIV/REM 已落地（2026-09-12）**：SRT radix-4 除法器完成接线、验证并同步接入模板树（见 §4.2）。
 - **BPU 面积终态（2026-09-20）**：方向侧采用 local/global/selector 各 256×2-bit 的 Tournament
-  预测器与 16-bit GHR；目标侧保留 BTB/Target Cache/RAS/SARAS。完整 BPU 状态由 TAGE 基线的
-  24,357 bit 降至 12,558 bit（-48.44%），18 例总 clock 为 12,237,892。
+  预测器与 16-bit GHR；目标侧保留 BTB/RAS/SARAS。间接目标缓存（BHT+Target Cache）在活动语料上
+  无可观测收益，已按面积/效率权衡删除；完整 BPU 状态由 TAGE 基线的 24,357 bit 降至 9,454 bit
+  （-61.19%），18 例总 clock 为 12,237,892。
 - **取舍复核**：`VERBOSE=icache` / `cdb` 的命中率与总线争用画像长期保留，供缓存几何、总线拆分、预测器容量等决策参考。
 
 ## 6. 参考资料

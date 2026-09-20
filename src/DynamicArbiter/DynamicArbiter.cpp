@@ -70,13 +70,14 @@ void FlushArbiter::tick(const FlushArbiterInput &input, systemState &CPUstate) {
       input.ROBModule.matchesTag(input.BRUModule.headRobTag())) {
     SquashInfo BranchSquash;
     uint8_t brRobTag = input.BRUModule.headRobTag();
-    int pcResult = input.BRUModule.headPCResult();
-    int pcFrom = input.BRUModule.headPCFrom();
+    const uint32_t pcResult = input.BRUModule.headPCResult();
+    const uint32_t pcFrom = input.BRUModule.headPCFrom();
     if (!input.squashDetect.needSquash ||
         (input.squashDetect.needSquash &&
          ROB::isOlder(brRobTag, input.squashDetect.SquashTag))) {
       auto actualPC = pcResult;
-      if (actualPC != input.ROBModule.getPredictedPC(robSlot(brRobTag))) {
+      if (actualPC != static_cast<uint32_t>(
+                          input.ROBModule.getPredictedPC(robSlot(brRobTag)))) {
         if (debug::enabled(debug::TOPIC_BPMISS))
           debug::print("squash tag=%u pc=%u (from %u)\n", brRobTag, actualPC,
                        pcFrom);
@@ -123,7 +124,7 @@ void FlushArbiter::tick(const FlushArbiterInput &input, systemState &CPUstate) {
     if (!input.squashDetect.needSquash ||
         (input.squashDetect.needSquash &&
          ROB::isOlder(aguRobTag, input.squashDetect.SquashTag))) {
-      auto storeAddr = static_cast<uint32_t>(input.AGUModule.headValue());
+      const uint32_t storeAddr = input.AGUModule.headValue();
       auto lqHead = input.LQModule.getHead();
       bool violationHandled = false;
       for (int k = 0; k < LQ_CAP; ++k) {

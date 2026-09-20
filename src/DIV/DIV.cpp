@@ -29,7 +29,7 @@ uint8_t clz(uint32_t num) {
   return leadingZeros;
 } // require num >= 0
 } // namespace
-void DIV::receive(int32_t op1, int32_t op2, RobTag tag, Operation op) {
+void DIV::receive(uint32_t op1, uint32_t op2, RobTag tag, Operation op) {
   // Stage 0 front-end (a): special cases (RISC-V semantics, return at once).
   // Parameters are (quotient, remain); the field this op does not produce is
   // written as 0. The signed paths' signs are already folded into the
@@ -53,52 +53,47 @@ void DIV::receive(int32_t op1, int32_t op2, RobTag tag, Operation op) {
   if (op == Operation::DIVU && op2 == 0)
     return finish(0xFFFFFFFFu, 0u);
   if ((op == Operation::REM || op == Operation::REMU) && op2 == 0)
-    return finish(0u, static_cast<uint32_t>(op1));
+    return finish(0u, op1);
   // INT_MIN / -1 never traps (signed only; unsigned takes x < d).
-  if (op == Operation::DIV && op1 == INT32_MIN && op2 == -1)
+  if (op == Operation::DIV && op1 == 0x80000000u && op2 == 0xFFFFFFFFu)
     return finish(0x80000000u, 0u);
-  if (op == Operation::REM && op1 == INT32_MIN && op2 == -1)
+  if (op == Operation::REM && op1 == 0x80000000u && op2 == 0xFFFFFFFFu)
     return finish(0u, 0u);
   // x < d gives quot 0 and rem x; x == d gives quot 1 and rem 0.
   // Unsigned compares patterns, signed compares magnitudes (truncate to zero).
   if (op == Operation::DIVU || op == Operation::REMU) {
-    uint32_t xBits = static_cast<uint32_t>(op1);
-    uint32_t dBits = static_cast<uint32_t>(op2);
-    if (xBits < dBits) { // x < d
-      uint32_t remValue = (op == Operation::DIVU) ? 0u : xBits;
+    if (op1 < op2) { // x < d
+      uint32_t remValue = (op == Operation::DIVU) ? 0u : op1;
       return finish(0u, remValue);
     }
-    if (xBits == dBits) // x == d
+    if (op1 == op2) // x == d
       return finish(op == Operation::DIVU ? 1u : 0u, 0u);
   }
   if (op == Operation::DIV || op == Operation::REM) {
-    uint32_t xBits = static_cast<uint32_t>(op1);
-    uint32_t dBits = static_cast<uint32_t>(op2);
-    uint32_t absX =
-        (op1 < 0) ? (~xBits + 1u) : xBits; // |x|, exact even for INT_MIN
-    uint32_t absD = (op2 < 0) ? (~dBits + 1u) : dBits; // |d|
+    // Sign bit tests on the bit vector (no signed compare, no UB).
+    const uint32_t absX =
+        ((op1 >> 31) & 1u) ? (~op1 + 1u) : op1; // |x|, exact for INT_MIN
+    const uint32_t absD =
+        ((op2 >> 31) & 1u) ? (~op2 + 1u) : op2; // |d|
     if (absX < absD) { // |x| < |d|: quot 0, rem x (pattern keeps its sign)
-      uint32_t remValue =
-          (op == Operation::DIV) ? 0u : static_cast<uint32_t>(op1);
+      uint32_t remValue = (op == Operation::DIV) ? 0u : op1;
       return finish(0u, remValue);
     }
     if (absX == absD) { // |x| == |d|: quot +-1 (xs ^ ds), rem 0
       if (op == Operation::DIV)
-        return finish((op1 < 0) == (op2 < 0) ? 1u : 0xFFFFFFFFu, 0u);
+        return finish((((op1 ^ op2) >> 31) & 1u) ? 0xFFFFFFFFu : 1u, 0u);
       return finish(0u, 0u);
     }
   }
   resultValid = false;
   robTag = tag;
   operationType = op;
-  uint32_t xBits = static_cast<uint32_t>(op1);
-  uint32_t dBits = static_cast<uint32_t>(op2);
   // signed magnitudes only for DIV/REM; DIVU/REMU keep the raw bit patterns
   const bool signedOp = (op == Operation::DIV || op == Operation::REM);
-  isDividendNegative = signedOp && (op1 < 0);
-  unsignedDividend = isDividendNegative ? (~xBits + 1u) : xBits;
-  const bool divisorNegative = signedOp && (op2 < 0);
-  unsignedDivisor = divisorNegative ? (~dBits + 1u) : dBits;
+  isDividendNegative = signedOp && (((op1 >> 31) & 1u) != 0);
+  unsignedDividend = isDividendNegative ? (~op1 + 1u) : op1;
+  const bool divisorNegative = signedOp && (((op2 >> 31) & 1u) != 0);
+  unsignedDivisor = divisorNegative ? (~op2 + 1u) : op2;
   isResultNegative = (divisorNegative ^ isDividendNegative) ? 1 : 0;
   prepareValid = true;
 } // Dispatch is admitted only when canAccept() sees all stage flags and
@@ -258,9 +253,10 @@ void DIV::tick(const DIVInput &input, systemState &CPUstate) {
   }
   if (input.dispatch.valid) {
     const auto &rs = input.RSModule.divideRS[input.dispatch.rsIndex];
-    div.receive(input.PRFModule.getOperandValue(rs.src1),
-                input.PRFModule.getOperandValue(rs.src2), input.dispatch.robTag,
-                rs.op);
+    div.receive(
+        static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
+        static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
+        input.dispatch.robTag, rs.op);
   }
   if (input.squashDetect.needSquash) {
     div.flush(input.squashDetect.SquashTag);

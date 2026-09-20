@@ -214,7 +214,7 @@ void SQ::tick(const SQInput &input, systemState &CPUstate) {
         (input.squashDetect.needSquash &&
          ROB::isOlder(aguRobTag, input.squashDetect.SquashTag))) {
       CPUstate.SQModule.writeAddress(
-          static_cast<uint32_t>(input.AGUModule.headValue()),
+          input.AGUModule.headValue(),
           memSlot(input.AGUModule.headMemIndex()));
     }
   }
