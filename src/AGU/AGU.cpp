@@ -1,9 +1,9 @@
 #include "../include/AGU.hpp"
 #include "../include/CPU.hpp"
 #include <cstdint>
-void AGU::push(int32_t op1, int32_t op2, RobTag robTag, uint8_t memIndex) {
-  int32_t value;
-  value = op1 + op2;
+void AGU::push(uint32_t op1, uint32_t op2, RobTag robTag, uint8_t memIndex) {
+  // uint32 bit-vector add: the address wraps at 32 bits by construction.
+  const uint32_t value = op1 + op2;
   AddressCalculateResult result{value, robTag, memIndex};
   for (int i = 0; i < AGU_CAP; i++)
     if (!slotValid[i]) {
@@ -13,7 +13,7 @@ void AGU::push(int32_t op1, int32_t op2, RobTag robTag, uint8_t memIndex) {
     }
 }
 
-int32_t AGU::headValue() const {
+uint32_t AGU::headValue() const {
   int best = -1;
   for (int i = 0; i < AGU_CAP; i++) {
     if (slotValid[i] &&
@@ -78,14 +78,16 @@ void AGU::tick(const AGUInput &input, systemState &CPUstate) {
   if (input.dispatch.valid) {
     if (input.dispatch.rsType == RSType::Load) {
       auto &rs = input.RSModule.loadRS[input.dispatch.rsIndex];
-      CPUstate.AGUModule.push(input.PRFModule.getOperandValue(rs.src1),
-                              input.PRFModule.getOperandValue(rs.src2),
-                              input.dispatch.robTag, rs.memIndex);
+      CPUstate.AGUModule.push(
+          static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
+          static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
+          input.dispatch.robTag, rs.memIndex);
     } else {
       auto &rs = input.RSModule.storeAddressRS[input.dispatch.rsIndex];
-      CPUstate.AGUModule.push(input.PRFModule.getOperandValue(rs.src1),
-                              input.PRFModule.getOperandValue(rs.src2),
-                              input.dispatch.robTag, rs.memIndex);
+      CPUstate.AGUModule.push(
+          static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
+          static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
+          input.dispatch.robTag, rs.memIndex);
     }
   }
   // AGU remove the first entry every cycle

@@ -52,8 +52,6 @@ constexpr int BHT_CAP = 1 << 8;
 constexpr int SELECTOR_CAP = 1 << 8;
 constexpr int CONDSEEN_CAP = 1 << 9; // "this PC is a conditional" filter
 constexpr uint16_t HISTORY_MASK = 0xFFFF;
-constexpr int LOCAL_HISTORY_BIT = 5;
-constexpr int TARGETCACHE_CAP = 1 << LOCAL_HISTORY_BIT;
 constexpr int RAS_CAP = 8;
 constexpr int ALIGNQ_CAP = 16;
 constexpr uint8_t PRF_CAP = ROB_CAP + REGISTER_CAP;
@@ -210,14 +208,14 @@ enum class RISC_V {
 };
 
 struct AddressCalculateResult {
-  int32_t value;
+  uint32_t value;
   uint8_t robTag;
   uint8_t memIndex;
 };
 
 struct BranchResult {
-  int pcFrom;
-  int pcResult;
+  uint32_t pcFrom;
+  uint32_t pcResult;
   uint8_t robTag;
 };
 
@@ -284,9 +282,7 @@ struct BTBEntry {
   uint32_t target;
   bool valid;
   bool unconditional;
-  bool isCall = false;
   bool isRet = false;
-  bool isIndirect = false; // JALR: target history-dependent, TC-eligible
 };
 
 struct BPUSnapshot {

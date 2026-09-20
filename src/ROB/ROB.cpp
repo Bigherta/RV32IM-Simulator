@@ -48,6 +48,9 @@ bool ROB::storeWillCommit(const SquashInfo &squash) const {
 }
 
 int ROB::push(ROBEntry entry) {
+  // The issue path must gate on isFull: a push into a full ROB silently
+  // overwrites the head entry.
+  assert(!isFull());
   entry.tag = next_tag;
   ROBqueue[robSlot(next_tag)] = entry;
   int index = robSlot(next_tag);
@@ -89,7 +92,6 @@ int ROB::getNewPhy(int index) const { return ROBqueue[index].newPhy; }
 
 int ROB::getOldPhy(int index) const { return ROBqueue[index].oldPhy; }
 
-bool ROB::isCall(int index) const { return ROBqueue[index].isCall; }
 
 bool ROB::isRet(int index) const { return ROBqueue[index].isRet; }
 

@@ -16,7 +16,7 @@ class BRU {
 private:
   BranchResult outputBuffer[BRU_CAP];
   bool slotValid[BRU_CAP] = {};
-  void BRUExecute(int32_t op1, int32_t op2, int32_t pc, int32_t imm,
+  void BRUExecute(uint32_t op1, uint32_t op2, uint32_t pc, uint32_t imm,
                   Operation op, RobTag robTag);
   void push(BranchResult);
   void remove(uint8_t robTag);
@@ -25,8 +25,8 @@ private:
 public:
   bool isFull() const;
   bool isEmpty() const;
-  int32_t headPCFrom() const;
-  int32_t headPCResult() const;
+  uint32_t headPCFrom() const;
+  uint32_t headPCResult() const;
   uint8_t headRobTag() const;
   void tick(const BRUInput &, systemState &);
 };

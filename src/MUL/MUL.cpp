@@ -18,21 +18,26 @@ inline Csa3 csa3(uint64_t a, uint64_t b, uint64_t c) {
   r.carry = ((a & b) | (a & c) | (b & c)) << 1;
   return r;
 }
+// Sign-extend a 32-bit bit vector to 64 bits (RV32 signed operand width):
+// the conversion chain is well-defined in C++20 (modulo / two's complement).
+inline uint64_t signExtend32(uint32_t v) {
+  return static_cast<uint64_t>(static_cast<int32_t>(v));
+}
 } // namespace
 
-void MUL::calculateBooth(int32_t op1, int32_t op2, RobTag robTag,
+void MUL::calculateBooth(uint32_t op1, uint32_t op2, RobTag robTag,
                          Operation op) {
   partialRes.partialProductValid = true;
   partialRes.op = op;
   partialRes.robTag = robTag;
   for (int i = 0; i < 19; ++i)
     partialRes.partialProduct[i] = 0;
-  const uint64_t A = static_cast<uint64_t>(op1);
+  const uint64_t A = signExtend32(op1);
   for (int i = 0; i < 16; ++i) {
     // 3-bit window y[2i+1], y[2i], y[2i-1]; row 0 pads y[-1] = 0.
-    const uint32_t triple =
-        (i == 0) ? ((static_cast<uint32_t>(op2) & 0b11) << 1)
-                 : ((static_cast<uint32_t>(op2) >> ((i << 1) - 1)) & 0b111);
+    const uint32_t triple = (i == 0)
+                                ? ((op2 & 0b11) << 1)
+                                : ((op2 >> ((i << 1) - 1)) & 0b111);
 
     uint64_t row = 0; // |digit| multiple of A, before the sign handling
     bool neg = false;
@@ -63,18 +68,14 @@ void MUL::calculateBooth(int32_t op1, int32_t op2, RobTag robTag,
     partialRes.partialProduct[i] = row << (i << 1);
   }
   // Unsigned-operand fixups.
-  const uint64_t signA = (static_cast<uint32_t>(op1) >> 31) & 1;
-  const uint64_t signB = (static_cast<uint32_t>(op2) >> 31) & 1;
+  const uint64_t signA = (op1 >> 31) & 1;
+  const uint64_t signB = (op2 >> 31) & 1;
   const bool isMulhu = (op == Operation::MULHU);
   const bool isMulhsu = (op == Operation::MULHSU);
   partialRes.partialProduct[16] =
-      (isMulhu && signA)
-          ? (static_cast<uint64_t>(static_cast<uint32_t>(op2)) << 32)
-          : 0;
+      (isMulhu && signA) ? (static_cast<uint64_t>(op2) << 32) : 0;
   partialRes.partialProduct[17] =
-      ((isMulhu || isMulhsu) && signB)
-          ? (static_cast<uint64_t>(static_cast<int64_t>(op1)) << 32)
-          : 0;
+      ((isMulhu || isMulhsu) && signB) ? (signExtend32(op1) << 32) : 0;
 }
 
 void MUL::calculateSC(const PartialProductResult &partial) {
@@ -121,13 +122,13 @@ void MUL::calculateMulRes(const SCResult &sc) {
   slotValid[best] = true;
   switch (sc.op) {
   case Operation::MUL: {
-    outputBuffer[best].value = static_cast<int32_t>(res);
+    outputBuffer[best].value = static_cast<uint32_t>(res);
     break;
   }
   case Operation::MULH:
   case Operation::MULHSU:
   case Operation::MULHU: {
-    outputBuffer[best].value = static_cast<int32_t>(res >> 32);
+    outputBuffer[best].value = static_cast<uint32_t>(res >> 32);
     break;
   }
   default:
@@ -210,9 +211,10 @@ void MUL::tick(const MULInput &input, systemState &CPUstate) {
 
   if (input.dispatch.valid) {
     const auto &rs = input.RSModule.multiplyRS[input.dispatch.rsIndex];
-    mul.calculateBooth(input.PRFModule.getOperandValue(rs.src1),
-                       input.PRFModule.getOperandValue(rs.src2),
-                       input.dispatch.robTag, rs.op);
+    mul.calculateBooth(
+        static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
+        static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
+        input.dispatch.robTag, rs.op);
   } else {
     mul.partialRes.partialProductValid = false;
   }

@@ -33,7 +33,9 @@ FetchTypeInfo scanJump(const struct lastPush &lp) {
       uoff |= ((raw >> i) & 1U) << (i - 20);
     const auto off =
         static_cast<int32_t>((uoff ^ 0x100000U) - 0x100000U); // sign-extend
-    fi.jalTarget = static_cast<uint32_t>(static_cast<int32_t>(lp.pc) + off);
+    // uint32 bit-vector add: signed int32_t add past the range is host UB.
+    fi.jalTarget =
+        static_cast<uint32_t>(lp.pc) + static_cast<uint32_t>(off);
     fi.valid = true;
   } else if (opcode == 0x67 && funct3 == 0) { // jalr
     // Indirect call: rd is a link register (push ra), even for non-link rs1
@@ -182,8 +184,7 @@ void CPU::comb() {
         (squashDetect.needSquash &&
          ROB::isOlder(aguRobTag, squashDetect.SquashTag))) {
       lqInput.storeAddrNotify = SQModule.planAddressForward(
-          memSlot(AGUModule.headMemIndex()),
-          static_cast<uint32_t>(AGUModule.headValue()));
+          memSlot(AGUModule.headMemIndex()), AGUModule.headValue());
     }
   }
   rsInput.squashDetect = squashDetect;

@@ -38,12 +38,11 @@ PredictInfo BPU::predict(int32_t pc) const {
   const uint32_t globalIndex = (p2 ^ dir.GHR) & (BHT_CAP - 1);
   const uint32_t selectorIndex = (p2 ^ dir.GHR) & (SELECTOR_CAP - 1);
   const bool useGlobal = dir.selector[selectorIndex] >= 2;
-  const bool directionTaken =
-      useGlobal ? dir.globalPHT[globalIndex] >= 2
-                : dir.localPHT[localIndex] >= 2;
+  const bool directionTaken = useGlobal ? dir.globalPHT[globalIndex] >= 2
+                                        : dir.localPHT[localIndex] >= 2;
   const auto BTB_index = p2 & (BTB_CAP - 1);
   bool btbHit = tgt.BTB[BTB_index].valid &&
-                 tgt.BTB[BTB_index].actualPC == static_cast<uint32_t>(pc);
+                tgt.BTB[BTB_index].actualPC == static_cast<uint32_t>(pc);
   bool taken = btbHit && directionTaken;
   if (btbHit && tgt.BTB[BTB_index].unconditional)
     taken = true;
@@ -52,11 +51,6 @@ PredictInfo BPU::predict(int32_t pc) const {
   // jumps (JALR). BHR is the committed 8b outcome history of branches
   // landing in the same BHT slot; pc^BHR separates the dynamic contexts
   // under which one static indirect site dispatches to different targets.
-  const uint8_t bhr = tgt.BHT[p2 & (BHT_CAP - 1)];
-  const uint32_t tcHash = (p2 ^ bhr) & (TARGETCACHE_CAP - 1);
-  const bool tcUsable = btbHit && tgt.BTB[BTB_index].isIndirect &&
-                        !tgt.BTB[BTB_index].isCall &&
-                        !tgt.BTB[BTB_index].isRet && tgt.TargetValid[tcHash];
   // RET with empty RAS: don't use BTB target 0, treat as not taken (wild fetch
   // fix)
   bool isRet = tgt.BTB[BTB_index].isRet;
@@ -65,13 +59,12 @@ PredictInfo BPU::predict(int32_t pc) const {
     btbHit = false;
     taken = false;
   }
-  int32_t predictPC = pc + 4;
+  // uint32 bit-vector add: signed int32_t add past the range is host UB.
+  int32_t predictPC = static_cast<int32_t>(static_cast<uint32_t>(pc) + 4u);
   if (taken && btbHit) {
     if (isRet && tgt.RAS_top > 0)
       predictPC = static_cast<int32_t>(
           tgt.RAS[(tgt.RAS_top - 1) & (RAS_CAP - 1)].retPC);
-    else if (tcUsable)
-      predictPC = static_cast<int32_t>(tgt.TargetCache[tcHash]);
     else
       predictPC = tgt.BTB[BTB_index].target;
   }
@@ -123,42 +116,25 @@ void BPU::update(int32_t pc, bool taken, int32_t target, uint16_t ghr) {
     tgt.BTB[BTB_index].target = target;
     tgt.BTB[BTB_index].valid = true;
     tgt.BTB[BTB_index].unconditional = false;
-    tgt.BTB[BTB_index].isCall = false;
     tgt.BTB[BTB_index].isRet = false;
-    tgt.BTB[BTB_index].isIndirect = false;
   }
 
   // Committed target history: every resolved branch folds its outcome into
   // the per-slot 8b BHR consumed by the Target Cache hash.
-  uint8_t &bhrReg = tgt.BHT[p2 & (BHT_CAP - 1)];
-  bhrReg = static_cast<uint8_t>(((bhrReg << 1) | (taken ? 1 : 0)) & 0xFF);
 }
 
-void BPU::updateJump(int32_t pc, int32_t target, bool isCall, bool isRet,
-                     bool isIndirect) {
+void BPU::updateJump(int32_t pc, int32_t target, bool isRet) {
   const uint32_t p2 = static_cast<uint32_t>(pc) >> 2;
   auto BTB_index = p2 & (BTB_CAP - 1);
   tgt.BTB[BTB_index].actualPC = static_cast<uint32_t>(pc);
   tgt.BTB[BTB_index].target = target;
   tgt.BTB[BTB_index].valid = true;
   tgt.BTB[BTB_index].unconditional = true;
-  tgt.BTB[BTB_index].isCall = isCall;
   tgt.BTB[BTB_index].isRet = isRet;
-  tgt.BTB[BTB_index].isIndirect = isIndirect;
 
   // true indirect jump: train Target Cache at this context's hash.
   // Direct JALs never touch TC — their BTB target is exact and must not
   // be overridable through a colliding history hash.
-  const uint8_t bhr = tgt.BHT[p2 & (BHT_CAP - 1)];
-  if (isIndirect && !isCall && !isRet) {
-    const uint32_t tcHash = (p2 ^ bhr) & (TARGETCACHE_CAP - 1);
-    tgt.TargetCache[tcHash] = static_cast<uint32_t>(target);
-    tgt.TargetValid[tcHash] = true;
-  }
-
-  // committed local-history shift (unconditional jumps always taken)
-  uint8_t &bhrReg = tgt.BHT[p2 & (BHT_CAP - 1)];
-  bhrReg = static_cast<uint8_t>(((bhrReg << 1) | 1) & 0xFF);
 }
 
 void BPU::dumpBpMiss() const {
@@ -206,26 +182,28 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
   if (!input.BRUModule.isEmpty() &&
       input.ROBModule.matchesTag(input.BRUModule.headRobTag())) {
     uint8_t brRobTag = input.BRUModule.headRobTag();
-    int pcResult = input.BRUModule.headPCResult();
-    int pcFrom = input.BRUModule.headPCFrom();
+    const uint32_t pcResult = input.BRUModule.headPCResult();
+    const uint32_t pcFrom = input.BRUModule.headPCFrom();
     {
       ++CPUstate.BPUModule.branchTotal;
       // BRU resolves conditional branches only -> class = cond.
       ++CPUstate.BPUModule.condTotal;
-      bool correct =
-          pcResult == input.ROBModule.getPredictedPC(robSlot(brRobTag));
+      const uint32_t predictedPC = static_cast<uint32_t>(
+          input.ROBModule.getPredictedPC(robSlot(brRobTag)));
+      bool correct = pcResult == predictedPC;
       if (correct) {
         ++CPUstate.BPUModule.branchCorrect;
         ++CPUstate.BPUModule.condCorrect;
       } else
-        CPUstate.BPUModule.noteMiss(static_cast<uint32_t>(pcFrom));
+        CPUstate.BPUModule.noteMiss(pcFrom);
       if (!input.squashDetect.needSquash ||
           (input.squashDetect.needSquash &&
            ROB::isOlder(brRobTag, input.squashDetect.SquashTag))) {
         bru.valid = true;
-        bru.pc = pcFrom;
-        bru.taken = pcResult != pcFrom + 4;
-        bru.target = pcResult;
+        // PC values are uint32 bit vectors.
+        bru.pc = static_cast<int32_t>(pcFrom);
+        bru.taken = pcResult != pcFrom + 4u;
+        bru.target = static_cast<int32_t>(pcResult);
         const uint8_t cid = input.ROBModule.getCkptId(robSlot(brRobTag));
         bru.ghr = bpCkpt[cid].GHR_snapshot;
       }
@@ -266,7 +244,6 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
       cdb.target = static_cast<int32_t>(pc);
       cdb.ghr = bpCkpt[input.ROBModule.getCkptId(robIdx)].GHR_snapshot;
       cdb.cond = false;
-      cdb.isCall = input.ROBModule.isCall(robIdx);
       cdb.isRet = input.ROBModule.isRet(robIdx);
     }
   }
@@ -275,8 +252,7 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
     if (c.cond)
       CPUstate.BPUModule.update(c.pc, c.taken, c.target, c.ghr);
     else
-      CPUstate.BPUModule.updateJump(c.pc, c.target, c.isCall, c.isRet,
-                                    c.isIndirect);
+      CPUstate.BPUModule.updateJump(c.pc, c.target, c.isRet);
   };
   if (bru.valid)
     apply(bru);
@@ -338,19 +314,15 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
       CPUstate.BPUModule.tgt.BTB[BTB_index].actualPC = fi.pc;
       CPUstate.BPUModule.tgt.BTB[BTB_index].valid = true;
       CPUstate.BPUModule.tgt.BTB[BTB_index].unconditional = true;
-      CPUstate.BPUModule.tgt.BTB[BTB_index].isCall = fi.isCall;
       CPUstate.BPUModule.tgt.BTB[BTB_index].isRet = false;
       if (fi.jalTargetValid)
         CPUstate.BPUModule.tgt.BTB[BTB_index].target = fi.jalTarget;
-      else
-        CPUstate.BPUModule.tgt.BTB[BTB_index].isIndirect = true;
     }
     if (fi.isRet) {
       auto BTB_index = (fi.pc >> 2) & (BTB_CAP - 1);
       CPUstate.BPUModule.tgt.BTB[BTB_index].actualPC = fi.pc;
       CPUstate.BPUModule.tgt.BTB[BTB_index].valid = true;
       CPUstate.BPUModule.tgt.BTB[BTB_index].unconditional = true;
-      CPUstate.BPUModule.tgt.BTB[BTB_index].isCall = false;
       CPUstate.BPUModule.tgt.BTB[BTB_index].isRet = true;
     }
   }
