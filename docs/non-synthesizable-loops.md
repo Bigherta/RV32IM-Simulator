@@ -61,25 +61,27 @@ SRT DIV 是当前范本：商位递推由 `loopTimes` 和阶段 valid 驱动，�
 | 字节装配与 store 合并 | 已完成 | 主树 DMEM/DCache 与模板树 DCache 使用固定四 lane；`n`/`n_bytes` 只控制 lane 使能。1B/2B 符号扩展使用显式掩码 |
 | FlushArbiter 有序插入 | 已完成 | 两树均以 `FLUSHARBITER_CAP` 固定扫描和固定后移网络实现；`scanning`、`w`、`pos` 只参与选择和写使能 |
 | ROB ready 去重 | 已完成 | 模板树使用零初始化的逐槽 `readyWrite[]/readyData[]` 写意图幂等归约，再固定遍历 ROB 槽，每槽至多一次寄存器写；已移除 `seen[]/nSeen` 可变长度查找 |
-| TAGE folded history | 已完成 | 两树均使用 `refoldViewT<H,W>` 的编译期边界重建，并维护 4 表 × 3 视图的增量折叠状态；稳态不再使用运行期 `histLen/foldWidth` 循环 |
+| Tournament 方向预测 | 已完成 | local/global/selector 均为固定 256 项表；16-bit GHR 直接参与 gshare 索引，不再存在 TAGE 折叠历史的重建或增量循环 |
 | SRT DIV 递推 | 设计正确，无需改写为组合展开 | 两树均以固定宽度计数器和阶段 valid 实现多周期 FSM |
-| 模板 BPU `Plan::nTab` | **仍需处理** | merge、查重、Tn-U 查找和 apply 仍有 `q < src.nTab`、`m < merged.nTab` 等运行期循环边界 |
+| 模板 BPU `Plan::nTab` | **仍需处理** | merge、查重和 apply 仍有 `q < src.nTab`、`m < merged.nTab` 等运行期循环边界 |
 
-当前已知的数据通路循环问题集中在模板 BPU 的 `Plan::nTab`。`Plan::tab[64]` 虽有固定容量，`nTab` 仍由当拍训练行为决定；嵌套的压缩列表扫描表达的是软件式可变长度集合，不是明确的固定端口网络。
+当前已知的数据通路循环问题集中在模板 BPU 的 `Plan::nTab`。Tournament 改写已将容器收紧为
+`Plan::tab[32]`，但 `nTab` 仍由当拍训练行为决定；嵌套的压缩列表扫描表达的是软件式可变
+长度集合，不是明确的固定端口网络。
 
 处理该项时应优先按资源拆成固定写意图、valid 位和明确优先级；最低要求是所有候选槽都按固定容量遍历，以 valid 作为条件。不能只把 `64` 换成另一个常量而保留 `q < nTab`。同时必须保持现有语义：
 
 - 合并优先级 `fi > cdb > bru`。
 - 同一物理 Register 每拍最多一次赋值。
-- BHT 同槽碰撞修正、Tn-U tick 覆盖顺序和 bank tick 累加不变。
-- 固定网络的面积与关键路径可接受；若 64×64 查重过大，应按表资源直接仲裁，而不是机械铺开平方级比较器。
+- BHT 同槽碰撞修正、BTB/CDB 覆盖顺序和双训练口共享周期初快照不变。
+- 固定网络的面积与关键路径可接受；若 32×32 查重过大，应按表资源直接仲裁，而不是机械铺开平方级比较器。
 
 ## 4. 审计与验收流程
 
 1. 先确定代码属于组合数据通路、多周期状态机还是仿真外壳。
 2. 检查所有 `for`/`while`/`do` 的退出条件，并继续检查 lambda 和 helper 内部；固定容量数组不自动保证使用它的循环固定。
 3. 组合逻辑采用固定边界加 enable，多周期算法采用寄存器、计数器和 FSM，宿主 I/O 留在硬件顶层之外。
-4. 行为等价改写后跑双树 x10、断言和逐例 clock 对比。根目录 `test.sh` 会显示和汇总 clock，但不会把它与 `benchmarks.md` 的 `cycles` 作通过判定，因此逐周期门禁必须显式执行。
+4. 行为等价改写后跑双树 x10、断言和逐例 clock 对比。根目录 `test.sh` 会将 clock 与 `benchmarks.md` 的 `cycles` 严格比较，双树还需逐例确认结果一致。
 5. 在目标转换/综合工具上检查 unsupported construct、循环展开/FSM 推断、寄存器和 RAM 推断、端口冲突、资源、关键路径与时序约束；保存工具版本和报告，才可把“源码意图”升级为“综合证明”。
 
 本审计只覆盖循环及其直接数据结构。异常、宿主 I/O、动态内存、库调用和顶层接口仍需在完整综合审计中分别确认。

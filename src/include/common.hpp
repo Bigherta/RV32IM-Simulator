@@ -47,13 +47,11 @@ constexpr int ALU_CAP = 4;
 constexpr int MUL_CAP = 4;
 constexpr int AGU_CAP = 4;
 constexpr int BRU_CAP = 4;
-constexpr int PC_Direct_CAP = 1 << 12;
 constexpr int BTB_CAP = 64;
 constexpr int BHT_CAP = 1 << 8;
-constexpr int T0_CAP = 1 << 10; // local base table, (pc ^ LHT) hashed index
-constexpr int LHT_CAP = 1 << 7; // per-PC local history table, pc[8:2] index
+constexpr int SELECTOR_CAP = 1 << 8;
 constexpr int CONDSEEN_CAP = 1 << 9; // "this PC is a conditional" filter
-constexpr uint64_t HISTORY_MASK = ~UINT64_C(0);
+constexpr uint16_t HISTORY_MASK = 0xFFFF;
 constexpr int LOCAL_HISTORY_BIT = 5;
 constexpr int TARGETCACHE_CAP = 1 << LOCAL_HISTORY_BIT;
 constexpr int RAS_CAP = 8;
@@ -273,26 +271,12 @@ struct Operand {
   int32_t imm = 0;
 };
 
-// Prediction-time metadata for the tagged predictor, captured at fetch
-// and consumed at branch resolution. Carried through PredictInfo /
-// FetchDecision into the BPU-private per-ckptId pool.
-struct TAGESCMeta {
-  bool provValid = false; // a Tn table hit supplied the prediction
-  uint8_t provIdx = 0;    // which table (T1..T4)
-  uint8_t provCtr = 0;    // provider counter value at predict time
-  uint8_t provU = 0;      // provider usefulness at predict time
-  bool altPred = false;   // ALT (T0) direction
-  bool tagePred = false;  // final tagged-predictor direction
-  uint8_t baseCnt = 0;
-};
-
 struct PredictInfo {
   bool taken;
   int32_t predictPC;
   bool btbHit = false;
   bool unconditional = false;
   bool condSeen = false; // filter says this PC resolved as conditional before
-  TAGESCMeta meta{};
 };
 
 struct BTBEntry {
@@ -310,10 +294,7 @@ struct BPUSnapshot {
   // With RASEntry{retPC,times}, the height != call/ret depth, so RAS_top
   // is checkpointed directly. All three are uint8_t — ring counters wrap
   // at 256, well beyond the current ROB_CAP and local queue capacities.
-  // The TAGE folded views are NOT checkpointed: they are pure functions
-  // of GHR, so recoverCheckPoint() refolds them from the restored
-  // register instead of carrying a second copy of the truth.
-  uint64_t GHR_snapshot;
+  uint16_t GHR_snapshot;
   uint8_t alignHead;
   uint8_t alignTail;
   uint8_t RAS_top;
@@ -379,7 +360,6 @@ struct FetchDecision {
   bool shift = false;
   bool shiftValue = false;
   uint8_t ckptId = 0;
-  TAGESCMeta meta{};
   static FetchDecision build(const BPU &bp, uint32_t pc,
                              const SquashInfo &squash, bool haltFetched,
                              bool fqFull, bool imemReqFull);

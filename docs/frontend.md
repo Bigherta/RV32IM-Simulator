@@ -5,7 +5,7 @@
 > `FetchUnit`(取指控制流)
 > `InstructBuffer`(32位指令缓冲队列)
 >  `Decoder`+`DecodeUnit`(解码器+微指令缓冲队列)
->  `BPU`(TAGE分支预测器)。
+>  `BPU`(Tournament 分支预测器)。
 
 存储部件（ICache/IMEM）的行为在 [缓存与存储层次](cache.md) 中描述，本文只说明取指逻辑如何使用它们。
 
@@ -31,7 +31,7 @@
 | `FetchUnit` | PC 寄存器与 halt 闩锁（`programCounter` / `haltFetched`） | 每周期一个 `FetchDecision` 有效即推进 PC |
 | `InstructBuffer`（FQ） | 4 个物理槽、最多 3 条有效指令的环形取指队列，条目为 `{raw, pc, predictedPC, ckptId}` | 预译码为 RAS/BTB 提供精确跳转类型 |
 | `Decoder` / `DecodeUnit` | 指令译码 + Uop 环形队列 IQ（4 个物理槽、最多 3 条有效 Uop） | `Uop` 携带执行与恢复元数据 |
-| `BPU` | 方向预测（TAGE）+ 目标预测（BTB/TargetCache/RAS/SARAS） | 见 §4 |
+| `BPU` | 方向预测（Tournament）+ 目标预测（BTB/TargetCache/RAS/SARAS） | 见 §4 |
 
 ---
 
@@ -97,57 +97,52 @@ ckptId），压入 IQ。FQ 头是否可被消费由 IQ 的周期初满状态决�
 
 ## 4. 分支预测（BPU）
 
-方向预测与目标预测的总体分工参考香山开源处理器的公开设计
-[[10]](#front-ref-10)[[11]](#front-ref-11)，方向算法采用 **TAGE 混合预测器**
-（一个局部两级 2-bit 基表 + 4 张全局历史标签表）[[2]](#front-ref-2)[[3]](#front-ref-3)，
-目标预测按控制流类型拆分。容量、哈希、局部历史基表和单周期预测时序均为本项目配置，
-并不等同于香山的具体流水化 BPU。预测在**取指当拍**完成
-（**这可能带来主频问题，等待后续综合后进行评估**），结果随 `FetchDecision` 携带
-（含供解析期消费的 `TAGESCMeta`）。
+方向预测与目标预测分开：方向侧采用 **Tournament**，以 chooser 在局部与全局
+2-bit 预测器之间选择 [[2]](#front-ref-2)[[3]](#front-ref-3)；目标侧按控制流类型拆分，
+总体分工也参考香山开源处理器的公开设计 [[10]](#front-ref-10)[[11]](#front-ref-11)。
+容量、哈希和单周期预测时序均为本项目配置，并不等同于引用设计的具体实现。
+预测在**取指当拍**完成（**这可能带来主频问题，等待后续综合后进行评估**），
+结果随 `FetchDecision` 携带。
 
-### 4.1 方向预测：TAGE
+### 4.1 方向预测：Tournament
 
 | 部件 | 配置 | 说明 |
 |------|------|------|
-| 基表 T0 | 1024 × 2-bit | 索引 = `PC ⊕ LHT[PC]`；LHT 为 128 条目 × 12-bit **每 PC 局部历史**（非推测更新），是本项目采用的局部两级兜底预测器 [[4]](#front-ref-4) |
+| localPHT | 256 × 2-bit | 索引 = `(PC >> 2) & 255`；计数器 `>=2` 预测 taken |
+| globalPHT | 256 × 2-bit | 索引 = `((PC >> 2) ^ GHR[15:0]) & 255`；计数器 `>=2` 预测 taken |
+| selector | 256 × 2-bit | 与 globalPHT 使用同一索引；`>=2` 选择 global，否则选择 local |
 | condSeen 过滤器 | 512 × 1-bit | 条件分支解析时置位；取指侧 `btbHit ∨ condSeen` 才移位 GHR——避免"从不 taken 的分支不留历史、BTB 驻留漂移改变历史成员"两类缺口 |
-| 标签表 T1–T4 | 每表 128 条目 × 8-bit tag | 历史长度 {6, 12, 24, 48}；7-bit 索引与 8-bit tag 使用不同宽度的折叠历史并与 `pc` 混合；几何历史长度、部分标签和折叠历史来自 TAGE [[2]](#front-ref-2)[[3]](#front-ref-3) |
-| TageEntry | `{valid, tag(8b), ctr(3b), u(2b)}` | provider = 最长命中的历史表；alt = 次长命中（无次命中回退 T0），沿用 TAGE 的 provider/alternate 结构 [[2]](#front-ref-2)[[3]](#front-ref-3) |
-| useAltOnNa | 128 条目 × 4-bit（初值偏 alt） | 弱 provider（`ctr==3/4`）时学习"此 PC 改用 alt 是否更准"；机制来自 TAGE，容量与索引是项目配置 [[3]](#front-ref-3) |
-| 分配/老化 | 8-bit Galois LFSR（taps `0xB8`）抽签 | TAGE 用 usefulness 位约束替换并通过老化回收表项 [[2]](#front-ref-2)[[3]](#front-ref-3)；LFSR、候选扫描及每 64 次 `u >>= 1` 是项目策略 |
 
-预测选取遵循 TAGE 的 provider/alternate 结构：provider 命中则以其 `ctr≥4` 为方向，
-弱计数时按 useAltOnNa 决定是否改信 alt；无 provider 命中回退 T0
-[[2]](#front-ref-2)[[3]](#front-ref-3)。
+三张 2-bit 表的计数器均初始化为 1（弱 not-taken）。条件分支解析后，localPHT 与
+globalPHT 都按实际结果饱和更新；仅当两者预测不同，selector 才朝本次预测正确的一侧更新。
+selector 选出的结果记为 `directionTaken`。最终条件分支方向还受 BTB 身份门控：
+`taken = btbHit && directionTaken`；若 BTB 命中项标记为无条件跳转，则覆盖为 taken。
 
 ### 4.2 目标预测（跳去哪）
 
 | 部件 | 配置 | 说明 |
 |------|------|------|
 | BTB | 64 条目 | 经典 Branch Target Buffer 的项目实现 [[5]](#front-ref-5)；携带 `unconditional/isCall/isRet/isIndirect` 类型，命中且无条件 ⇒ 必 taken |
-| Target Cache | 32 条目 | JALR 专用，采用"同一静态间接跳转可有多个上下文相关目标"的 Target Cache 思路 [[6]](#front-ref-6)；本实现用 256×8b 提交级局部历史 BHR，按 `pc ⊕ BHR` 哈希 |
+| BHT | 256 × 8-bit | 提交级控制流结果历史，供间接目标哈希使用 |
+| Target Cache | 32 条目 | JALR 专用，采用"同一静态间接跳转可有多个上下文相关目标"的 Target Cache 思路 [[6]](#front-ref-6)；索引 = `((PC >> 2) ^ BHT[(PC >> 2) & 255]) & 31` |
 | RAS | 8 条目 `{retPC, times}` | RAS 用 call 压入的返回地址预测 return [[7]](#front-ref-7)；`times` 将连续相同返回地址压成计数项，是项目的递归去重策略；投机错位与修复机制见 [[8]](#front-ref-8) |
 | SARAS | 16 条目 `{addr, index, times}` | 受 Self-Aligning Return Address Stack 启发的恢复日志 [[9]](#front-ref-9)；论文使用传统 RAS、自对齐队列与栈顶计数器，本项目字段和 call-dedup/ret 撤销规则是具体适配，不宣称逐字段等同 |
 
 ### 4.3 GHR 与 checkpoint
 
-- **GHR 移位**：取指侧在 `btbHit ∨ condSeen` 时随预测结果移位（`FetchDecision`
+- **GHR 移位**：16-bit GHR 在取指侧于 `btbHit ∨ condSeen` 时随预测结果移位（`FetchDecision`
   携带 `shift/shiftValue`）；条件分支的解析结果也回填历史——历史成员资格不依赖
   BTB 驻留。
 - **checkpoint**：每次取指消耗一个 `ckptId`。活动池 `CKPT_CAP=32`，大于
   `CKPT_LIVE_MAX = ROB16 + ICache request4 + FQ3 + IQ3 = 26`，由 `static_assert`
   守住不会在仍存活时复用 ID；逻辑 ID 与模板运输载体均按派生宽度收紧为 5 bit
   （`CKPT_ID_WIDTH`）。
-  `BPUSnapshot` 存 **GHR / AlignQueue 头尾 / RAS_top**
-  三项（均为 uint8 环绕指针）；TAGE 折叠视图**不做 checkpoint**——它们是 GHR
-  快照的纯函数，`recoverCheckPoint()` 恢复寄存器后直接 `refold` 重算。
-- **元数据传递**：`TAGESCMeta{provIdx, provCtr, provU, altPred, tagePred,
-  baseCnt}` 随 `PredictInfo → FetchDecision` 进入 BPU 私有 per-ckptId 池，
-  分支解析时消费（训练用）。
-- **训练**：两条表更新源（BRU 分支结果、CDB 跳转转移）收敛到**单点原子**训练
-  入口，固定序（BRU 候选先），任意流水级调度下行为一致。BRU 侧维护投机态
-  GHR/RAS/bpCkpt；CDB 侧只改表，永不触碰投机态。**方向表不被 JAL/JALR 恒跳
-  指令污染**（恒跳走 BTB 身份路径，只更新目标侧）。
+  `BPUSnapshot` 存 **16-bit GHR / AlignQueue 头尾 / RAS_top**。恢复时直接写回这些
+  状态；Tournament 不需要额外预测器元数据或派生历史视图。
+- **训练**：BRU 条件分支结果更新 localPHT/globalPHT/selector、condSeen 与目标侧状态；
+  CDB 的 JAL/JALR 转移只更新目标侧。两个训练口共享周期初旧快照，更新在提交处按固定
+  资源优先级合并。BRU 侧维护投机态 GHR/RAS/bpCkpt；CDB 侧永不触碰投机态。
+  **方向表不被 JAL/JALR 恒跳指令污染**。
 
 ---
 
@@ -168,8 +163,8 @@ ckptId），压入 IQ。FQ 头是否可被消费由 IQ 的周期初满状态决�
 |----|------|
 | 取指带宽 | 每周期至多 1 条（FQ 有空位且无背压/无 squash/未闩锁 halt 时） |
 | FQ / IQ | 物理槽 4 / 4；环形队列保留一个空槽判满，实际最多容纳 3 / 3 条 |
-| 方向预测 | T0 1024×2b · LHT 128×12b · T1–T4 各 128 项（8b tag，hist {6,12,24,48}）· useAltOnNa 128×4b |
-| 目标预测 | BTB 64 · Target Cache 32（BHR 256×8b）· RAS 8 · SARAS 16 |
+| 方向预测 | Tournament：localPHT 256×2b · globalPHT 256×2b · selector 256×2b · GHR 16b |
+| 目标预测与身份状态 | BTB 64 · BHT 256×8b · Target Cache 32 · RAS 8 · SARAS 16 · condSeen 512b |
 | checkpoint | ckptId 池 32（存活上界 26；逻辑与模板运输载体均 5 bit） |
 | 预译码 | FQ 尾 jal/jalr 静态分类（call/ret/indirect + 静态 jal 目标） |
 | halt | ICache 头 = `0x0ff00513` ⇒ latch haltFetched 停取 |
@@ -186,13 +181,13 @@ ckptId），压入 IQ。FQ 头是否可被消费由 IQ 的周期初满状态决�
    Manual, Volume I: Unprivileged Architecture*, RV32I Version 2.1,
    §“Unconditional Jumps,” 2026.
    https://docs.riscv.org/reference/isa/v20260120/unpriv/rv32.html#_unconditional_jumps
-2. <a id="front-ref-2"></a>André Seznec and Pierre Michaud, “A Case for
-   (Partially) TAgged GEometric History Length Branch Prediction,” *Journal of
-   Instruction-Level Parallelism*, vol. 8, 2006.
-   https://www.jilp.org/vol8/v8paper1.pdf
-3. <a id="front-ref-3"></a>André Seznec, “A New Case for the TAGE Branch
-   Predictor,” in *Proceedings of MICRO-44*, pp. 117–127, 2011.
-   https://doi.org/10.1145/2155620.2155635
+2. <a id="front-ref-2"></a>Scott McFarling, “Combining Branch Predictors,”
+   Digital Equipment Corporation Western Research Laboratory, Technical Note
+   TN-36, 1993.
+   https://www.hpl.hp.com/techreports/Compaq-DEC/WRL-TN-36.pdf
+3. <a id="front-ref-3"></a>R. E. Kessler, “The Alpha 21264 Microprocessor,”
+   *IEEE Micro*, vol. 19, no. 2, pp. 24–36, 1999.
+   https://doi.org/10.1109/40.755465
 4. <a id="front-ref-4"></a>Tse-Yu Yeh and Yale N. Patt, “Two-Level Adaptive
    Training Branch Prediction,” in *Proceedings of MICRO-24*, pp. 51–61, 1991.
    https://doi.org/10.1145/123465.123475
