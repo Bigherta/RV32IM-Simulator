@@ -1,157 +1,23 @@
-# 后端子系统：发射 · 乱序执行 · 写回 · 提交 · squash 恢复
+# 后端：重命名、执行、写回与恢复
 
-> 负责乱序核心本体：从 IQ 发射（rename）→ 保留站就绪乱序执行 → 结果总线写回 →
-> ROB 按序提交；误预测与记忆违例的排队、整窗恢复也在这里仲裁并触发。
-> 保留站/标签广播源自 Tomasulo 算法，ROB 精确提交与物理寄存器重命名属于后续
-> 现代化扩展 [[1]](#back-ref-1)[[2]](#back-ref-2)[[3]](#back-ref-3)。
-> 相关实现：
-> `StaticArbiter`（组合逻辑的静态仲裁器）、
-> `RS`（去中心化保留站）、
-> `PRF`（中心化物理寄存器堆）、
-> `RAT`（基于物理寄存器实现的寄存器重命名表）、
-> `ROB`（重排序缓冲队列）、
-> `ALU`（基础运算单元）、
-> `MUL`（3-cycle乘法器）、
-> `DIV`（SRT-4除法器）、
-> `AGU`（专供地址计算的运算单元）、
-> `BRU`（专供分支运算的运算单元）、
-> `CDB`（写回总线）、
-> `DynamicArbiter`（时序逻辑的动态仲裁器）。
+## 重命名与执行
 
-取指与译码在前端完成；访存队列（LQ/SQ）与缓存/主存在
-[访存](memory.md) / [缓存](cache.md) 中描述。后端需要掌握"程序序边界"，因此
-ROB 条目同时是前端预测 checkpoint 与 LQ/SQ 尾快照的宿主。
+每拍最多按序分配 1 条、提交 1 条。ROB 有 16 项、PRF 有 48 项；ROB 身份由 epoch 和槽位组成。
 
-M 扩展的两个执行单元（**乘法**、**除法**）在 §4.3 / §4.4 给出实现细节
-（乘法：Booth 编码部分积 + CSA 压缩树；除法：SRT radix-4）。
+有 1 个 ALU。Load 和 Store 地址共用 AGU，条件分支由 BRU 解析，乘除法送专用执行单元。
 
-> 实现词汇：主树以周期初快照、组合总线和 `tick()` 表达时序更新；模板树以
-> `Wire`、`Register` 和 `work()/sync()` 表达同一硬件语义。下文统一使用
-> “组合选择”和“周期更新”，只在源码映射处标出两者的表示差异。
+## 写回与恢复
 
----
+写回有 4 路：ALU、Load、MUL 和 DIV 各有独立结果通路。 指令仍按 ROB 队首顺序退休。
 
-## 1. 边界与职责
+冲刷取消较年轻指令，并按存活指令恢复投机映射和资源。
 
-```
- IQ（前端）─► IssueArbiter ─ rename ─► RS 占槽 / ROB push / PRF alloc / RAT 改名
-                                      │    （含 LQ/SQ push，见 memory.md）
-              ┌───────────────────────▼───────────────────────┐
-              │ RS ──DispatchArbiter──► ALU · MUL · DIV · AGU · BRU │
-              │        （乱序派发，就绪即发）                   │
-              └───────────────────────┬──────────────────────┘
-                                      ▼
-     aluCDB / mulCDB / divCDB / lqCDB ──► PRF 完成写口 / ROB 置位 / 训练
-                                      ▼
-              ROB 按序提交 ──► FlushArbiter（误测/MDP 排队、最老优先）
-```
+## 乘除法
 
-| 结构/模块 | 职责 |
-|------|------|
-| `IssueArbiter`（StaticArbiter） | 组合构建每周期至多 1 个发射包（rename 决策） |
-| `DispatchArbiter`（StaticArbiter） | 保留站 → 执行单元的乱序派发（五独立通道） |
-| `RS` | 七个物理池：Integer 4 / Multiply 2 / **Divide 1** / Load 4 / StoreAddr 4 / StoreValue 4 / Branch 4 |
-| `PRF` | 物理寄存器堆 64：循环序号自由表、完成写口、checkpoint 恢复 |
-| `RAT` | 架构寄存器 → 物理寄存器映射 |
-| `ROB` | 重排序缓冲 16：按序提交、checkpoint 快照宿主、squash 边界 |
-| `ALU` | 算术/逻辑/移位 + JALR 目标（`isControl` 载荷） |
-| `MUL` | M 扩展乘法单元（Booth → CSA → 最终加，3 级流水）——见 §4.3 |
-| `DIV` | M 扩展除法单元（SRT radix-4，单实例迭代，非流水）——见 §4.4 |
-| `AGU` | 访存地址计算（load/store；最老有效地址结果若为 store 则广播给 SQ） |
-| `BRU` | 条件分支执行 |
-| `CDB` | 四路结果总线载荷与门控（aluCDB/lqCDB/mulCDB/**divCDB**） |
-| `FlushArbiter`（DynamicArbiter） | squash 请求队列：检测（BRU 误测/CDB 误测/MDP）、最老优先 |
+MUL 用 radix-4 Booth 编码和 CSA；DIV 用 radix-4 SRT 迭代。
 
-> `RS` 的类别计数在 `RS.hpp` 中为 `integerRS[INTEGERRS_CAP]`、`multiplyRS[MULTIPLYRS_CAP]`、
-> `divideRS[DIVIDERS_CAP]`、`loadRS`、`storeAddressRS`、`storeValueRS`；
-> `Operation` 枚举含 `MUL/MULH/MULHU/MULHSU/DIV/DIVU/REM/REMU`；
-> `RSType` 含 `Integer/Multiply/Divide/Branch/Load/StoreAddr` 六种**执行派发类型**；
-> `StoreValue` 是第七个物理 RS 池，但数据就绪后直接广播给 SQ，不占执行通道；
-> 逻辑派发总线含 `alu/bru/mul/div` 四个普通载荷，以及额外携带 `rsType` 的
-> `agu` 载荷。
-
-ROB 身份采用 packed `{epoch, slot}`：slot 宽度为 `bit_width(ROB_CAP-1)`，总
-`ROB_TAG_WIDTH` 再加 1 个 epoch bit。`robNextTag()` 在 slot 到达 `ROB_CAP-1`
-后翻转 epoch 并跳回 slot 0，因此 `ROB_CAP` 无需是 2 的幂；slot 字段中的空洞编码
-永不分配。模板仓库所有 RobTag `Wire/Register` 均使用该参数宽度（ROB16 为 5 bit），
-phy tag 使用派生 `PHY_TAG_WIDTH`（当前 P48 为 6 bit），`memIndex` 保持 7-bit 编码。
-任何外部完成或恢复请求在按 `robSlot(tag)`
-访问条目前都校验条目保存的完整 tag，避免复用槽被旧身份写入。
-
----
-
-## 2. 发射（Issue / Rename）
-
-`IssueArbiter` 的组合逻辑从 **IQ 头**解析一条指令，构造本周期发射决策：
-
-- **容量门控**：ROB/PRF 自由表/对应 RS 类别/LQ/SQ 同时有空位才发射；
-- **rename**：`allocDest` 时 PRF 分配新物理寄存器（`phy`），RAT 建立新映射，
-  旧映射记入 ROB 条目（`oldPhy`）供提交释放；
-- **操作数解析**：`Operand{tag, imm}`——立即数用 `tag == InvalidPhy` 编码，
-  寄存器操作数记录其当前物理标签；
-- **哨兵域**：`InvalidPhy = 0` 为全物理域唯一哨兵（P0 永不分配、永不映射）；
-  真实物理标签恒在 `1..PRF_CAP-1`；`x0` 恒 0、不参与 rename。
-
-发射决策由各状态模块在周期边界**各自 apply**（写自有纪律）：RAT 改名 / PRF `pop`+LINK /
-ROB push / RS 占槽 / LQ/SQ push（访存指令）/ IQ pop。每周期**至多发射 1 条**
-（单口 rename + 单口 ROB push 的硬件约束）。
-
-**M 扩展的分类落点**（`decodeOp`，`StaticArbiter.cpp`）：`funct3` **0..3** 归乘法族
-（`mul/mulh/mulhsu/mulhu`）→ 专用 `multiplyRS`；`funct3` **4..7** 归除法族
-（`div/divu/rem/remu`）→ 专用 `divideRS`。`tryAllocDivide()` 分配槽位，
-`p.divideRS.{op,src1,src2,robTag}` 填包。**两个单元各有一个专用保留站类别**，
-因此 M 扩展的发射不占用 Integer RS 的槽位。指令语义与除零/溢出规则以 RISC-V
-“M”扩展规范为准 [[4]](#back-ref-4)。
-
----
-
-## 3. 物理寄存器与就绪模型
-
-- PRF 以**packed 循环序号**（`headSeq`/`tailSeq`）管理自由表，条目 `{value, ready}`。
-  序号为 `{1-bit epoch, bit_width(PRF_CAP-1)-bit index}`，槽位由
-  `prfSlot(seq) = seq & PRF_INDEX_MASK` 投影；index 仅使用 `0..PRF_CAP-1`，字段内更高编码
-  是永不分配的空洞。`prfSeqNext()` 在末槽翻转 epoch 并归零 index，2 的幂容量时精确
-  退化为 masked `seq+1`。`prfSeqDistance()` 以 index 差和 epoch 差对应的
-  `±PRF_CAP` 重建模 `2*PRF_CAP` 逻辑距离，避免空洞污染 checkpoint 过期检测；全程只有
-  移位/掩码/加减。checkpoint 保存**分配后的 canonical head**
-  （`allocDest ? prfSeqNext(head) : head`），恢复守卫为
-  `prfSeqDistance(ckptHead, tailSeq) <= PRF_CAP`。参数约束为 `PRF_CAP>REGISTER_CAP`、
-  `ROB_CAP<2*PRF_CAP` 且 `PRF_SEQ_WIDTH<=8`；
-- **保留站不缓存值**：就绪判定 `isOperandReady` 与取值 `getOperandValue` 直接
-  查询 PRF（或返回立即数）。依赖唤醒的延迟表现为：结果经 CDB 写入 PRF 的下一
-  拍，依赖它的保留站自然就绪——**总线数量不再是依赖链长度的上限**；
-- 提交时释放 `oldPhy` 回自由表（packed 循环序号语义天然支持 checkpoint `restoreHead`）。
-
----
-
-## 4. 派发与执行
-
-### 4.1 派发（Dispatch）
-
-`DispatchArbiter` 每个周期给每个执行单元**独立**选一个就绪候选
-（容量/接收门控 + 就绪 + 过 squash 门），五通道互不阻塞：ALU / MUL / DIV / AGU / BRU
-各一个派发载荷。访存指令的地址就绪由 AGU 执行，store 数据就绪由
-StoreValue RS 提供（见 [访存](memory.md) §2）。
-
-**DIV 通道的背压**（`StaticArbiter.cpp` 的 DIV 分支）：先问 `div.canAccept()`，
-再在 `divideRS` 里扫**最老**的就绪条目，选出后置 `dispatch.div.{rsIndex,robTag,rsType=Divide,valid}`；
-命中 squash 窗口则撤销。因为除法器是**单实例迭代单元**，`canAccept()` 为假时整条
-DIV 通道停发；MUL 则只检查自己的输出缓冲是否已满（见 §4.3）。
-
-### 4.2 执行单元总表
-
-| 单元 | 输入候选 | 结果保持 | 行为 |
-|------|----------|----------|------|
-| `ALU` | Integer RS 4 | 4 槽输出缓冲 | 算术/逻辑/移位；**JALR** 目标计算（`isControl` 载荷，经 aluCDB 供 FlushArbiter/BPU 消费） |
-| `MUL` | Multiply RS 2 | 3 级流水 + 4 槽输出缓冲 | RV32M 乘法族：radix-4 **Booth** 19 行部分积 → **3:2 CSA 压缩树**（17 cell）→ 最终全宽加法 [[5]](#back-ref-5)[[6]](#back-ref-6)[[7]](#back-ref-7)。**详见 §4.3** |
-| `DIV` | Divide RS 1 | 单个 `resultValid` 结果寄存器 | RV32M 除法族（`div/divu/rem/remu`）：**SRT radix-4** 数字递推，carry-save 冗余表示 + 常数法 QDS + on-the-fly 商转换 [[9]](#back-ref-9)[[10]](#back-ref-10)[[12]](#back-ref-12)[[13]](#back-ref-13)；**单实例、非流水**（三阶段 valid 归约拒绝新指令）。**详见 §4.4** |
-| `AGU` | Load RS 4 + StoreAddr RS 4 | 4 槽输出缓冲 | load/store 地址 = base+offset；最老有效结果为 store 时组合广播地址事件 |
-| `BRU` | Branch RS 4 | 4 槽输出缓冲 | 条件分支：最老有效 `BranchResult{pcFrom, pcResult, robTag}` 供误预测检测 |
-
-派发不是 FIFO：每个通道扫描相应 RS，按 `robTag` 选择**最老的就绪项**；AGU
-在 Load 与 StoreAddr 两池之间统一比较年龄。ALU/MUL/AGU/BRU 的 4 槽输出缓冲
-同样按 `robTag` 选最老有效结果，而不是按插入槽位或固定队首；DIV 只有一个结果
-寄存器。四路结果总线据此保证“每源每周期至多一个结果”。
+<details>
+<summary>完整乘除法推导、断言与调试轨迹</summary>
 
 ### 4.3 MUL 实现：radix-4 Booth + CSA pseudo-Wallace Tree
 
@@ -778,101 +644,6 @@ B = (q >  0) ? ((oldA << 2) + (q - 1)  ) : ((oldB << 2) + (3 + q));
 
 ---
 
-## 5. 写回：四路结果总线
-
-结果广播/标签唤醒的基本思想来自 Tomasulo 算法 [[1]](#back-ref-1)。本实现的结果总线
-载荷定义在 `CDB.hpp`：`aluCDB` / `lqCDB` / `mulCDB` / `divCDB`——ALU、Load(LQ)、
-MUL、DIV 各驱动一根，**源之间无跨单元仲裁**，每周期至多四个结果并行广播。
-重命名保证同时在飞的目的寄存器使用不同物理标签，消除同地址写冲突；PRF/ROB
-仍按四个逻辑写回端口消费这些并行结果：
-
-- 消费端：PRF 完成写口（置 ready + 写值）、ROB 完成置位（`isCommitReady`）、
-  LQ 完成口（`lqCDB` 带 `memIndex`，见 [访存](memory.md)）、BPU 训练
-  （CDB 侧只改表）；
-- 条件分支/间接跳转的结果载荷挂在 ALU 总线上（`isControl`）——FlushArbiter 在
-  该总线上检测 JALR 目标误预测；
-- **mulCDB 恒每拍可发**（MUL 有 4 槽输出缓冲，取最老 robTag）；
-  **divCDB 受 `resultValid` 门控**（DIV 无输出缓冲，单发），被消费后
-  周期更新清 `resultValid`；完成计算则在另一状态分支置位结果，单发不丢；
-- `VERBOSE=cdb` 输出争用统计（both / 仅单侧 / 若单总线谁胜出），用于量化
-  多总线 vs 单总线的收益边界。
-
-> 设计注记：同一指令只可能由一个执行源完成，"同周期两总线写同一物理寄存器"
-> 在源头上即被排除；保留站查 PRF 就绪的模型使总线数量不构成依赖链瓶颈。
-> **四路 vs 三路**：DIV 单独占一路是为了让它那条长延迟（最多 20 周期）不阻塞
-> MUL/LQ 的写回——若把 div 结果挤进 mulCDB，除法在飞时每次 MUL 完成都要与
-> 除法的单发结果抢同一根线。
-
----
-
-## 6. 提交与 squash 恢复
-
-### 6.1 按序提交
-
-ROB 头按序退休用于把乱序完成重新收敛为精确架构状态 [[2]](#back-ref-2)[[3]](#back-ref-3)。
-ROB 头就绪即提交（每周期至多 1 条）：`REGISTER` 类型释放 `oldPhy` 回 PRF
-自由表；`STORE` 类型在提交点经访存路径写缓存（见 [访存](memory.md)）；
-halt 条目（`0x0ff00513`）提交后 `haltCommitted`，停机条件 = halt 已提交 ∧
-FQ/IQ/ROB/SQ 全空 ∧ DCache 非 busy ∧ DMEM 读写双口均空闲。后三级 drain 条件
-保证 halt 前已提交的 store 真正进入缓存，且相关回填/脏写回不会被进程退出截断。
-进程输出停机时 `x10` 低 8 位。
-
-squash 回卷 `next`，提交推进 `head`，两者可同拍发生：若 ROB 头**严格早于**
-`SquashTag` 且已就绪，则该头项属于保留窗口，可以提交；`head == SquashTag` 时禁止
-提交，以保住 MDP 目标 load 的重放边界。`ROB::willCommit` 是 ROB pop、PRF 释放
-`oldPhy` 与 SQ store committed 通知的共同谓词；PRF 同拍执行 checkpoint `restoreHead`
-和自由表 tail 回收，二者不互斥。
-
-### 6.2 FlushArbiter（squash 排队）
-
-有状态仲裁器，拥有 4 项 squash 请求队列，一个周期内按固定顺序检测：
-
-1. **BRU 分支误测**（BRU 最老有效结果 vs 预测）；
-2. **CDB JALR 误测**（ALU 总线上 `isControl` 载荷 vs 预测）；
-3. **记忆违例 MDP**（更老 store 地址解析发现更年轻 load 已越过，见
-   [访存](memory.md) §4）——同一周期多源请求时**最老优先**。
-
-`arbitResult()` 产出全局 `squashDetect{SquashTag, SquashPC, CkptId}`，随后每个
-模块在自己的周期更新内按该窗口恢复：
-
-| 模块 | 恢复动作 |
-|------|----------|
-| `RAT` | 从被 squash 的最老 ROB 条目的 checkpoint 快照整表回滚 |
-| `PRF` | 按 ROB 条目 checkpoint 的 packed `headSeq`（分配后 canonical 值）`restoreHead`，回卷自由表（未提交分配全部作废） |
-| `BPU` | 按 `ckptId` 恢复 `BPUSnapshot`（GHR/AlignQueue/RAS_top），折叠视图重算（见 [frontend.md](frontend.md) §4.3） |
-| `FQ/IQ/RS/LQ/SQ` | 各按 ROB 条目记录的尾快照回卷（RS 释放槽位、LQ/SQ 按 `getTailSnapshot` 截断） |
-| `MUL` | `flush(tag)`：清 `partialRes/scRes` 的 valid + 清 `outputBuffer` 中不早于 tag 的槽位 |
-| `DIV` | `flush(tag)`：**整机清零**（`resultValid`/`regS`/`regC`/`regA`/`regB`/`dSlice`/`loopTimes`/`prepareValid`/`loopValid`/`fullAdderValid` 全归零）——单实例无缓冲，被 squash 即在算的那条已经作废 |
-| `FetchUnit` | 清 `haltFetched`（若被回卷）并从 `SquashPC` 重启取指 |
-
-误预测惩罚 = squash 排队到前端重启取指之间的固定拍数 + 重执行时间；分支预测
-统计（`VERBOSE=branch`）在解析点记录正确/总数，含方向与目标两个维度。
-
-> `DIV` 的 flush 之所以比 `MUL` 更狠：`MUL` 是流水线，被 squash 的指令可能只在某一级，
-> 逐级清 valid 即可；`DIV` 是**单实例闭环**，在算的那条与寄存器状态一一对应，
-> 无法"部分保留"，只能整体作废——随后由重执行重新 `receive()`。
-
----
-
-## 7. 关键规格
-
-| 项 | 规格 |
-|----|------|
-| ROB / PRF / RAT | 16 / 64 / 32 |
-| 保留站 | Integer 4 · Multiply 2 · **Divide 1** · Load 4 · StoreAddr 4 · StoreValue 4 · Branch 4 |
-| 发射 | 每周期至多 1 条（IQ 头，单口 rename） |
-| 执行/写回 | ALU·AGU·BRU·MUL 各 4 槽；DIV 单实例（三阶段 valid 归约背压）；派发与多槽输出均按 ROB 年龄选最老就绪/有效项 |
-| 结果总线 | 4 根（aluCDB / lqCDB / mulCDB / **divCDB**），无跨单元仲裁 |
-| MUL | Booth radix-4 + 3:2 CSA 压缩树（19 行 → 17 cell → S+C），3 级流水；`mul/mulh/mulhu/mulhsu`；派发门控 = `isFull()`（4 槽 > 在飞 3，无需背压） |
-| DIV | SRT radix-4，$bitsD{=}5,\ estBits{=}9$，共享 ulp 常数法 QDS，on-the-fly 商转换；**单实例非流水** |
-| DIV 位宽 | $B_d=32/33$，$SW=33/34$，$PW=35/36$（寄存器持 $P=4W$）；`MASK` 硬下界 $=PW$ |
-| DIV 延迟 | $3+k$（满宽 17 拍 → **20 周期**）；迭代环路全长进位传播 0 次 |
-| DIV 特判 | $d{=}0$ / `INT_MIN÷-1` / $x<d$ / $x{=}d$ 均为 0 次 SRT 迭代；结果仍经寄存器与 divCDB 广播 |
-| FlushArbiter | 4 项请求队列；检测序 = BRU 误测 → CDB JALR 误测 → MDP；最老优先 |
-| 停机 | halt 提交后继续 drain，直至 FQ/IQ/ROB/SQ 空、DCache 空闲、DMEM 双口空闲；出口 = `x10 & 0xFF` |
-
----
-
 ## 附 A：SRT 符号映射
 
 下表用于把本文记号映射到 Parhami 的计算机算术教材 [[8]](#back-ref-8)；标为“—”的项
@@ -978,68 +749,6 @@ $0\text{xFF000000}\div0\text{x01000000}$（$k{=}5$）、$0\text{xFFFFFFFF}\div1$
 
 ---
 
-## 相关文档
+</details>
 
-- [`../README.md`](../README.md) — 数据通路图 / 周期模型
-- [`frontend.md`](frontend.md) — 预测 checkpoint 的语义与恢复（GHR/RAS）
-- [`memory.md`](memory.md) — LQ/SQ 尾快照的推进、MDP 违例上报（squash 来源之一）
-- [`cache.md`](cache.md) — store 提交落缓存 / load 回填的存储侧行为
-- 仓库根目录 `docs/benchmarks.md` — 各用例 x10/clock 参考值（golden 唯一来源）
-
-## 参考文献
-
-1. <a id="back-ref-1"></a>R. M. Tomasulo, “An Efficient Algorithm for
-   Exploiting Multiple Arithmetic Units,” *IBM Journal of Research and
-   Development*, vol. 11, no. 1, pp. 25–33, 1967.
-   https://doi.org/10.1147/rd.111.0025
-2. <a id="back-ref-2"></a>J. E. Smith and A. R. Pleszkun, “Implementation
-   of Precise Interrupts in Pipelined Processors,” in *Proceedings of ISCA ’85*,
-   pp. 36–44, 1985. https://doi.org/10.1145/327070.327125
-3. <a id="back-ref-3"></a>K. C. Yeager, “The MIPS R10000 Superscalar
-   Microprocessor,” *IEEE Micro*, vol. 16, no. 2, pp. 28–41, 1996.
-   https://doi.org/10.1109/40.491460
-4. <a id="back-ref-4"></a>RISC-V International, *The RISC-V Instruction Set
-   Manual, Volume I: Unprivileged Architecture*, “M” Extension Version 2.0,
-   2026. https://docs.riscv.org/reference/isa/v20260120/unpriv/m-st-ext.html
-5. <a id="back-ref-5"></a>A. D. Booth, “A Signed Binary Multiplication
-   Technique,” *The Quarterly Journal of Mechanics and Applied Mathematics*,
-   vol. 4, no. 2, pp. 236–240, 1951.
-   https://doi.org/10.1093/qjmam/4.2.236
-6. <a id="back-ref-6"></a>O. L. MacSorley, “High-Speed Arithmetic in Binary
-   Computers,” *Proceedings of the IRE*, vol. 49, no. 1, pp. 67–91, 1961.
-   https://doi.org/10.1109/JRPROC.1961.287779
-7. <a id="back-ref-7"></a>C. S. Wallace, “A Suggestion for a Fast
-   Multiplier,” *IEEE Transactions on Electronic Computers*, vol. EC-13,
-   no. 1, pp. 14–17, 1964. https://doi.org/10.1109/PGEC.1964.263830
-8. <a id="back-ref-8"></a>Behrooz Parhami, *Computer Arithmetic: Algorithms
-   and Hardware Designs*, 2nd ed., Oxford University Press, 2010.
-   https://www.ece.ucsb.edu/~parhami/text_comp_arit.htm
-9. <a id="back-ref-9"></a>J. E. Robertson, “A New Class of Digital Division
-   Methods,” *IRE Transactions on Electronic Computers*, vol. EC-7, no. 3,
-   pp. 218–222, 1958. https://doi.org/10.1109/TEC.1958.5222579
-10. <a id="back-ref-10"></a>K. D. Tocher, “Techniques of Multiplication and
-    Division for Automatic Binary Computers,” *The Quarterly Journal of
-    Mechanics and Applied Mathematics*, vol. 11, no. 3, pp. 364–384, 1958.
-    https://doi.org/10.1093/qjmam/11.3.364
-11. <a id="back-ref-11"></a>D. E. Atkins, “Higher-Radix Division Using
-    Estimates of the Divisor and Partial Remainders,” *IEEE Transactions on
-    Computers*, vol. C-17, no. 10, pp. 925–934, 1968.
-    https://doi.org/10.1109/TC.1968.226439
-12. <a id="back-ref-12"></a>M. D. Ercegovac and T. Lang, *Division and Square
-    Root: Digit-Recurrence Algorithms and Implementations*, Kluwer Academic
-    Publishers, 1994. https://link.springer.com/book/9780792394389
-13. <a id="back-ref-13"></a>M. D. Ercegovac and T. Lang, “On-the-Fly
-    Conversion of Redundant into Conventional Representations,” *IEEE
-    Transactions on Computers*, vol. C-36, no. 7, pp. 895–897, 1987.
-    https://doi.org/10.1109/TC.1987.1676986
-14. <a id="back-ref-14"></a>T. Coe, T. Mathisen, C. Moler, and V. Pratt,
-    “Computational Aspects of the Pentium Affair,” *IEEE Computational Science
-    & Engineering*, vol. 2, no. 1, pp. 18–30, 1995.
-    https://doi.org/10.1109/99.372929
-15. <a id="back-ref-15"></a>ISO/IEC 14882:2020, *Programming Languages — C++*,
-    §7.6.7 `[expr.shift]`, 2020. https://eel.is/c++draft/expr.shift
-16. <a id="back-ref-16"></a>IEEE, *IEEE Standard for Floating-Point
-    Arithmetic*, IEEE Std 754-2019, 2019.
-    https://doi.org/10.1109/IEEESTD.2019.8766229
-17. <a id="back-ref-17"></a>纸上谈芯, “基4 SRT除法器,” 知乎专栏, 2021.
-    https://zhuanlan.zhihu.com/p/397563781
+[访存](memory.md)
