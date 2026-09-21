@@ -26,7 +26,7 @@
   写回 + 写分配，tree-PLRU）。D$-% 覆盖 load 与 store 的全部访存访问。
 - 核心容量：ROB 16 / PRF 64 / FQ 4 / IQ 4 / LQ 8 / SQ 8；RS 为
   Integer 4 / Multiply 2 / Divide 1 / Load 4 / StoreAddr 4 / StoreValue 4 / Branch 4。
-- 分支方向预测：Tournament（local/global/selector 各 256×2-bit，16-bit GHR）；目标侧保留
+- 分支方向预测：Tournament（local/global/selector 各 256×2-bit，8-bit GHR）；目标侧保留
   BTB64 / RAS8 / SARAS16 / condSeen512。
 - 预测准确率按控制流类型拆分：**cond** = 条件分支（BRU 解析，方向+目标）；
   **jal** = 直接跳转（JAL，ALU 结果总线）；**jalr** = 间接跳转（JALR）；
@@ -173,9 +173,22 @@ Tournament 落地后，BHT256 与 Target Cache32（及其 `isCall/isIndirect` BT
 服务、没有独立收益：TC 训练/查询只覆盖"真间接"JALR，而全部活动语料（18 例 + IPC 6 例）
 里的 JALR 不是返回就是调用，唯一真间接站点是 `towers` 的 `auipc + jalr x0, -924(x6)`，
 目标固定（TC 与 BTB last-target 相同）。因此按面积/效率权衡删除该闭环。按模板
-`Register<N>` 位宽计再省 **3,104 bit**（BHT 2,048 + TC 1,024 + TargetValid 32），
-完整 BPU 状态 **12,558 → 9,454 bit**，相对 TAGE 基线 24,357 bit 为 **−61.19%**；
+`Register<N>` 位宽计再省 **3,232 bit**（BHT 2,048 + TC 1,024 + TargetValid 32 +
+BTB `isCall/isIndirect` 128），完整 BPU 状态 **12,558 → 9,326 bit**，相对 TAGE 基线
+24,357 bit 为 **−61.71%**；
 18 例与 IPC 语料 x10/clock 逐位不变。
+
+### GHR / checkpoint 载体收紧（2026-09-21）
+
+SARAS `times` 先从 32 bit 收紧为 9 bit：RAS 与 AlignQueue 共 24 个载体，省
+**552 bit**，完整状态 **9,326 → 8,774 bit**。此前的 9,454 / 8,902 账本遗漏了随
+Target Cache 一并删除的 BTB `isCall/isIndirect` 两个 64 项元数据位（128 bit）。
+
+Tournament 的 globalPHT/selector 索引均为 `((PC>>2)^GHR)&255`，故 GHR 的高 8 位从未
+被消费；`GHR_WIDTH=8` 及其容量断言将 live GHR 和 32 份 checkpoint 中的 GHR 同步收紧，
+省 **8 + 32×8 = 264 bit**。SARAS `alignHead` 只被 snapshot/restore，无推进或消费者，
+删除其 live 与 checkpoint 载体再省 **8 + 32×8 = 264 bit**。完整 BPU 状态最终为
+**8,774 → 8,246 bit**，相对 TAGE 基线 24,357 bit 为 **−66.15%**；该变换不改变预测索引。
 
 ## 复核记录
 
@@ -195,7 +208,9 @@ Tournament 落地后，BHT256 与 Target Cache32（及其 `isCall/isIndirect` BT
 | 2026-09-19 | PRF_CAP 非 2 次幂参数化（空洞 index）+ CKPT64→32 | 空洞-index helper 已验证容量 33..128；活动值取 `REGISTER_CAP+ROB_CAP=48`。P64 在 CKPT32 下主树/模板 Release/模板 `_DEBUG` 均 **18/18 x10+cycles** 对 golden；P48 Release **18/18** 双树逐拍一致，`_DEBUG` 的 magic/qsort/tak 3/3；P65 Release 重点+快用例 12/12、`_DEBUG` 3/3；P33 极限停顿 3/3（clock：magic **1,459,187** / qsort **3,432,364** / tak **3,130,845**），均 x10 对 golden且双树 clock 一致，pi 按计划跳过。CKPT32 下 PRF seq/checkpoint 存储为 P33..64 **238 bit**、P65..128 **272 bit**；三类 checkpoint 数组总计再省 **10,592 bit** |
 | 2026-09-19 | 运输载体按派生宽度收紧（phy 7→6 / ckpt 6/8→5 / 队列指针与 LSQ 快照就紧） | 纯载体收窄：新增 `PHY_TAG_WIDTH`/`CKPT_ID_WIDTH`/`FQ·IQ·LQ·SQ_PTR_WIDTH` 集中常量与 `static_assert`，模板共省 **1,253 bit**。模板 Release **18/18 x10+cycles** 对 golden，`_DEBUG` 定向 5/5 零断言；IPC 语料双树逐位一致（cycles 加权 IPC **0.696150**），并首次用当前基线刷新 `ipc_benchmarks.md`（旧表为更早容量配置遗留） |
 | 2026-09-20 | TAGE 方向侧替换为 Tournament，目标侧保持不变；BTB-miss taken 门控 A/B 后采用 hit-gated A | 完整 BPU 状态 **24,357→12,558 bit（-48.44%）**；两树 Release **18/18 x10+clock** 与 IPC **6/6** 逐项一致。活动总 clock **12,237,892**，加权 IPC **0.553703**，分支正确率 **93.8367%**（1,307,716 / 1,393,609） |
-| 2026-09-20 | 删除 Target Cache 与 BHT（面积/效率权衡；无独立可观测收益） | 两树 Release **18/18 x10+clock** 与基线逐位一致（总 clock **12,237,892**），IPC **6/6** 不变；完整 BPU 状态再省 **3,104 bit** → **9,454 bit（−61.19% vs TAGE）** |
+| 2026-09-20 | 删除 Target Cache 与 BHT（面积/效率权衡；无独立可观测收益） | 两树 Release **18/18 x10+clock** 与基线逐位一致（总 clock **12,237,892**），IPC **6/6** 不变；完整 BPU 状态再省 **3,232 bit** → **9,326 bit（−61.71% vs TAGE）**，含同步删除的 BTB `isCall/isIndirect` 128 bit |
+| 2026-09-20 | SARAS `times` 载体 32→9 bit | RAS 与 AlignQueue 共 24 个载体，省 **552 bit**；完整 BPU 状态 **9,326→8,774 bit（−63.98% vs TAGE）** |
+| 2026-09-21 | BPU GHR 16→8 bit + 删除无消费者 `alignHead` | GHR 高 8 位不参与 256 项 gshare 索引；两项各省 live 8 + checkpoint 32×8 = 264 bit。完整 BPU 状态 **8,774→8,246 bit（−66.15% vs TAGE）** |
 
 取数命令（WSL ELF 构建，逐用例）：
 

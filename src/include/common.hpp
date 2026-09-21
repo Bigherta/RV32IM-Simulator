@@ -51,7 +51,16 @@ constexpr int BTB_CAP = 64;
 constexpr int BHT_CAP = 1 << 8;
 constexpr int SELECTOR_CAP = 1 << 8;
 constexpr int CONDSEEN_CAP = 1 << 9; // "this PC is a conditional" filter
-constexpr uint16_t HISTORY_MASK = 0xFFFF;
+// GHR lives entirely in the direction-table index domain: every consumer
+// folds it in as ((PC>>2) ^ GHR) & (CAP-1), so only the low GHR_WIDTH bits
+// are observable. The shift feedback and the checkpoint carrier are sized
+// to this width; growing BHT_CAP/SELECTOR_CAP past 2^GHR_WIDTH requires
+// growing GHR with them (guarded below).
+constexpr int GHR_WIDTH = 8;
+static_assert((1 << GHR_WIDTH) >= BHT_CAP &&
+                  (1 << GHR_WIDTH) >= SELECTOR_CAP,
+              "GHR must cover the direction-table index width");
+constexpr uint16_t HISTORY_MASK = (1u << GHR_WIDTH) - 1;
 constexpr int RAS_CAP = 8;
 constexpr int ALIGNQ_CAP = 16;
 constexpr uint8_t PRF_CAP = ROB_CAP + REGISTER_CAP;
@@ -271,7 +280,7 @@ struct Operand {
 
 struct PredictInfo {
   bool taken;
-  int32_t predictPC;
+  uint32_t predictPC;
   bool btbHit = false;
   bool unconditional = false;
   bool condSeen = false; // filter says this PC resolved as conditional before
@@ -286,12 +295,12 @@ struct BTBEntry {
 };
 
 struct BPUSnapshot {
-  // SARAS: the checkpoint keeps GHR, AlignQueue head+tail, and RAS_top.
-  // With RASEntry{retPC,times}, the height != call/ret depth, so RAS_top
-  // is checkpointed directly. All three are uint8_t — ring counters wrap
-  // at 256, well beyond the current ROB_CAP and local queue capacities.
-  uint16_t GHR_snapshot;
-  uint8_t alignHead;
+  // SARAS: the checkpoint keeps the direction GHR, the AlignQueue tail, and
+  // RAS_top. With RASEntry{retPC,times}, the height != call/ret depth, so
+  // RAS_top is checkpointed directly. The counters are uint8_t — ring
+  // counters wrap at 256, well beyond the current ROB_CAP and local queue
+  // capacities.
+  uint8_t GHR_snapshot;
   uint8_t alignTail;
   uint8_t RAS_top;
 };

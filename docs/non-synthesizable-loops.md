@@ -90,7 +90,7 @@ SRT DIV 是当前范本：商位递推由 `loopTimes` 和阶段 valid 驱动，�
 - 禁止以运行期计数、输入长度、容器当前长度或算法收敛条件作为组合数据通路的循环边界。
 - 禁止在一次 `work()`/`tick()` 中用 `while` 或数据相关 `break` 隐式完成可变次数的迭代。
 - 有固定硬上界时，改成固定边界加 valid/enable；需要跨拍复用时，改成显式 FSM。
-- “底层数组容量固定”不够；实际循环条件也必须固定。`Plan::tab[32]` 配 `q < nTab` 仍是运行期边界（该容器早期为 `tab[64]`，缩容并不改变问题性质）。
+- “底层数组容量固定”不够；实际循环条件也必须固定。（历史实例：模板 BPU 曾以 `Plan::tab[32]` 配 `q < nTab` 打包稀疏写意图，已于 2026-09-20 改为固定写口仲裁。）
 
 ## 3. 当前审计状态
 
@@ -99,27 +99,25 @@ SRT DIV 是当前范本：商位递推由 `loopTimes` 和阶段 valid 驱动，�
 | 字节装配与 store 合并 | 已完成 | 主树 DMEM/DCache 与模板树 DCache 使用固定四 lane；`n`/`n_bytes` 只控制 lane 使能。1B/2B 符号扩展使用显式掩码（主树在 `DCache::PrRd` 与 `DMEM::load_n_bytes` 内联，模板树集中在 `DCache::extractValue`） |
 | FlushArbiter 有序插入 | 已完成 | 两树均以 `FLUSHARBITER_CAP`（=4）固定扫描和固定后移网络实现；`scanning`、`w`、`pos` 只参与选择和写使能（主树在 `FlushArbiter::receive`，模板树在匿名命名空间的 `insertPlain`；模板树的 `selectOldest()` 供四个输出 Wire 共用） |
 | ROB ready 去重 | 已完成 | 模板树使用零初始化的逐槽 `readyWrite[]/readyData[]` 写意图幂等归约，再固定遍历 ROB 槽，每槽至多一次寄存器写；已移除 `seen[]/nSeen` 可变长度查找。主树仍是逐次 `setROBCommitReady()` 的幂等写，遍历边界同样固定（`ROB_CAP` 与 `MEMQ_SCAN_WINDOW`） |
-| Tournament 方向预测 | 已完成 | 两树 local/global/selector 均为固定 256 项表（`BHT_CAP`/`SELECTOR_CAP`），16-bit GHR 直接参与 gshare 索引；折叠历史的重建/增量循环已随旧 TAGE 方案一并消失（该循环曾记作审计项 C-6），源码中已无 TAGE 折叠视图 |
+| Tournament 方向预测 | 已完成 | 两树 local/global/selector 均为固定 256 项表（`BHT_CAP`/`SELECTOR_CAP`），8-bit GHR 直接参与 gshare 索引；折叠历史的重建/增量循环已随旧 TAGE 方案一并消失（该循环曾记作审计项 C-6），源码中已无 TAGE 折叠视图 |
 | SRT DIV 递推 | 设计正确，无需改写为组合展开 | 两树均以固定宽度计数器和阶段 valid 实现多周期 FSM，`DIV.cpp` 内无 C++ 循环 |
 | MUL 空槽选择 | 两树形状不一致 | 模板树 `MUL::work()` 已是 `found` 标志全遍历；主树 `MUL::calculateMulRes()` 仍以 `break` 在首个空槽退出 |
 | LQ store-forward 环扫描 | **仍需处理** | 两树均以 `if (!isActive(cur)) break;` 在环上首个空槽早退（主树 `LQ::applyStoreForward`，模板树 `work()` 的两处转发循环） |
 | 队列扫描与早退 | 已完成（形态可接受） | `AGU`/`ALU`/`BRU`/`MUL` 的 `isFull()`/`isEmpty()`/`remove()` 与 `RSUnit::tryAlloc*` 均为固定容量遍历；早退只影响宿主的短路求值，不改变端口写纪律，展开方式待综合确认 |
 | 宿主侧统计与转储 | 已完成（host-only） | 主树 `BPU::dumpBpMiss()` 的报告循环、模板树 `dark::CPU::run_once()` 的模块遍历；按 §2.3 必须排除在硬件顶层之外 |
-| 模板 BPU `Plan::nTab` | **仍需处理** | merge、查重和 apply 仍有 `q < src.nTab`、`m < merged.nTab` 等运行期循环边界 |
+| 模板 BPU 表更新写口 | 已完成（2026-09-20） | 固定形状 `BTBWriteIntent`（`lineWrite`/`targetWrite` + `index` + 载荷）按资源仲裁：方向表（localPHT/globalPHT/selector/condSeen）唯一写口直写，BTB 三写口 `fetch > cdb > bru`、line 与 target 两组独立；无 `nTab`/merge/switch/运行期循环 |
 
-按 trip count 归类：模板树 `src/` 的 141 个循环里，以运行期量作边界的只有 `Plan` 相关的 3 处（merge 查重、merge 写入、apply），其余全部是容量常量、字面量或常量移位表达式；主树 `src/` 的 102 个循环里，以运行期量作边界的只有 §2.3 的 3 个宿主循环，数据通路侧没有任何以运行期量作 trip count 的循环。上表中 MUL/LQ 两行属于另一类问题——边界是常量，但循环体内存在数据相关早退（§2.4），两者不要合并计数。
+按 trip count 归类：模板树 `src/` 的 138 个循环里，数据通路侧已无任何以运行期量作边界的循环（原 `Plan` 相关的 3 处：merge 查重、merge 写入、apply，已随该结构删除），其余全部是容量常量、字面量或常量移位表达式；主树 `src/` 的 102 个循环里，以运行期量作边界的只有 §2.3 的 3 个宿主循环，数据通路侧没有任何以运行期量作 trip count 的循环。上表中 MUL/LQ 两行属于另一类问题——边界是常量，但循环体内存在数据相关早退（§2.4），两者不要合并计数。
 
-当前已知的数据通路循环问题集中在模板 BPU 的 `Plan::nTab`。Tournament 改写已将容器收紧为
-`Plan::tab[32]`，但 `nTab` 仍由当拍训练行为决定；嵌套的压缩列表扫描表达的是软件式可变
-长度集合，不是明确的固定端口网络。注意主树 BPU 是 `comb()`/`tick()` 参考实现、根本没有 `Plan`
-结构，因此该项只在模板树成立，不要在主树里找对应位置。
-
-处理该项时应优先按资源拆成固定写意图、valid 位和明确优先级；最低要求是所有候选槽都按固定容量遍历，以 valid 作为条件。不能只把 `32` 换成另一个常量而保留 `q < nTab`。同时必须保持现有语义：
-
-- 合并优先级 `fi > cdb > bru`。
-- 同一物理 Register 每拍最多一次赋值。
-- BTB 更新的既定覆盖顺序和双训练口共享周期初快照不变。
-- 固定网络的面积与关键路径可接受；若 32×32 查重过大，应按表资源直接仲裁，而不是机械铺开平方级比较器。
+模板 BPU 的 `Plan::nTab` 已于 2026-09-20 收口：`tab[32]` + `nTab` + merge 查重/写入 + apply
+整体删除，改为每训练口一个固定形状的 `BTBWriteIntent`（`lineWrite`/`targetWrite` + `index` +
+载荷），提交处按资源显式仲裁。方向表（localPHT/globalPHT/selector/condSeen）只有 BRU 条件路径
+一个写口，直接写；BTB 的 `actualPC/valid/unconditional/isRet` 与 `target` 分两组按
+`fetch > cdb > bru` 仲裁，同行冲突用 `sameBTBLine` 抑制，保证每个物理 Register 每拍至多一次赋值。
+三写口 6 种仲裁顺序做了全量 A/B（18 例 × 6 组，逐例 x10/clock/retired 完全一致，总 clock 均为
+12,237,892）：语料中不存在"异值同行冲突"，顺序不可观测，故保留与主树写序一致的
+`fetch > cdb > bru`，不引入时序漂移。主树 BPU 是 `comb()`/`tick()` 参考实现、原本就没有 `Plan`
+结构。行为门禁：双树 18/18 x10+cycles，`_DEBUG` 全量零双写。
 
 ## 4. 审计与验收流程
 
