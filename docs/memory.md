@@ -68,8 +68,9 @@ FETCHING ────────── store 转发 ─────────
 ```
 
 - `LQ.applyStoreForward` 可把 `NOTREADY` 或已发请求的 `FETCHING` load 直接置为
-  `READY`；后到的 DCache 应答只接受仍为 `FETCHING` 且 `robTag/memIndex` 匹配的项，
-  因而不会覆盖更新鲜的转发值；
+  `READY`；后到的 DCache 应答只在该槽**周期初已是 `FETCHING`**、`robTag/memIndex`
+  匹配且本拍有效状态仍为 `FETCHING` 时接受。周期初状态阻止 squash 后复用同一槽位
+  与 tag 的新 load 接收旧应答，本拍有效状态则保证更新鲜的 store 转发值优先；
 - AGU 首次解析 load 地址时，SQ 只在“最年轻的更老同址 store 数据已就绪，且它与
   load 之间没有地址未知 store”时立即转发；
 - store 离开 ROB 后可能因 DCache busy 继续留在 SQ，因此提交状态由 ROB commit

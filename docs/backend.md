@@ -839,7 +839,7 @@ squash 回卷 `next`，提交推进 `head`，两者可同拍发生：若 ROB 头
 |------|----------|
 | `RAT` | 从被 squash 的最老 ROB 条目的 checkpoint 快照整表回滚 |
 | `PRF` | 按 ROB 条目 checkpoint 的 packed `headSeq`（分配后 canonical 值）`restoreHead`，回卷自由表（未提交分配全部作废） |
-| `BPU` | 按 `ckptId` 恢复 `BPUSnapshot`（16-bit GHR / AlignQueue 头尾 / RAS_top）；无派生折叠视图需要重建（见 [frontend.md](frontend.md) §4.3） |
+| `BPU` | 按 `ckptId` 恢复 `BPUSnapshot`（8-bit GHR / AlignQueue tail / RAS_top）；无派生折叠视图需要重建（见 [frontend.md](frontend.md) §4.3） |
 | `FQ/IQ/RS/LQ/SQ` | 各按 ROB 条目记录的尾快照回卷（RS 释放槽位、LQ/SQ 按 `getTailSnapshot` 截断） |
 | `MUL` | `flush(tag)`：清 `partialRes/scRes` 的 valid + 清 `outputBuffer` 中不早于 tag 的槽位 |
 | `DIV` | `flush(tag)`：**整机清零**（`resultValid`/`regS`/`regC`/`regA`/`regB`/`dSlice`/`loopTimes`/`prepareValid`/`loopValid`/`fullAdderValid` 全归零）——单实例无缓冲，被 squash 即在算的那条已经作废 |

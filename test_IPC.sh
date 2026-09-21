@@ -61,6 +61,10 @@ for data in "$CORPUS"/*/*.data; do
     printf '%s: invalid x10 output: %s\n' "$name" "$x10" >&2
     exit 1
   fi
+  if [ "$x10" -ne 0 ]; then
+    printf '%s: self-check failed: x10=%s (expected 0)\n' "$name" "$x10" >&2
+    exit 1
+  fi
   if [[ ! "$clock" =~ ^[0-9]+$ ]]; then
     printf '%s: missing or invalid clock statistic\n' "$name" >&2
     exit 1

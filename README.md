@@ -173,8 +173,9 @@ gcd 含 4 条 `div/rem`、bulgarian 含 6 条 `mul` 和 9 条 `div/rem`、pi 含
 
 ### 4.3 IPC 语料 — `test_IPC.sh`
 
-遍历 `data/testcases_ipc/*/*.data`（median/multiply/qsort/rsort/towers/vvadd），检查退出码
-与统计行格式，原子更新 `docs/ipc_benchmarks.md`。不读 golden，行为正确性由 §4.1 / §4.2 负责。
+遍历 `data/testcases_ipc/*/*.data`（median/multiply/qsort/rsort/towers/vvadd），检查退出码、
+要求每例自校验结果 `x10 == 0` 并校验统计行格式，随后原子更新 `docs/ipc_benchmarks.md`。
+脚本不读逐例 golden；任一自校验失败时保持原报告不变并以非 0 退出。
 
 ```bash
 ./test_IPC.sh                        # 全量并更新报告
@@ -188,10 +189,10 @@ BP_BIN=/path/to/code ./test_IPC.sh   # 指定二进制
 - **RTL 化重建线**：`RISC-V-Simulator-Template/`（git submodule）以 `Register` / `Wire` /
   `dark::Module` 框架把同一架构逐模块改写为可综合风格；两树共用 golden，clock 逐位对拍一致是迁移硬门禁。
 - **DIV/REM 已落地（2026-09-12）**：SRT radix-4 除法器完成接线、验证并同步接入模板树（见 §4.2）。
-- **BPU 面积终态（2026-09-20）**：方向侧采用 local/global/selector 各 256×2-bit 的 Tournament
-  预测器与 16-bit GHR；目标侧保留 BTB/RAS/SARAS。间接目标缓存（BHT+Target Cache）在活动语料上
-  无可观测收益，已按面积/效率权衡删除；完整 BPU 状态由 TAGE 基线的 24,357 bit 降至 9,454 bit
-  （-61.19%），18 例总 clock 为 12,237,892。
+- **BPU 面积终态（2026-09-21）**：方向侧采用 local/global/selector 各 256×2-bit 的 Tournament
+  预测器与 8-bit GHR；目标侧保留 BTB/RAS/SARAS。间接目标缓存（BHT+Target Cache）在活动语料上
+  无可观测收益，已按面积/效率权衡删除；删除无消费者 `alignHead` 后完整 BPU 状态由 TAGE 基线的
+  24,357 bit 降至 8,246 bit（-66.15%），18 例总 clock 为 12,237,892。
 - **取舍复核**：`VERBOSE=icache` / `cdb` 的命中率与总线争用画像长期保留，供缓存几何、总线拆分、预测器容量等决策参考。
 
 ## 6. 参考资料

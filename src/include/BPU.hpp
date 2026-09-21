@@ -41,7 +41,7 @@ struct DirectionPred {
   uint8_t localPHT[BHT_CAP] = {};
   uint8_t globalPHT[BHT_CAP] = {};
   uint8_t selector[SELECTOR_CAP] = {};
-  uint16_t GHR = 0;
+  uint8_t GHR = 0;
   DirectionPred() {
     std::memset(localPHT, 1, sizeof(localPHT));
     std::memset(globalPHT, 1, sizeof(globalPHT));
@@ -50,15 +50,14 @@ struct DirectionPred {
 };
 
 // Target prediction ("where to jump"): BTB (targets + jump type) and the
-// SARAS ring return-address stack with its correction queue. All three
-// ring counters are uint8_t and wrap at 256, well beyond the current
+// SARAS ring return-address stack with its correction queue. Its ring
+// counters are uint8_t and wrap at 256, well beyond the current
 // ROB_CAP=16 and local queue capacities (ALIGNQ_CAP=16/RAS_CAP=8).
 struct TargetPred {
   BTBEntry BTB[BTB_CAP] = {};
   RASEntry RAS[RAS_CAP] = {};
   uint8_t RAS_top = 0; // ring write pointer (wraps at 256)
   AlignEntry alignQueue[ALIGNQ_CAP] = {};
-  uint8_t alignHead = 0; // AlignQueue head (advanced at commit)
   uint8_t alignTail = 0; // AlignQueue tail (appended on CALL-dedup / RET)
   // Branch-type filter: set when a PC resolves as a conditional (taken or
   // not). Lets the fetch stage shift the GHR for conditionals that are not
@@ -71,10 +70,10 @@ class BPU {
 private:
   struct Cand {
     bool valid = false;
-    int32_t pc = 0;
+    uint32_t pc = 0;
     bool taken = false;
-    int32_t target = 0;
-    uint16_t ghr = 0;
+    uint32_t target = 0;
+    uint8_t ghr = 0;
     bool cond = true;
     bool isRet = false;
   };
@@ -105,8 +104,8 @@ private:
     missPC[i] = pc;
   }
 
-  void update(int32_t pc, bool taken, int32_t target, uint16_t ghr);
-  void updateJump(int32_t pc, int32_t target, bool isRet);
+  void update(uint32_t pc, bool taken, uint32_t target, uint8_t ghr);
+  void updateJump(uint32_t pc, uint32_t target, bool isRet);
   void shiftGHR(bool taken);
 
 public:
@@ -119,7 +118,7 @@ public:
   uint64_t getJalrTotal() const { return jalrTotal; }
   uint64_t getJalrCorrect() const { return jalrCorrect; }
   void dumpBpMiss() const;
-  PredictInfo predict(int32_t pc) const;
+  PredictInfo predict(uint32_t pc) const;
 
   BPUSnapshot snapshotCheckPoint() const;
   void recoverCheckPoint(const BPUSnapshot &);

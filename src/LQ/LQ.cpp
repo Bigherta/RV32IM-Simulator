@@ -179,10 +179,12 @@ void LQ::tick(const LQInput &input, systemState &CPUstate) {
   if (retireLoad)
     CPUstate.LQModule.pop();
   // load response from DMEM
-  if (input.loadResp.valid)
-    CPUstate.LQModule.writeValueIfFetching(input.loadResp.robTag,
-                                           memSlot(input.loadResp.memIndex),
-                                           input.loadResp.value);
+  if (input.loadResp.valid) {
+    auto index = memSlot(input.loadResp.memIndex);
+    if (getValueState(index) == ValueState::FETCHING)
+      CPUstate.LQModule.writeValueIfFetching(input.loadResp.robTag, index,
+                                             input.loadResp.value);
+  }
   // CDB consume (LQ bus)
   if (input.cdbOutput.valid) {
     if (!input.squashDetect.needSquash ||

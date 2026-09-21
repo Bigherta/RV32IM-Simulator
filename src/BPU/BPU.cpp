@@ -32,7 +32,7 @@ FetchDecision FetchDecision::build(const BPU &bp, uint32_t pc,
   return fdec;
 }
 
-PredictInfo BPU::predict(int32_t pc) const {
+PredictInfo BPU::predict(uint32_t pc) const {
   const uint32_t p2 = static_cast<uint32_t>(pc) >> 2;
   const uint32_t localIndex = p2 & (BHT_CAP - 1);
   const uint32_t globalIndex = (p2 ^ dir.GHR) & (BHT_CAP - 1);
@@ -59,11 +59,11 @@ PredictInfo BPU::predict(int32_t pc) const {
     btbHit = false;
     taken = false;
   }
-  // uint32 bit-vector add: signed int32_t add past the range is host UB.
-  int32_t predictPC = static_cast<int32_t>(static_cast<uint32_t>(pc) + 4u);
+  // uint32 bit-vector add: signed uint32_t add past the range is host UB.
+  uint32_t predictPC = static_cast<uint32_t>(static_cast<uint32_t>(pc) + 4u);
   if (taken && btbHit) {
     if (isRet && tgt.RAS_top > 0)
-      predictPC = static_cast<int32_t>(
+      predictPC = static_cast<uint32_t>(
           tgt.RAS[(tgt.RAS_top - 1) & (RAS_CAP - 1)].retPC);
     else
       predictPC = tgt.BTB[BTB_index].target;
@@ -76,7 +76,7 @@ PredictInfo BPU::predict(int32_t pc) const {
   return out;
 }
 
-void BPU::update(int32_t pc, bool taken, int32_t target, uint16_t ghr) {
+void BPU::update(uint32_t pc, bool taken, uint32_t target, uint8_t ghr) {
   const uint32_t p2 = static_cast<uint32_t>(pc) >> 2;
   const uint32_t localIndex = p2 & (BHT_CAP - 1);
   const uint32_t globalIndex = (p2 ^ ghr) & (BHT_CAP - 1);
@@ -123,7 +123,7 @@ void BPU::update(int32_t pc, bool taken, int32_t target, uint16_t ghr) {
   // the per-slot 8b BHR consumed by the Target Cache hash.
 }
 
-void BPU::updateJump(int32_t pc, int32_t target, bool isRet) {
+void BPU::updateJump(uint32_t pc, uint32_t target, bool isRet) {
   const uint32_t p2 = static_cast<uint32_t>(pc) >> 2;
   auto BTB_index = p2 & (BTB_CAP - 1);
   tgt.BTB[BTB_index].actualPC = static_cast<uint32_t>(pc);
@@ -156,7 +156,7 @@ void BPU::dumpBpMiss() const {
 }
 
 void BPU::shiftGHR(bool taken) {
-  dir.GHR = static_cast<uint16_t>(
+  dir.GHR = static_cast<uint8_t>(
       ((static_cast<uint32_t>(dir.GHR) << 1) | (taken ? 1u : 0u)) &
       HISTORY_MASK);
 }
@@ -164,7 +164,6 @@ void BPU::shiftGHR(bool taken) {
 BPUSnapshot BPU::snapshotCheckPoint() const {
   BPUSnapshot s;
   s.GHR_snapshot = dir.GHR;
-  s.alignHead = tgt.alignHead;
   s.alignTail = tgt.alignTail;
   s.RAS_top = tgt.RAS_top;
   return s;
@@ -172,7 +171,6 @@ BPUSnapshot BPU::snapshotCheckPoint() const {
 
 void BPU::recoverCheckPoint(const BPUSnapshot &ckpt) {
   dir.GHR = ckpt.GHR_snapshot;
-  tgt.alignHead = ckpt.alignHead;
   tgt.alignTail = ckpt.alignTail;
   tgt.RAS_top = ckpt.RAS_top;
 }
@@ -201,9 +199,9 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
            ROB::isOlder(brRobTag, input.squashDetect.SquashTag))) {
         bru.valid = true;
         // PC values are uint32 bit vectors.
-        bru.pc = static_cast<int32_t>(pcFrom);
+        bru.pc = static_cast<uint32_t>(pcFrom);
         bru.taken = pcResult != pcFrom + 4u;
-        bru.target = static_cast<int32_t>(pcResult);
+        bru.target = static_cast<uint32_t>(pcResult);
         const uint8_t cid = input.ROBModule.getCkptId(robSlot(brRobTag));
         bru.ghr = bpCkpt[cid].GHR_snapshot;
       }
@@ -241,7 +239,7 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
       cdb.valid = true;
       cdb.pc = input.ROBModule.getPC(robIdx);
       cdb.taken = true;
-      cdb.target = static_cast<int32_t>(pc);
+      cdb.target = static_cast<uint32_t>(pc);
       cdb.ghr = bpCkpt[input.ROBModule.getCkptId(robIdx)].GHR_snapshot;
       cdb.cond = false;
       cdb.isRet = input.ROBModule.isRet(robIdx);

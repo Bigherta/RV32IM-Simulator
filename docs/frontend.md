@@ -109,7 +109,7 @@ ckptId），压入 IQ。FQ 头是否可被消费由 IQ 的周期初满状态决�
 | 部件 | 配置 | 说明 |
 |------|------|------|
 | localPHT | 256 × 2-bit | 索引 = `(PC >> 2) & 255`；计数器 `>=2` 预测 taken |
-| globalPHT | 256 × 2-bit | 索引 = `((PC >> 2) ^ GHR[15:0]) & 255`；计数器 `>=2` 预测 taken |
+| globalPHT | 256 × 2-bit | 索引 = `((PC >> 2) ^ GHR[7:0]) & 255`；计数器 `>=2` 预测 taken |
 | selector | 256 × 2-bit | 与 globalPHT 使用同一索引；`>=2` 选择 global，否则选择 local |
 | condSeen 过滤器 | 512 × 1-bit | 条件分支解析时置位；取指侧 `btbHit ∨ condSeen` 才移位 GHR——避免"从不 taken 的分支不留历史、BTB 驻留漂移改变历史成员"两类缺口 |
 
@@ -132,18 +132,20 @@ selector 选出的结果记为 `directionTaken`。最终条件分支方向还受
 
 ### 4.3 GHR 与 checkpoint
 
-- **GHR 移位**：16-bit GHR 在取指侧于 `btbHit ∨ condSeen` 时随预测结果移位（`FetchDecision`
+- **GHR 移位**：8-bit GHR 在取指侧于 `btbHit ∨ condSeen` 时随预测结果移位（`FetchDecision`
   携带 `shift/shiftValue`）；条件分支的解析结果也回填历史——历史成员资格不依赖
   BTB 驻留。
 - **checkpoint**：每次取指消耗一个 `ckptId`。活动池 `CKPT_CAP=32`，大于
   `CKPT_LIVE_MAX = ROB16 + ICache request4 + FQ3 + IQ3 = 26`，由 `static_assert`
   守住不会在仍存活时复用 ID；逻辑 ID 与模板运输载体均按派生宽度收紧为 5 bit
   （`CKPT_ID_WIDTH`）。
-  `BPUSnapshot` 存 **16-bit GHR / AlignQueue 头尾 / RAS_top**。恢复时直接写回这些
-  状态；Tournament 不需要额外预测器元数据或派生历史视图。
+  `BPUSnapshot` 存 **8-bit GHR / AlignQueue tail / RAS_top**。`alignHead` 无消费者且不参与
+  队列索引，已删除。恢复时直接写回其余状态；
+  Tournament 不需要额外预测器元数据或派生历史视图。
 - **训练**：BRU 条件分支结果更新 localPHT/globalPHT/selector、condSeen 与目标侧状态；
-  CDB 的 JAL/JALR 转移只更新目标侧。两个训练口共享周期初旧快照，更新在提交处按固定
-  资源优先级合并。BRU 侧维护投机态 GHR/RAS/bpCkpt；CDB 侧永不触碰投机态。
+  CDB 的 JAL/JALR 转移只更新目标侧。两个训练口共享周期初旧快照；表更新按资源固定写口
+  仲裁（`fetch > cdb > bru`，BTB 的 line 四字段与 target 分两组），每个物理 Register
+  每拍至多一次写。BRU 侧维护投机态 GHR/RAS/bpCkpt；CDB 侧永不触碰投机态。
   **方向表不被 JAL/JALR 恒跳指令污染**。
 
 ---
@@ -165,8 +167,8 @@ selector 选出的结果记为 `directionTaken`。最终条件分支方向还受
 |----|------|
 | 取指带宽 | 每周期至多 1 条（FQ 有空位且无背压/无 squash/未闩锁 halt 时） |
 | FQ / IQ | 物理槽 4 / 4；环形队列保留一个空槽判满，实际最多容纳 3 / 3 条 |
-| 方向预测 | Tournament：localPHT 256×2b · globalPHT 256×2b · selector 256×2b · GHR 16b |
-| 目标预测与身份状态 | BTB 64 · RAS 8 · SARAS 16 · condSeen 512b |
+| 方向预测 | Tournament：localPHT 256×2b · globalPHT 256×2b · selector 256×2b · GHR 8b |
+| 目标预测与身份状态 | BTB 64 · RAS 8（times 9b）· SARAS 16（times 9b）· condSeen 512b |
 | checkpoint | ckptId 池 32（存活上界 26；逻辑与模板运输载体均 5 bit） |
 | 预译码 | FQ 尾 jal/jalr 静态分类（call/ret/indirect + 静态 jal 目标） |
 | halt | ICache 头 = `0x0ff00513` ⇒ latch haltFetched 停取 |
