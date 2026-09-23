@@ -117,41 +117,4 @@ void FlushArbiter::tick(const FlushArbiterInput &input, systemState &CPUstate) {
       }
     }
   }
-
-  if (!input.AGUModule.isEmpty() &&
-      isStoreMem(input.AGUModule.headMemIndex())) {
-    auto aguRobTag = input.AGUModule.headRobTag();
-    if (!input.squashDetect.needSquash ||
-        (input.squashDetect.needSquash &&
-         ROB::isOlder(aguRobTag, input.squashDetect.SquashTag))) {
-      const uint32_t storeAddr = input.AGUModule.headValue();
-      auto lqHead = input.LQModule.getHead();
-      bool violationHandled = false;
-      for (int k = 0; k < LQ_CAP; ++k) {
-        uint8_t i = (lqHead + k) & LQ_MASK;
-        if (violationHandled)
-          continue;
-        if (!input.LQModule.isActive(i))
-          continue;
-        if (input.LQModule.isAddressReady(i) &&
-            input.LQModule.getAddress(i) == storeAddr &&
-            (input.LQModule.getValueState(i) == ValueState::READY ||
-             input.LQModule.getValueState(i) == ValueState::FETCHING) &&
-            ROB::isYounger(input.LQModule.getRobTag(i), aguRobTag)) {
-          auto violTag = input.LQModule.getRobTag(i);
-          if ((!input.squashDetect.needSquash ||
-               ROB::isOlder(violTag, input.squashDetect.SquashTag)) &&
-               input.ROBModule.matchesTag(violTag)) {
-            SquashInfo viol;
-            viol.needSquash = true;
-            viol.SquashTag = violTag;
-            viol.SquashPC = input.ROBModule.getPC(robSlot(viol.SquashTag));
-            viol.CkptId = input.ROBModule.getCkptId(robSlot(viol.SquashTag));
-            CPUstate.flushArbiter.receive(viol);
-            violationHandled = true;
-          }
-        }
-      }
-    }
-  }
 }

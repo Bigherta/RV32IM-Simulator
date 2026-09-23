@@ -181,7 +181,7 @@ void LQ::tick(const LQInput &input, systemState &CPUstate) {
   // load response from DMEM
   if (input.loadResp.valid) {
     auto index = memSlot(input.loadResp.memIndex);
-    if (getValueState(index) == ValueState::FETCHING)
+    if (LQqueue[index].valueState == ValueState::FETCHING)
       CPUstate.LQModule.writeValueIfFetching(input.loadResp.robTag, index,
                                              input.loadResp.value);
   }

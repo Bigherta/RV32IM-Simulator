@@ -19,21 +19,6 @@ struct BPUInput {
   FetchTypeInfo fetchInfo;
   BPUInput(const BRU &bru, const ROB &rob) : BRUModule(bru), ROBModule(rob) {}
 };
-
-// SARAS correction queue entry: the address, its LIFO position, and the
-// times counter before the speculative action (so both pops and
-// times inc/dec are undoable). One entry is recorded for every
-// speculative call-dedup and every speculative ret.
-struct AlignEntry {
-  uint32_t addr;
-  uint8_t index;
-  uint32_t times;
-};
-
-struct RASEntry {
-  uint32_t retPC;
-  uint32_t times;
-};
 // Tournament direction predictor: direct-PC local counters, gshare global
 // counters, and a gshare-indexed chooser. All tables use the tightened 256-row
 // capacity; counter value 1 is weakly not-taken and 2 is weakly taken.
@@ -49,20 +34,14 @@ struct DirectionPred {
   }
 };
 
-// Target prediction ("where to jump"): BTB (targets + jump type) and the
-// SARAS ring return-address stack with its correction queue. Its ring
-// counters are uint8_t and wrap at 256, well beyond the current
-// ROB_CAP=16 and local queue capacities (ALIGNQ_CAP=16/RAS_CAP=8).
+// Target prediction ("where to jump"): a committed RAS baseline and its
+// speculative copy. The tops are non-wrapping depths in [0, RAS_CAP].
 struct TargetPred {
   BTBEntry BTB[BTB_CAP] = {};
-  RASEntry RAS[RAS_CAP] = {};
-  uint8_t RAS_top = 0; // ring write pointer (wraps at 256)
-  AlignEntry alignQueue[ALIGNQ_CAP] = {};
-  uint8_t alignTail = 0; // AlignQueue tail (appended on CALL-dedup / RET)
-  // Branch-type filter: set when a PC resolves as a conditional (taken or
-  // not). Lets the fetch stage shift the GHR for conditionals that are not
-  // BTB-resident (never-taken branches never train the BTB), so history
-  // membership stops depending on BTB residency churn.
+  uint32_t specRAS[RAS_CAP] = {};
+  uint32_t archRAS[RAS_CAP] = {};
+  uint8_t specTopOfRAS = 0;
+  uint8_t archTopOfRAS = 0;
   bool condSeen[CONDSEEN_CAP] = {};
 };
 
@@ -79,7 +58,7 @@ private:
   };
   DirectionPred dir;
   TargetPred tgt;
-  BPUSnapshot bpCkpt[CKPT_CAP] = {};
+  uint8_t GHRCheckpoint[CKPT_CAP] = {};
   uint8_t nextCkptId = 0;
   uint64_t branchTotal = 0;
   uint64_t branchCorrect = 0;
@@ -98,6 +77,8 @@ private:
   // Synthesis strips these along with the VERBOSE topic.
   uint64_t missCnt[BTB_CAP] = {};
   uint32_t missPC[BTB_CAP] = {}; // sample PC per slot (last writer wins)
+  uint8_t maxSpecTopOfRAS = 0;
+  uint8_t maxArchTopOfRAS = 0;
   void noteMiss(uint32_t pc) {
     const auto i = (pc >> 2) & (BTB_CAP - 1);
     ++missCnt[i];
@@ -107,7 +88,6 @@ private:
   void update(uint32_t pc, bool taken, uint32_t target, uint8_t ghr);
   void updateJump(uint32_t pc, uint32_t target, bool isRet);
   void shiftGHR(bool taken);
-
 public:
   uint64_t getBranchTotal() const { return branchTotal; }
   uint64_t getBranchCorrect() const { return branchCorrect; }
@@ -117,11 +97,13 @@ public:
   uint64_t getJalCorrect() const { return jalCorrect; }
   uint64_t getJalrTotal() const { return jalrTotal; }
   uint64_t getJalrCorrect() const { return jalrCorrect; }
+  uint8_t getMaxSpecTopOfRAS() const { return maxSpecTopOfRAS; }
+  uint8_t getMaxArchTopOfRAS() const { return maxArchTopOfRAS; }
   void dumpBpMiss() const;
   PredictInfo predict(uint32_t pc) const;
 
-  BPUSnapshot snapshotCheckPoint() const;
-  void recoverCheckPoint(const BPUSnapshot &);
+  uint8_t snapshotCheckPoint() const;
+  void recoverCheckPoint(const uint8_t);
   uint8_t getNextCkptId() const { return nextCkptId; }
   void tick(const BPUInput &, systemState &);
 };

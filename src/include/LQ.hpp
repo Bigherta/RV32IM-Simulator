@@ -68,9 +68,6 @@ public:
   auto getIsUnsigned(int index) const -> bool;
   auto getNBytes(int index) const -> int;
   bool isAddressReady(int index) const { return LQqueue[index].isAddressReady; }
-  ValueState getValueState(int index) const {
-    return LQqueue[index].valueState;
-  }
   int CDBDetect() const;
   int LoadDetect() const;
   void tick(const LQInput &, systemState &);

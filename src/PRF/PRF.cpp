@@ -1,5 +1,6 @@
 #include "../include/PRF.hpp"
 #include "../include/CPU.hpp"
+#include "common.hpp"
 #include <cassert>
 #include <cstring>
 #include <stdexcept>
@@ -35,6 +36,8 @@ uint8_t PRF::pop() {
 
 void PRF::push(int index) {
   assert(index != InvalidPhy); // P0-dead invariant: only real tags are recycled
+  assert(prfSeqDistance(headSeq, tailSeq) <
+         PRF_CAP); // free list never overflows
   freeList[prfSlot(tailSeq)] = index;
   tailSeq = prfSeqNext(tailSeq);
 }
@@ -42,11 +45,6 @@ void PRF::push(int index) {
 bool PRF::isFreeListEmpty() const { return headSeq == tailSeq; }
 
 PrfSeq PRF::getHeadSeq() const { return headSeq; }
-
-void PRF::restoreHead(PrfSeq ckptHeadSeq) {
-  assert(prfSeqDistance(ckptHeadSeq, tailSeq) <= PRF_CAP);
-  headSeq = ckptHeadSeq;
-}
 
 bool PRF::isReady(int index) const { return PhysicalRegs[index].ready; }
 int32_t PRF::getValue(int index) const { return PhysicalRegs[index].value; }
@@ -56,6 +54,7 @@ void PRF::write(int index, int32_t value) {
 }
 
 void PRF::tick(const PRFInput &input, systemState &CPUstate) {
+  // 1. cdb of alu wake up prf
   if (input.cdbOfALU.valid &&
       input.ROBModule.matchesTag(input.cdbOfALU.robTag)) {
     if (!input.squashDetect.needSquash ||
@@ -71,6 +70,7 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
       }
     }
   }
+  // 2. cdb of lq wake up prf
   if (input.cdbOfLQ.valid && input.ROBModule.matchesTag(input.cdbOfLQ.robTag)) {
     if (!input.squashDetect.needSquash ||
         ROB::isOlder(input.cdbOfLQ.robTag, input.squashDetect.SquashTag)) {
@@ -82,6 +82,7 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
       }
     }
   }
+  // 3. cdb of mul wake up prf
   if (input.cdbOfMul.valid &&
       input.ROBModule.matchesTag(input.cdbOfMul.robTag)) {
     if (!input.squashDetect.needSquash ||
@@ -94,6 +95,7 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
       }
     }
   }
+  // 4. cdb of div wake up prf
   if (input.cdbOfDiv.valid &&
       input.ROBModule.matchesTag(input.cdbOfDiv.robTag)) {
     if (!input.squashDetect.needSquash ||
@@ -106,33 +108,44 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
       }
     }
   }
-  if (input.issuePacket.valid) {
-    CPUstate.PRFModule.PRFHeadCkpt[input.issuePacket.robEntry.ckptId] =
-        input.issuePacket.allocDest ? prfSeqNext(headSeq) : headSeq;
-    if (input.issuePacket.allocDest) {
-      auto headphy = CPUstate.PRFModule.pop();
-      assert(headphy == input.issuePacket.phy);
-      if (input.issuePacket.isControl) {
-        CPUstate.PRFModule.write(input.issuePacket.phy,
-                                 input.issuePacket.pc + 4);
+  
+  // 5. if squash, recover the PRF state to the branch instruction
+  if (input.squashDetect.needSquash) {
+    const RobTag oldNext = input.ROBModule.getNextTag();
+    RobTag tag = robNextTag(input.squashDetect.SquashTag);
+    bool scanDone = (tag == oldNext);
+    for (int k = 0; k < ROB_CAP; ++k) {
+      if (scanDone)
+        continue;
+      auto recoverPRF = input.ROBModule.getNewPhy(robSlot(tag));
+      if (recoverPRF != InvalidPhy)
+        CPUstate.PRFModule.push(recoverPRF);
+      tag = robNextTag(tag);
+      if (tag == oldNext)
+        scanDone = true;
+    }
+  } else {
+    // 6. if not, distribute a free PRF to the logic register
+    if (input.issuePacket.valid) {
+      if (input.issuePacket.allocDest) {
+        auto headphy = CPUstate.PRFModule.pop();
+        assert(headphy == input.issuePacket.phy);
+        if (input.issuePacket.isControl) {
+          CPUstate.PRFModule.write(input.issuePacket.phy,
+                                   input.issuePacket.pc + 4);
+        }
       }
     }
   }
-  if (input.squashDetect.needSquash) {
-    auto index = robSlot(input.squashDetect.SquashTag);
-    if (index >= 0) {
-      auto ckptHead = PRFHeadCkpt[input.squashDetect.CkptId];
-      CPUstate.PRFModule.restoreHead(ckptHead);
+  // 7. release the old physical register
+  if (input.ROBModule.willCommit(input.squashDetect)) {
+    int headIdx = robSlot(input.ROBModule.getHead());
+    if (!input.ROBModule.isHeadHalt() &&
+        (input.ROBModule.headType() == ROBType::REGISTER ||
+         input.ROBModule.headType() == ROBType::LINK)) {
+      int oldPhy = input.ROBModule.getOldPhy(headIdx);
+      if (oldPhy != InvalidPhy)
+        CPUstate.PRFModule.push(oldPhy);
     }
-  }
-  if (!input.ROBModule.willCommit(input.squashDetect))
-    return;
-  int headIdx = robSlot(input.ROBModule.getHead());
-  if (!input.ROBModule.isHeadHalt() &&
-      (input.ROBModule.headType() == ROBType::REGISTER ||
-       input.ROBModule.headType() == ROBType::LINK)) {
-    int oldPhy = input.ROBModule.getOldPhy(headIdx);
-    if (oldPhy != InvalidPhy)
-      CPUstate.PRFModule.push(oldPhy);
   }
 }

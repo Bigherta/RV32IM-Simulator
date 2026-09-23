@@ -260,7 +260,7 @@ IssuePacket IssueArbiter::issue_IntegerRS(const IssueArbiterInput &input,
   p.robEntry.sqTailSnapshot = input.SQModule.getTail();
   p.robEntry.ckptId = inst.ckptId;
   p.robEntry.oldPhy =
-      inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
+      inst.allocDest ? input.RATModule.readRAT(destination) : InvalidPhy;
   p.robEntry.newPhy = p.phy;
   if (debug::enabled(debug::TOPIC_PRF) && inst.allocDest)
     debug::print("PRF rename x%d <- P%d (old=P%d)\n", destination, p.phy,
@@ -270,8 +270,10 @@ IssuePacket IssueArbiter::issue_IntegerRS(const IssueArbiterInput &input,
     p.pc = inst.pc;
     p.robEntry.type = ROBType::LINK;
     p.robEntry.isIndirect = true; // JALR path: target is register-driven
-    if (inst.rd == 0 && inst.rs1 == 1 && inst.imm == 0)
-      p.robEntry.isRet = true; // JALR x0, 0(x1): return
+    const bool rdLink = inst.rd == 1 || inst.rd == 5;
+    const bool rs1Link = inst.rs1 == 1 || inst.rs1 == 5;
+    p.robEntry.isCall = rdLink;
+    p.robEntry.isRet = rs1Link && !rdLink;
   }
   p.integerRS.robTag = p.robTag;
   return p;
@@ -315,7 +317,7 @@ IssuePacket IssueArbiter::issue_Multiply(const IssueArbiterInput &input,
   p.robEntry.sqTailSnapshot = input.SQModule.getTail();
   p.robEntry.ckptId = inst.ckptId;
   p.robEntry.oldPhy =
-      inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
+      inst.allocDest ? input.RATModule.readRAT(destination) : InvalidPhy;
   p.robEntry.newPhy = p.phy;
   if (debug::enabled(debug::TOPIC_PRF) && inst.allocDest)
     debug::print("PRF rename x%d <- P%d (old=P%d)\n", destination, p.phy,
@@ -362,7 +364,7 @@ IssuePacket IssueArbiter::issue_Divide(const IssueArbiterInput &input,
   p.robEntry.sqTailSnapshot = input.SQModule.getTail();
   p.robEntry.ckptId = inst.ckptId;
   p.robEntry.oldPhy =
-      inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
+      inst.allocDest ? input.RATModule.readRAT(destination) : InvalidPhy;
   p.robEntry.newPhy = p.phy;
   if (debug::enabled(debug::TOPIC_PRF) && inst.allocDest)
     debug::print("PRF rename x%d <- P%d (old=P%d)\n", destination, p.phy,
@@ -409,7 +411,7 @@ IssuePacket IssueArbiter::issue_UandJ(const IssueArbiterInput &input,
   p.robEntry.sqTailSnapshot = input.SQModule.getTail();
   p.robEntry.ckptId = inst.ckptId;
   p.robEntry.oldPhy =
-      inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
+      inst.allocDest ? input.RATModule.readRAT(destination) : InvalidPhy;
   p.robEntry.newPhy = p.phy;
   if (debug::enabled(debug::TOPIC_PRF) && inst.allocDest)
     debug::print("PRF rename x%d <- P%d (old=P%d)\n", destination, p.phy,
@@ -418,6 +420,7 @@ IssuePacket IssueArbiter::issue_UandJ(const IssueArbiterInput &input,
     p.isControl = true;
     p.pc = inst.pc;
     p.robEntry.type = ROBType::LINK;
+    p.robEntry.isCall = inst.rd == 1 || inst.rd == 5;
   }
   p.integerRS.robTag = p.robTag;
   return p;
@@ -488,13 +491,11 @@ IssuePacket IssueArbiter::issue_Load(const IssueArbiterInput &input,
   p.robEntry = ROBEntry(ROBType::REGISTER);
   p.robEntry.dest = destination;
   p.robEntry.pc = inst.pc;
-  // Include-self boundary (see LQ::getTailSnapshot): an exclusive snapshot
-  // let a LoadViolation squash -- whose target is the load itself -- rewind
-  // the LQ over its own entry, freezing retirement at that row.
+  // Keep the include-self LQ boundary for the load's ROB recovery snapshot.
   p.robEntry.lqTailSnapshot = input.LQModule.getTailSnapshot();
   p.robEntry.sqTailSnapshot = input.SQModule.getTail();
   p.robEntry.oldPhy =
-      inst.allocDest ? input.RATModule.readRAT_PRF(destination) : InvalidPhy;
+      inst.allocDest ? input.RATModule.readRAT(destination) : InvalidPhy;
   p.robEntry.newPhy = p.phy;
   p.robEntry.ckptId = inst.ckptId;
   if (debug::enabled(debug::TOPIC_PRF) && inst.allocDest)

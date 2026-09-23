@@ -23,6 +23,9 @@ enum Topic : unsigned {
   TOPIC_BPMISS = 1u << 10,
   TOPIC_ICACHE = 1u << 11,
   TOPIC_CDB = 1u << 12,
+  TOPIC_CFTRACE = 1u << 13,
+  TOPIC_PROFILE = 1u << 14,
+  TOPIC_RAS = 1u << 15,
   TOPIC_ALL = 0xFFFFFFFFu,
 };
 
@@ -62,6 +65,12 @@ static unsigned parseVerbose(const char *env) {
       mask |= TOPIC_ICACHE;
     else if (len == 3 && strncmp(p, "cdb", 3) == 0)
       mask |= TOPIC_CDB;
+    else if (len == 7 && strncmp(p, "cftrace", 7) == 0)
+      mask |= TOPIC_CFTRACE;
+    else if (len == 7 && strncmp(p, "profile", 7) == 0)
+      mask |= TOPIC_PROFILE;
+    else if (len == 3 && strncmp(p, "ras", 3) == 0)
+      mask |= TOPIC_RAS;
     if (end == nullptr)
       break;
     p = end + 1;

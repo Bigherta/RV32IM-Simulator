@@ -6,6 +6,6 @@
 
 ## 分支预测
 
-方向使用 Tournament；目标侧有 64 项 BTB 和 8 项 RAS，预测检查点有 32 项。
+方向使用 Tournament；目标侧有 64 项 BTB 和 32 项 RAS，预测检查点有 32 项。恢复时从已提交栈重放存活的 ROB 指令。
 
 [后端](backend.md) · [缓存](cache.md)

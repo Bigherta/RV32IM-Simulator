@@ -9,7 +9,7 @@ RV32IM 周期级乱序处理器模拟器。用 C++20 `comb()/tick()` 分离拍�
 ```bash
 cmake -S . -B build/quickstart -DCMAKE_BUILD_TYPE=Release
 cmake --build build/quickstart -j4
-VERBOSE=clock ./code < data/testcases/gcd.data
+RESULT_FULL=1 VERBOSE=clock ./code < data/testcases/gcd.data
 ```
 
 从标准输入读取字节镜像；`VERBOSE=clock` 将周期统计写到标准错误。
