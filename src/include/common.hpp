@@ -61,8 +61,9 @@ static_assert((1 << GHR_WIDTH) >= BHT_CAP &&
                   (1 << GHR_WIDTH) >= SELECTOR_CAP,
               "GHR must cover the direction-table index width");
 constexpr uint16_t HISTORY_MASK = (1u << GHR_WIDTH) - 1;
-constexpr int RAS_CAP = 8;
-constexpr int ALIGNQ_CAP = 16;
+constexpr int RAS_CAP = 32;
+static_assert(RAS_CAP > 0 && RAS_CAP <= 0xFF,
+              "RAS top is an 8-bit non-wrapping depth");
 constexpr uint8_t PRF_CAP = ROB_CAP + REGISTER_CAP;
 // Packed free-list sequence = {1-bit epoch, index}. Only indices
 // 0..PRF_CAP-1 are allocated; codes PRF_CAP..PRF_INDEX_MASK are holes.
@@ -130,7 +131,7 @@ static_assert(ROB_CAP < (static_cast<uint32_t>(PRF_CAP) << 1),
 // allocated (freeList only ever holds 32..PRF_CAP-1) and never mapped
 // (RAT binds x1-x31 at reset; rd==0 never allocates), so real tags are
 // always in 1..PRF_CAP-1 and 0 is unambiguous. Guarded by asserts in PRF::pop,
-// PRF::push, RAT::setRAT_PRF and IssueArbiter::resolveSrc.
+// PRF::push, RAT mapping writers and IssueArbiter::resolveSrc.
 inline constexpr int InvalidPhy = 0;
 constexpr int IMEM_CAP = 16;
 constexpr int CKPT_CAP = 32;
@@ -168,8 +169,6 @@ enum class ValueState {
   FETCHING,
   READY,
 };
-
-enum class SquashKind : uint8_t { None, Branch, LoadViolation };
 enum class Operation {
   OP_INVALID,
   ADD,
@@ -292,21 +291,6 @@ struct BTBEntry {
   bool valid;
   bool unconditional;
   bool isRet = false;
-};
-
-struct BPUSnapshot {
-  // SARAS: the checkpoint keeps the direction GHR, the AlignQueue tail, and
-  // RAS_top. With RASEntry{retPC,times}, the height != call/ret depth, so
-  // RAS_top is checkpointed directly. The counters are uint8_t — ring
-  // counters wrap at 256, well beyond the current ROB_CAP and local queue
-  // capacities.
-  uint8_t GHR_snapshot;
-  uint8_t alignTail;
-  uint8_t RAS_top;
-};
-
-struct RATSnapshot {
-  int RAT_snapshot[REGISTER_CAP];
 };
 
 struct Uop {

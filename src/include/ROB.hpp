@@ -18,7 +18,8 @@ struct ROBEntry {
   uint32_t predictedPC = 0;
   int32_t pc = 0;
   bool halt = false;
-  bool isRet = false;  // JALR x0, 0(x1)
+  bool isRet = false;  // RISC-V RAS pop hint
+  bool isCall = false; // RISC-V RAS push hint
   bool isIndirect = false; // JALR variant: target from reg, not static imm
   uint8_t lqTailSnapshot = 0;
   uint8_t sqTailSnapshot = 0;
@@ -76,9 +77,12 @@ public:
   int getPredictedPC(int index) const;
   uint8_t getLqTailSnapshot(int index) const;
   uint8_t getSqTailSnapshot(int index) const;
-  int getNewPhy(int index) const;
-  int getOldPhy(int index) const;
+  uint8_t getNewPhy(int index) const;
+  uint8_t getOldPhy(int index) const;
+  uint8_t getRd(int index) const;
+  uint8_t getTag(int index) const {return ROBqueue[index].tag;}
   bool isRet(int index) const;
+  bool isCall(int index) const;
   bool isIndirect(int index) const;
   void tick(const ROBInput &, systemState &);
 };

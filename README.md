@@ -43,13 +43,14 @@
    │   StoreValue 4 ──► SQ；LQ / SQ ──► DCache ──► DMEM(双口)   │
    └──────────────────────────────┬────────────────────────────┘
                                   ▼
-              ROB 按序提交；误预测 / 记忆违例 ──► FlushArbiter
-              （RAT/PRF/GHR/RAS/队列 从 ROB 条目 checkpoint 恢复）
+              ROB 按序提交；误预测 ──► FlushArbiter
+              （RAT 从 archRAT 基线 + ROB 条目重放恢复；PRF/GHR/RAS 走 checkpoint）
 ```
 
 取指与提交保持程序序，执行/写回/访存完全乱序。L1 命中零延迟（ICache 当拍组包、
 DCache 命中 1 拍自答），缺失回填与脏逐出统一走 **20 周期主存延迟**（IMEM/DMEM）；
-误预测与记忆违例经 `FlushArbiter` 排队，按最老优先从 checkpoint 整窗恢复。
+误预测经 `FlushArbiter` 排队，按最老优先整窗恢复（RAT 重放到 `SquashTag`，
+PRF/BPU 取边界 checkpoint，队列整体清空）。
 
 ### 1.1 周期模型
 
@@ -71,7 +72,7 @@ DCache 命中 1 拍自答），缺失回填与脏逐出统一走 **20 周期主�
 |---|---|---|---|
 | 前端 | 分支预测 → 取指 → 预译码 → 译码 | 8 KB 直映 ICache；FQ 4 / IQ 4；Tournament 方向 + BTB/RAS/SARAS | [`frontend.md`](docs/frontend.md) |
 | 后端 | 发射 rename → 乱序执行 → 写回 → 按序提交 | ROB 16 / PRF 64 / RAT 32；RS 七个物理池共 23 槽；四路独立结果总线；MUL Booth 三级流水、DIV SRT 单实例背压 | [`backend.md`](docs/backend.md) |
-| 访存 | LQ/SQ、store→load 转发、MDP 违例、访存准入 | LQ 8 / SQ 8；每周期 1 个请求（store 优先）；store 提交点落缓存 | [`memory.md`](docs/memory.md) |
+| 访存 | LQ/SQ、store→load 转发、保守访存准入 | LQ 8 / SQ 8；每周期 1 个请求（store 优先）；store 提交点落缓存 | [`memory.md`](docs/memory.md) |
 | 缓存 | L1I / L1D / 片上主存 | L1I 8 KB 直映；L1D 64 KB 4 路写回+写分配；主存 20 周期 | [`cache.md`](docs/cache.md) |
 
 ### 1.3 指令集
@@ -87,7 +88,6 @@ DCache 命中 1 拍自答），缺失回填与脏逐出统一走 **20 周期主�
 .
 ├── CMakeLists.txt              # 根构建，产物 ./code
 ├── README.md
-├── issue.pdf                   # 题目与评测说明
 ├── AGENTS.md                   # 开发账本：架构决策 / 模块归属 / 验证流程
 ├── test.sh  test_IPC.sh              # RV32IM 回归与 IPC 入口（见 §4）
 ├── src/                        # 模拟器源码（include/*.hpp 声明 + <Module>/ 实现）
@@ -95,7 +95,7 @@ DCache 命中 1 拍自答），缺失回填与脏逐出统一走 **20 周期主�
 │   ├── testcases/              # 18 个 RV32IM 基准（.c + .data 镜像 + .dump）
 │   └── testcases_ipc/          # IPC 基准（median/multiply/qsort/rsort/towers/vvadd）
 ├── docs/                       # 设计文档：frontend / backend / memory / cache / benchmarks
-├── ppt/  reference/            # 讲义与参考资料
+├── reference/                  # 参考资料（指令速查卡、RISC-V 规范、教材）
 └── RISC-V-Simulator-Template/  # RTL 化重建线（git submodule，Register/Wire 框架，见 §5）
 ```
 
@@ -190,9 +190,13 @@ BP_BIN=/path/to/code ./test_IPC.sh   # 指定二进制
   `dark::Module` 框架把同一架构逐模块改写为可综合风格；两树共用 golden，clock 逐位对拍一致是迁移硬门禁。
 - **DIV/REM 已落地（2026-09-12）**：SRT radix-4 除法器完成接线、验证并同步接入模板树（见 §4.2）。
 - **BPU 面积终态（2026-09-21）**：方向侧采用 local/global/selector 各 256×2-bit 的 Tournament
-  预测器与 8-bit GHR；目标侧保留 BTB/RAS/SARAS。间接目标缓存（BHT+Target Cache）在活动语料上
-  无可观测收益，已按面积/效率权衡删除；删除无消费者 `alignHead` 后完整 BPU 状态由 TAGE 基线的
-  24,357 bit 降至 8,246 bit（-66.15%），18 例总 clock 为 12,237,892。
+  预测器与 8-bit GHR；目标侧保留 BTB/RAS/SARAS。BTB 的 64 项以 `{PC[31:8], target[31:2], state}`
+  收紧至 56 bit/项；间接目标缓存（BHT+Target Cache）在活动语料上无可观测收益，已按面积/效率权衡
+  删除。完整模板 BPU Register 状态由 TAGE 基线的 24,357 bit 降至 7,542 bit（-69.04%），该变换
+  不改时序（当时 18 例总 clock 为 12,237,892）。
+- **保守 load 准入（2026-09-21）**：退役 MDP 投机（删除 load-violation 检测与 squash 通路），
+  `SQ::canDispatchLoad` 要求更老未提交 store 地址均已知且无同址冲突才允许 cache 准入。仅
+  `magic` 时序变化（573122→574512），总 clock **12,239,282**，IPC **0.553640**，分支正确率 **93.8356%**。
 - **取舍复核**：`VERBOSE=icache` / `cdb` 的命中率与总线争用画像长期保留，供缓存几何、总线拆分、预测器容量等决策参考。
 
 ## 6. 参考资料
@@ -201,4 +205,3 @@ BP_BIN=/path/to/code ./test_IPC.sh   # 指定二进制
 - `reference/riscv-spec-20191213.pdf` — RISC-V 官方规范（RV32I/M 精确定义）
 - `reference/RISC-V-Reader-Chinese-v2p1.pdf` — 《RISC-V 读者》中文版
 - `reference/CAAQA5.pdf` — 计算机组成与设计：硬件/软件接口
-- `ppt/` — 讲义 lec1–lec4

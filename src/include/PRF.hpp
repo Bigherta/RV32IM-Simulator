@@ -23,12 +23,10 @@ class PRF {
 private:
   PRFEntry PhysicalRegs[PRF_CAP];
   uint8_t freeList[PRF_CAP];
-  PrfSeq PRFHeadCkpt[CKPT_CAP];
   PrfSeq headSeq = 0;
   PrfSeq tailSeq = 0;
   uint8_t pop();
   void push(int index);
-  void restoreHead(PrfSeq ckptHeadSeq);
   void write(int index, int32_t value);
 
 public:

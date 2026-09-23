@@ -11,27 +11,34 @@ struct OperandInfo {
 };
 struct IssuePacket;
 struct RATInput {
+  const ROB &ROBModule;
   const IssuePacket &issuePacket;
   SquashInfo squashDetect;
-  RATInput(const IssuePacket &pkt) : issuePacket(pkt) {}
+  RATInput(const ROB &rob, const IssuePacket &pkt)
+      : ROBModule(rob), issuePacket(pkt) {}
 };
 
 struct systemState;
 class RAT {
 private:
-  int RAT_PRF[REGISTER_CAP];
-  RATSnapshot ratCkpt[CKPT_CAP];
-  void setRAT_PRF(int regNum, int PRF_id);
-  void restoreRAT_PRF(const RATSnapshot &snapshot);
+  uint8_t specRAT[REGISTER_CAP];
+  uint8_t archRAT[REGISTER_CAP];
+  void setSpecRAT(int regNum, int PRF_id);
+  void setArchRAT(int regNum, int PRF_id);
+  void restoreRAT();
 
 public:
   RAT() {
-    // InvalidPhy (=0) = unmapped; x0 is never renamed, P1-P31 bind to Px at reset
-    std::memset(RAT_PRF, 0, sizeof(RAT_PRF));
-    for (int i = 1; i < 32; i++)
-      RAT_PRF[i] = i;
+    // InvalidPhy (=0) = unmapped; x0 is never renamed, P1-P31 bind to Px at
+    // reset
+    std::memset(specRAT, 0, sizeof(specRAT));
+    std::memset(archRAT, 0, sizeof(archRAT));
+    for (int i = 1; i < 32; i++) {
+      specRAT[i] = i;
+      archRAT[i] = i;
+    }
   }
-  int readRAT_PRF(int regNum) const;
+  int readRAT(int regNum) const;
   OperandInfo readOperand(int regNum) const;
   void tick(const RATInput &, systemState &);
 };

@@ -88,12 +88,15 @@ uint8_t ROB::getSqTailSnapshot(int index) const {
   return ROBqueue[index].sqTailSnapshot;
 }
 
-int ROB::getNewPhy(int index) const { return ROBqueue[index].newPhy; }
+uint8_t ROB::getNewPhy(int index) const { return ROBqueue[index].newPhy; }
 
-int ROB::getOldPhy(int index) const { return ROBqueue[index].oldPhy; }
+uint8_t ROB::getOldPhy(int index) const { return ROBqueue[index].oldPhy; }
 
+uint8_t ROB::getRd(int index) const { return ROBqueue[index].dest; }
 
 bool ROB::isRet(int index) const { return ROBqueue[index].isRet; }
+
+bool ROB::isCall(int index) const { return ROBqueue[index].isCall; }
 
 bool ROB::isIndirect(int index) const { return ROBqueue[index].isIndirect; }
 

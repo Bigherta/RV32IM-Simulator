@@ -131,6 +131,8 @@ tot_ipc_clock=0
 tot_retired=0
 tot_correct=0
 tot_branches=0
+sum_log_ipc=0
+geomean_n=0
 
 for name in "${ordered[@]}"; do
   data="$DATA_DIR/$name.data"
@@ -207,16 +209,20 @@ for name in "${ordered[@]}"; do
   if [[ "$clock" =~ ^[0-9]+$ ]]; then tot_clock=$((tot_clock + clock)); fi
   if [[ "$ipc_clock" =~ ^[0-9]+$ ]]; then tot_ipc_clock=$((tot_ipc_clock + ipc_clock)); fi
   if [[ "$retired" =~ ^[0-9]+$ ]]; then tot_retired=$((tot_retired + retired)); fi
+  if [[ "$retired" =~ ^[0-9]+$ && "$ipc_clock" =~ ^[0-9]+$ && "$retired" -gt 0 && "$ipc_clock" -gt 0 ]]; then
+    sum_log_ipc=$(awk -v s="$sum_log_ipc" -v r="$retired" -v c="$ipc_clock" 'BEGIN { print s + log(r / c) }')
+    geomean_n=$((geomean_n + 1))
+  fi
   if [[ "${correct:-}" =~ ^[0-9]+$ ]]; then tot_correct=$((tot_correct + correct)); fi
   if [[ "${branches:-}" =~ ^[0-9]+$ ]]; then tot_branches=$((tot_branches + branches)); fi
 done
 
-overall_ipc=$(awk -v r="$tot_retired" -v c="$tot_ipc_clock" 'BEGIN {
-  if (c == 0) print "0.000000"; else printf "%.6f", r / c
+overall_ipc=$(awk -v s="$sum_log_ipc" -v n="$geomean_n" 'BEGIN {
+  if (n == 0) print "0.000000"; else printf "%.6f", exp(s / n)
 }')
 printf -- '---------------------------------------------------------------------------------------------------------------------------------------------------\n'
-printf 'TOTAL: %d/%d passed  clock=%d  IPC=%s (%d/%d)  branch=%s%% (%d/%d)\n' \
-  "$pass" "$count" "$tot_clock" "$overall_ipc" "$tot_retired" "$tot_ipc_clock" \
+printf 'TOTAL: %d/%d passed  clock=%d  IPC(geomean over %d)=%s  totals retired=%d ipc-cycles=%d  branch=%s%% (%d/%d)\n' \
+  "$pass" "$count" "$tot_clock" "$geomean_n" "$overall_ipc" "$tot_retired" "$tot_ipc_clock" \
   "$(pct "$tot_correct" "$tot_branches")" "$tot_correct" "$tot_branches"
 
 [ "$pass" -eq "$count" ]

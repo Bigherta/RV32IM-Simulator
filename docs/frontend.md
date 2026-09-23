@@ -122,13 +122,17 @@ selector 选出的结果记为 `directionTaken`。最终条件分支方向还受
 
 | 部件 | 配置 | 说明 |
 |------|------|------|
-| BTB | 64 条目 | 经典 Branch Target Buffer 的项目实现 [[5]](#front-ref-5)；携带 `unconditional/isRet` 类型，命中且无条件 ⇒ 必 taken |
+| BTB | 64 条目 | 经典 Branch Target Buffer 的项目实现 [[5]](#front-ref-5)；语义项为 `{PC[31:8], target[31:2], state}`，`state` 编码 invalid/conditional/unconditional/return（后两者必 taken）；命中且无条件 ⇒ 必 taken |
 | RAS | 8 条目 `{retPC, times}` | RAS 用 call 压入的返回地址预测 return [[7]](#front-ref-7)；`times` 将连续相同返回地址压成计数项，是项目的递归去重策略；投机错位与修复机制见 [[8]](#front-ref-8) |
 | SARAS | 16 条目 `{addr, index, times}` | 受 Self-Aligning Return Address Stack 启发的恢复日志 [[9]](#front-ref-9)；论文使用传统 RAS、自对齐队列与栈顶计数器，本项目字段和 call-dedup/ret 撤销规则是具体适配，不宣称逐字段等同 |
 
 > 目标侧不设间接目标缓存（Target Cache）与提交级 BHT：方向侧改用 Tournament 后，BHT 仅服务
 > 间接目标哈希，二者构成闭环；活动语料中唯一的真间接站点为单目标，收益不可观测，遂按
 > 面积/效率权衡删除（见根 `docs/benchmarks.md` 复核记录）。
+
+> 活动 RV32IM 镜像无压缩指令，PC 和跳转目标均为 4-byte 对齐；BTB 使用 `PC[7:2]` 索引、
+> `PC[31:8]` tag 与 `target[31:2]`，每项为 56 bit。参考树可保留等价的全宽宿主载体，模板
+> `Register` 实现以此作为物理状态位宽。
 
 ### 4.3 GHR 与 checkpoint
 
@@ -144,7 +148,7 @@ selector 选出的结果记为 `directionTaken`。最终条件分支方向还受
   Tournament 不需要额外预测器元数据或派生历史视图。
 - **训练**：BRU 条件分支结果更新 localPHT/globalPHT/selector、condSeen 与目标侧状态；
   CDB 的 JAL/JALR 转移只更新目标侧。两个训练口共享周期初旧快照；表更新按资源固定写口
-  仲裁（`fetch > cdb > bru`，BTB 的 line 四字段与 target 分两组），每个物理 Register
+  仲裁（`fetch > cdb > bru`，BTB 的 identity/state 与 target 分两组），每个物理 Register
   每拍至多一次写。BRU 侧维护投机态 GHR/RAS/bpCkpt；CDB 侧永不触碰投机态。
   **方向表不被 JAL/JALR 恒跳指令污染**。
 

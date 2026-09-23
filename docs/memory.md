@@ -1,7 +1,8 @@
-# 访存子系统：加载/存储队列 · 转发 · 违例检测 · 请求准入
+# 访存子系统：加载/存储队列 · 转发 · 保守准入
 
 > 负责处理器侧的访存顺序语义：Load/Store 发射即入队，store 数据/地址以组合
-> 事件广播给 load（store→load 转发），内存顺序违规由 MDP 检测并整窗恢复；
+> 事件广播给 load（store→load 转发）；load 只有在更老 store 地址均已知且无
+> 已知同址冲突时才准入缓存，不再依赖 MDP 违例恢复；
 > 每周期经仲裁准入**一个**访存请求交给缓存/主存。
 > 相关实现：`LQ`、`SQ`、`MemArbiter`（StaticArbiter）、store 广播组合逻辑。
 > [← 返回 README](../README.md)
@@ -36,7 +37,7 @@
 
 | 结构 | 容量 | 职责 |
 |------|-----:|------|
-| `LQ` | 8 个物理槽 / 7 个可用项 | load 条目：地址/值独立就绪、store 转发落值、违例报告、完成总线 |
+| `LQ` | 8 个物理槽 / 7 个可用项 | load 条目：地址/值独立就绪、store 转发落值、完成总线 |
 | `SQ` | 8 个物理槽 / 7 个可用项 | store 条目：地址/数据两段就绪 + 显式 `committed`；是转发的**事实源**（查询周期初视图回答“是否存在更老同址 store”） |
 | `MemArbiter` | —（无状态） | 每周期准入 1 个访存请求；**store 优先**、DCache busy 时停发 |
 | StoreValue RS | 4 | store 数据源（数据就绪事件的发生地） |
@@ -77,25 +78,20 @@ FETCHING ────────── store 转发 ─────────
   显式置位，不再用 retained `robTag` 与当前 ROB head 推断。转发的新旧关系按 SQ
   从 head 到 tail 的队列位置确定；只有未提交、仍在 ROB 活跃窗内的 store 才做
   RobTag 年龄比较；
-- **地址未知的更老 store 不会阻塞 cache 请求**。`SQ::canDispatchLoad` 只阻塞已经
-  确认同址的更老 store，因此 load 可以投机越过未解析 store；若后者随后解析为
-  同址，由 §4 的违例恢复纠正。这与“遇到未知地址就保守停发”的实现不同。
+- **地址未知的更老 store 会阻塞 cache 请求**。`SQ::canDispatchLoad` 对更老的未提交
+  store 同时检查地址未知和已知同址两种情况；只有当所有更老 store 地址已知且没有
+  同址冲突时，load 才能进入 cache。这样 load 不会投机越过未解析 store。
 
-## 4. 记忆违例检测（MDP）
+## 4. 保守准入与恢复边界
 
-更老 store 的地址解析后，FlushArbiter 从 LQ 头向后扫描；第一个地址相同、年龄
-更年轻且值状态已为 `FETCHING` 或 `READY` 的 load 构成违例。`FETCHING` 也算，
-因为该 cache 请求已经在途且没有取消通路。
+保守准入使内存顺序违例在正常路径上不可发生：一个 load 进入 cache 时，所有更老
+未提交 store 的地址都已经解析，且没有已知同址 store。更老 store 后续不会再改变
+地址，因此不会出现已执行 load 被更老 store 追溯覆盖的情况。
 
-- **squash 边界是违例 load 自己，而不是触发检测的 store**：`SquashTag`、`SquashPC`
-  与 `CkptId` 都取该 load，重定向到 load 自己的 PC；store 与更老状态保留；
-- ROB 的边界语义保留该 load 条目，load 在发射时保存的 LQ 尾快照又是
-  **include-self** 边界，因此恢复不会把自己的 LQ 项越过；更年轻的 ROB/LQ/SQ
-  状态按快照截断。请求进入 `FlushArbiter` 后仍与分支请求统一按年龄仲裁
-  （见 [`backend.md`](backend.md) §6.2）。
-
-`SQ::replyToLoadRequest` 负责地址解析当拍的安全转发，`SQ::canDispatchLoad` 负责
-cache 准入时阻塞已知同址 store；未解析 store 则由上述投机 + 违例检测覆盖。
+`SQ::replyToLoadRequest` 与 `SQ::canDispatchLoad` 共同完成准入安全性：地址解析当拍
+优先尝试 store→load 转发；没有可转发值时，`canDispatchLoad` 再决定是否允许 cache
+请求。`LQ` 的 include-self 尾快照仍保留给统一的 ROB/分支 squash 边界，不代表 load
+仍会触发 squash。
 
 ## 5. 请求准入（MemArbiter → DCache）
 
@@ -129,8 +125,8 @@ ALU/MUL/DIV 三路结果同周期并行。
 | 地址/数据保留站 | StoreAddr 4（配合 AGU）+ StoreValue 4 |
 | 请求带宽 | 每周期 1 个访存请求（store 优先、DCache busy 停发） |
 | 转发 | 数据事件（StoreValue RS 就绪）+ 地址事件（AGU 最老有效 store 结果），基于 SQ 快照组合求值 |
-| 投机消歧 | 已知同址老 store 阻塞；地址未知老 store 可越过，解析后由违例检测纠正 |
-| 违例 | 老 store 地址解析 × 年轻同址 `FETCHING/READY` load；边界和重定向目标均为该 load |
+| 访存消歧 | 已知同址老 store 阻塞；地址未知老 store 也阻塞，load 不越过未解析 store |
+| 违例恢复 | 不再设置 MDP load-violation squash 通路；顺序由保守准入和 store→load 转发保证 |
 | 完成 | LQ oldest-ready、未广播项 → `lqCDB`（含 memIndex 通路） |
 | 命中路径 | DCache 命中 load 1 拍自答 `loadResp`（见 [cache.md](cache.md)） |
 

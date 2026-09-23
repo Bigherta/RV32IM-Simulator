@@ -1,7 +1,7 @@
 # 后端子系统：发射 · 乱序执行 · 写回 · 提交 · squash 恢复
 
 > 负责乱序核心本体：从 IQ 发射（rename）→ 保留站就绪乱序执行 → 结果总线写回 →
-> ROB 按序提交；误预测与记忆违例的排队、整窗恢复也在这里仲裁并触发。
+> ROB 按序提交；误预测的排队与整窗恢复也在这里仲裁并触发。
 > 保留站/标签广播源自 Tomasulo 算法，ROB 精确提交与物理寄存器重命名属于后续
 > 现代化扩展 [[1]](#back-ref-1)[[2]](#back-ref-2)[[3]](#back-ref-3)。
 > 相关实现：
@@ -43,7 +43,7 @@ M 扩展的两个执行单元（**乘法**、**除法**）在 §4.3 / §4.4 给�
                                       ▼
      aluCDB / mulCDB / divCDB / lqCDB ──► PRF 完成写口 / ROB 置位 / 训练
                                       ▼
-              ROB 按序提交 ──► FlushArbiter（误测/MDP 排队、最老优先）
+               ROB 按序提交 ──► FlushArbiter（误测排队、最老优先）
 ```
 
 | 结构/模块 | 职责 |
@@ -60,7 +60,7 @@ M 扩展的两个执行单元（**乘法**、**除法**）在 §4.3 / §4.4 给�
 | `AGU` | 访存地址计算（load/store；最老有效地址结果若为 store 则广播给 SQ） |
 | `BRU` | 条件分支执行 |
 | `CDB` | 四路结果总线载荷与门控（aluCDB/lqCDB/mulCDB/**divCDB**） |
-| `FlushArbiter`（DynamicArbiter） | squash 请求队列：检测（BRU 误测/CDB 误测/MDP）、最老优先 |
+| `FlushArbiter`（DynamicArbiter） | squash 请求队列：检测 BRU/CDB 误测、最老优先 |
 
 > `RS` 的类别计数在 `RS.hpp` 中为 `integerRS[INTEGERRS_CAP]`、`multiplyRS[MULTIPLYRS_CAP]`、
 > `divideRS[DIVIDERS_CAP]`、`loadRS`、`storeAddressRS`、`storeValueRS`；
@@ -120,7 +120,7 @@ ROB push / RS 占槽 / LQ/SQ push（访存指令）/ IQ pop。每周期**至多�
 - **保留站不缓存值**：就绪判定 `isOperandReady` 与取值 `getOperandValue` 直接
   查询 PRF（或返回立即数）。依赖唤醒的延迟表现为：结果经 CDB 写入 PRF 的下一
   拍，依赖它的保留站自然就绪——**总线数量不再是依赖链长度的上限**；
-- 提交时释放 `oldPhy` 回自由表（packed 循环序号语义天然支持 checkpoint `restoreHead`）。
+- 提交时释放 `oldPhy` 回自由表（squash 时按 ROB 窗口重放，把未提交的分配重新推回环尾）。
 
 ---
 
@@ -819,9 +819,9 @@ FQ/IQ/ROB/SQ 全空 ∧ DCache 非 busy ∧ DMEM 读写双口均空闲。后三�
 
 squash 回卷 `next`，提交推进 `head`，两者可同拍发生：若 ROB 头**严格早于**
 `SquashTag` 且已就绪，则该头项属于保留窗口，可以提交；`head == SquashTag` 时禁止
-提交，以保住 MDP 目标 load 的重放边界。`ROB::willCommit` 是 ROB pop、PRF 释放
-`oldPhy` 与 SQ store committed 通知的共同谓词；PRF 同拍执行 checkpoint `restoreHead`
-和自由表 tail 回收，二者不互斥。
+提交，以保住误预测目标条目的重放边界。`ROB::willCommit` 是 ROB pop、PRF 释放
+`oldPhy` 与 SQ store committed 通知的共同谓词；PRF 同拍把窗口重放回收到的
+`newPhy` 与 commit 的 `oldPhy` 一起写回自由环尾，二者不互斥。
 
 ### 6.2 FlushArbiter（squash 排队）
 
@@ -829,21 +829,25 @@ squash 回卷 `next`，提交推进 `head`，两者可同拍发生：若 ROB 头
 
 1. **BRU 分支误测**（BRU 最老有效结果 vs 预测）；
 2. **CDB JALR 误测**（ALU 总线上 `isControl` 载荷 vs 预测）；
-3. **记忆违例 MDP**（更老 store 地址解析发现更年轻 load 已越过，见
-   [访存](memory.md) §4）——同一周期多源请求时**最老优先**。
+同一周期多源请求时按 ROB 年龄**最老优先**。
 
 `arbitResult()` 产出全局 `squashDetect{SquashTag, SquashPC, CkptId}`，随后每个
 模块在自己的周期更新内按该窗口恢复：
 
 | 模块 | 恢复动作 |
 |------|----------|
-| `RAT` | 从被 squash 的最老 ROB 条目的 checkpoint 快照整表回滚 |
-| `PRF` | 按 ROB 条目 checkpoint 的 packed `headSeq`（分配后 canonical 值）`restoreHead`，回卷自由表（未提交分配全部作废） |
+| `RAT` | 从已提交的 `archRAT` 恢复，再按 `head..SquashTag`（含自身）重放存活 ROB 条目的 rename |
+| `PRF` | ROB 窗口重放：从 `robNextTag(SquashTag)` 扫到 ROB 尾，把窗口内各条的 `robNewPhy` push 回自由环（未提交的分配即被回收）；squash 拍**不** pop |
 | `BPU` | 按 `ckptId` 恢复 `BPUSnapshot`（8-bit GHR / AlignQueue tail / RAS_top）；无派生折叠视图需要重建（见 [frontend.md](frontend.md) §4.3） |
 | `FQ/IQ/RS/LQ/SQ` | 各按 ROB 条目记录的尾快照回卷（RS 释放槽位、LQ/SQ 按 `getTailSnapshot` 截断） |
 | `MUL` | `flush(tag)`：清 `partialRes/scRes` 的 valid + 清 `outputBuffer` 中不早于 tag 的槽位 |
 | `DIV` | `flush(tag)`：**整机清零**（`resultValid`/`regS`/`regC`/`regA`/`regB`/`dSlice`/`loopTimes`/`prepareValid`/`loopValid`/`fullAdderValid` 全归零）——单实例无缓冲，被 squash 即在算的那条已经作废 |
 | `FetchUnit` | 清 `haltFetched`（若被回卷）并从 `SquashPC` 重启取指 |
+
+RAT 不使用 `ckptId` 快照。提交时，ROB 头的 `newPhy` 写入 `archRAT`；squash 时，
+`SquashTag` 必须同时位于 `[head,next)` 存活窗口且匹配其 ROB 槽内的完整 tag，随后从
+`archRAT` 基线按 ROB 年龄重放到该 tag。目标控制指令本身仍留在 ROB 等待重执行，故其
+destination mapping 包含在重放范围内；squash 拍的 issue 已由 IssueArbiter 抑制。
 
 误预测惩罚 = squash 排队到前端重启取指之间的固定拍数 + 重执行时间；分支预测
 统计（`VERBOSE=branch`）在解析点记录正确/总数，含方向与目标两个维度。
@@ -868,7 +872,7 @@ squash 回卷 `next`，提交推进 `head`，两者可同拍发生：若 ROB 头
 | DIV 位宽 | $B_d=32/33$，$SW=33/34$，$PW=35/36$（寄存器持 $P=4W$）；`MASK` 硬下界 $=PW$ |
 | DIV 延迟 | $3+k$（满宽 17 拍 → **20 周期**）；迭代环路全长进位传播 0 次 |
 | DIV 特判 | $d{=}0$ / `INT_MIN÷-1` / $x<d$ / $x{=}d$ 均为 0 次 SRT 迭代；结果仍经寄存器与 divCDB 广播 |
-| FlushArbiter | 4 项请求队列；检测序 = BRU 误测 → CDB JALR 误测 → MDP；最老优先 |
+| FlushArbiter | 4 项请求队列；检测 BRU 误测 / CDB JALR 误测；最老优先 |
 | 停机 | halt 提交后继续 drain，直至 FQ/IQ/ROB/SQ 空、DCache 空闲、DMEM 双口空闲；出口 = `x10 & 0xFF` |
 
 ---
@@ -982,7 +986,7 @@ $0\text{xFF000000}\div0\text{x01000000}$（$k{=}5$）、$0\text{xFFFFFFFF}\div1$
 
 - [`../README.md`](../README.md) — 数据通路图 / 周期模型
 - [`frontend.md`](frontend.md) — 预测 checkpoint 的语义与恢复（GHR/RAS）
-- [`memory.md`](memory.md) — LQ/SQ 尾快照的推进、MDP 违例上报（squash 来源之一）
+- [`memory.md`](memory.md) — LQ/SQ 尾快照、store→load 转发与保守 load 准入
 - [`cache.md`](cache.md) — store 提交落缓存 / load 回填的存储侧行为
 - 仓库根目录 `docs/benchmarks.md` — 各用例 x10/clock 参考值（golden 唯一来源）
 
