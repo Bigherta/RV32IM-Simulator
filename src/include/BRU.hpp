@@ -17,10 +17,10 @@ private:
   BranchResult outputBuffer[BRU_CAP];
   bool slotValid[BRU_CAP] = {};
   void BRUExecute(uint32_t op1, uint32_t op2, uint32_t pc, uint32_t imm,
-                  Operation op, RobTag robTag);
-  void push(BranchResult);
-  void remove(uint8_t robTag);
-  void flush(uint8_t tag);
+                  Operation op, RobTag robTag, bool keep, systemState &CPUstate) const;
+  void push(BranchResult, bool keep, systemState &CPUstate) const;
+  void remove(uint8_t robTag, systemState &CPUstate) const;
+  void flush(uint8_t tag, systemState &CPUstate) const;
 
 public:
   bool isFull() const;

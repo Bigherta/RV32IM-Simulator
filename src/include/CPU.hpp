@@ -107,7 +107,9 @@ private:
   FetchDecision fetchDecision;
   FetchUnitInput fetchUnitInput;
   IMEMInput imemInput;
-  ICacheInput icacheInput{};
+  SRAM<NUM_OF_ICACHE_SETS, ICACHE_LINE_BITS, RV32_WORD_BITS>::Input
+      icacheDataInput{};
+  ICacheInput icacheInput{icacheDataInput};
   FQInput fqInput{ICacheModule, DecodeUnitModule};
 
 public:

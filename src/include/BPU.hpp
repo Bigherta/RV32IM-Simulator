@@ -79,15 +79,11 @@ private:
   uint32_t missPC[BTB_CAP] = {}; // sample PC per slot (last writer wins)
   uint8_t maxSpecTopOfRAS = 0;
   uint8_t maxArchTopOfRAS = 0;
-  void noteMiss(uint32_t pc) {
-    const auto i = (pc >> 2) & (BTB_CAP - 1);
-    ++missCnt[i];
-    missPC[i] = pc;
-  }
+  void noteMiss(uint32_t pc, bool extra, systemState &CPUstate) const;
 
-  void update(uint32_t pc, bool taken, uint32_t target, uint8_t ghr);
-  void updateJump(uint32_t pc, uint32_t target, bool isRet);
-  void shiftGHR(bool taken);
+  void update(uint32_t pc, bool taken, uint32_t target, uint8_t ghr, systemState &CPUstate) const;
+  void updateJump(uint32_t pc, uint32_t target, bool isRet, systemState &CPUstate) const;
+  void shiftGHR(bool taken, systemState &CPUstate) const;
 public:
   uint64_t getBranchTotal() const { return branchTotal; }
   uint64_t getBranchCorrect() const { return branchCorrect; }
@@ -103,7 +99,7 @@ public:
   PredictInfo predict(uint32_t pc) const;
 
   uint8_t snapshotCheckPoint() const;
-  void recoverCheckPoint(const uint8_t);
+  void recoverCheckPoint(const uint8_t, systemState &CPUstate) const;
   uint8_t getNextCkptId() const { return nextCkptId; }
   void tick(const BPUInput &, systemState &);
 };

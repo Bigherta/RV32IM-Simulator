@@ -6,40 +6,44 @@
 
 bool SQ::isEmpty() const { return tail == head; }
 
-bool SQ::isFull() const { return ((tail + 1) & SQ_MASK) == head; }
+bool SQ::isFull() const { return tail == (head ^ SQ_CAP); }
 
 bool SQ::isActive(uint8_t index) const {
   if (head == tail)
     return false;
-  return ((index - head + SQ_CAP) & SQ_MASK) <
-         ((tail - head + SQ_CAP) & SQ_MASK);
+  return index < SQ_CAP && ((index - head) & SQ_MASK) <
+         ((tail - head) & SQ_SEQ_MASK);
 }
 
-void SQ::pop() { head = (head + 1) & SQ_MASK; }
+void SQ::pop(systemState &CPUstate) const { CPUstate.SQModule.head = (head + 1) & SQ_SEQ_MASK; }
 
-void SQ::pushStore(RobTag robTag, int n_bytes) {
-  SQqueue[tail] = {};
-  SQqueue[tail].robTag = robTag;
-  SQqueue[tail].n_bytes = n_bytes;
-  SQqueue[tail].isAddressReady = false;
-  SQqueue[tail].isValueReady = false;
-  SQqueue[tail].isCommitted = false;
-  tail = (tail + 1) & SQ_MASK;
+void SQ::pushStore(RobTag robTag, int n_bytes, systemState &CPUstate) const {
+  const auto slot = tail & SQ_MASK;
+  CPUstate.SQModule.SQqueue[slot] = {};
+  CPUstate.SQModule.SQqueue[slot].robTag = robTag;
+  CPUstate.SQModule.SQqueue[slot].n_bytes = n_bytes;
+  CPUstate.SQModule.SQqueue[slot].isAddressReady = false;
+  CPUstate.SQModule.SQqueue[slot].isValueReady = false;
+  CPUstate.SQModule.SQqueue[slot].isCommitted = false;
+  CPUstate.SQModule.tail = (tail + 1) & SQ_SEQ_MASK;
 }
 
-uint8_t SQ::getHead() const { return head; }
+uint8_t SQ::getHead() const { return head & SQ_MASK; }
 uint8_t SQ::getTail() const { return tail; }
 
-void SQ::flush(uint8_t tailSnapshot) { tail = tailSnapshot; }
+void SQ::flush(uint8_t tailSnapshot, systemState &CPUstate) const { CPUstate.SQModule.tail = tailSnapshot; }
 
-void SQ::writeAddress(uint32_t address, int index) {
-  SQqueue[index].address = address;
-  SQqueue[index].isAddressReady = true;
+void SQ::writeAddress(uint32_t address, int index, systemState &CPUstate) const {
+  CPUstate.SQModule.SQqueue[index].address = address;
+  CPUstate.SQModule.SQqueue[index].isAddressReady = true;
 }
 
-void SQ::writeValue(int32_t value, int index) {
-  SQqueue[index].value = value;
-  SQqueue[index].isValueReady = true;
+void SQ::writeValue(int32_t value, int index, systemState &CPUstate) const {
+  CPUstate.SQModule.SQqueue[index].value = value;
+  CPUstate.SQModule.SQqueue[index].isValueReady = true;
+}
+void SQ::setCommitted(int index, systemState &CPUstate) const {
+  CPUstate.SQModule.SQqueue[index].isCommitted = true;
 }
 
 auto SQ::getAddress(int index) const -> uint32_t {
@@ -54,7 +58,7 @@ auto SQ::getValue(int index) const -> int32_t {
   throw std::runtime_error("Value is not ready!");
 }
 
-auto SQ::headRobTag() const -> uint8_t { return SQqueue[head].robTag; }
+auto SQ::headRobTag() const -> uint8_t { return SQqueue[head & SQ_MASK].robTag; }
 
 auto SQ::getRobTag(int index) const -> uint8_t { return SQqueue[index].robTag; }
 
@@ -75,7 +79,7 @@ auto SQ::planDataForward(int index, int32_t value) const -> StoreNotify {
     uint8_t i = (index + k) & SQ_MASK;
     if (i == index || !isActive(i))
       continue;
-    if (((i - index) & SQ_MASK) >= ((tail - index) & SQ_MASK))
+    if (((i - head) & SQ_MASK) <= ((index - head) & SQ_MASK))
       continue;
     if (SQqueue[i].address == SQqueue[index].address &&
         SQqueue[i].isAddressReady && !FoundKnownSameAddressOldest) {
@@ -109,7 +113,7 @@ auto SQ::planAddressForward(int index, uint32_t address) const -> StoreNotify {
     uint8_t i = (index + k) & SQ_MASK;
     if (i == index || !isActive(i))
       continue;
-    if (((i - index) & SQ_MASK) >= ((tail - index) & SQ_MASK))
+    if (((i - head) & SQ_MASK) <= ((index - head) & SQ_MASK))
       continue;
     if (SQqueue[i].address == address && SQqueue[i].isAddressReady &&
         !FoundKnownSameAddressOldest) {
@@ -192,7 +196,7 @@ void SQ::tick(const SQInput &input, systemState &CPUstate) {
   // issue apply: push the pre-built store entry
   const auto &p = input.issuePacket;
   if (p.valid && p.isStore)
-    CPUstate.SQModule.pushStore(p.robTag, p.nBytes);
+    pushStore(p.robTag, p.nBytes, CPUstate);
   // store value ready: write the value from the PRF (RS owns the slot,
   // it frees it in its own tick)
   for (int i = 0; i < STORERS_CAP; ++i) {
@@ -202,10 +206,10 @@ void SQ::tick(const SQInput &input, systemState &CPUstate) {
       if (!input.squashDetect.needSquash ||
           (input.squashDetect.needSquash &&
            ROB::isOlder(SeqTag, input.squashDetect.SquashTag))) {
-        CPUstate.SQModule.writeValue(
+        writeValue(
             input.PRFModule.getOperandValue(
                 input.RSModule.storeValueRS[i].data),
-            memSlot(input.RSModule.storeValueRS[i].memIndex));
+            memSlot(input.RSModule.storeValueRS[i].memIndex), CPUstate);
       }
     }
   }
@@ -216,9 +220,9 @@ void SQ::tick(const SQInput &input, systemState &CPUstate) {
     if (!input.squashDetect.needSquash ||
         (input.squashDetect.needSquash &&
          ROB::isOlder(aguRobTag, input.squashDetect.SquashTag))) {
-      CPUstate.SQModule.writeAddress(
+      writeAddress(
           input.AGUModule.headValue(),
-          memSlot(input.AGUModule.headMemIndex()));
+          memSlot(input.AGUModule.headMemIndex()), CPUstate);
     }
   }
   // dispatch decision apply: store sent to DMEM
@@ -227,20 +231,19 @@ void SQ::tick(const SQInput &input, systemState &CPUstate) {
   if (decision.valid && decision.request.op == Operation::Store)
     storeDispatched = true;
   if (storeDispatched)
-    CPUstate.SQModule.pop();
+    pop(CPUstate);
   if (input.ROBModule.storeWillCommit(input.squashDetect)) {
     const auto storeTag = input.ROBModule.getHead();
     for (int i = 0; i < SQ_CAP; ++i) {
       if (isActive(i) && SQqueue[i].robTag == storeTag &&
           !SQqueue[i].isCommitted) {
-        CPUstate.SQModule.setCommitted(i);
+        setCommitted(i, CPUstate);
       }
     }
   }
   // flush on squash
   if (input.squashDetect.needSquash &&
       input.ROBModule.matchesTag(input.squashDetect.SquashTag)) {
-    CPUstate.SQModule.flush(input.ROBModule.getSqTailSnapshot(
-        robSlot(input.squashDetect.SquashTag)));
+    flush(input.ROBModule.getSqTailSnapshot(robSlot(input.squashDetect.SquashTag)), CPUstate);
   }
 }

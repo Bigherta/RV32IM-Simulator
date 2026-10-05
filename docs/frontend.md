@@ -1,5 +1,10 @@
 # 前端子系统：取指 · 预译码 · 译码 · 分支预测
 
+> **2026-10-05 3A+3B-1**：FQ/IQ使用3-bit epoch，各4项；IQ满时actualIssue
+> 可接收旧FQ队首，FQ pop与IQ push相同。isFull仍是占用满，canAccept表达本拍能力。
+> FQ上游/ICache消费/HALT/新取指lookahead留3B-2，主树tick保持读快照写目标。
+> 下方 2026-10-01 的验收数值为历史，当前 D$8 KB、总 clock12,246,363，见活动 benchmark。
+
 > 负责"把指令送进乱序核心"：预测下一个 PC、沿预测路径取指、按序预译码并排队。前端只产生**顺序的指令流**——乱序执行由后端处理。
 > 相关实现：
 > `FetchUnit`(取指控制流)
@@ -12,6 +17,12 @@
 > 实现词汇：主树用周期初快照与 `tick()` 表达时序更新，模板树用 `Wire`、
 > `Register` 与 `work()/sync()` 表达同一硬件语义。下文统一使用“组合决策”和
 > “周期更新”，只在映射源码时区分这两套词汇。
+>
+> **当前活动取指版本（2026-10-01）**：两树 ICache 均为 1 KB、64 B 行、单端口同步 SRAM，
+> 队首命中最早 n+1 拍旁路进入 FQ。主树、模板 Release 与 `_DEBUG` 均通过 18/18 x10+cycles 门禁。
+> 当前测试结果见 [benchmarks.md](benchmarks.md)，阶段记录见 [process.md](process.md)。
+> 同日数据侧采用 16 KB/64 B 行直接映射 DCache，活动总 clock 12,209,929；缓存几何参数
+> 统一由组数与行长派生，取指端口与 n+1 队首交付契约见 [cache.md](cache.md)。
 
 ---
 
@@ -21,7 +32,7 @@
                  ┌──────────────── 前端 ─────────────────────────┐
   FetchDecision ─►│ FetchUnit(PC/halt) → ICache* → IMEM*         │
   （BPU 预测）     │        ▼                                    │
-                   │ InstructBuffer(FQ, 4槽/3可用) → IQ(4槽/3可用)│
+                   │ InstructBuffer(FQ, 4槽/4可用) → IQ(4槽/4可用)│
                    └──────────────┬──────────────────────────────┘
                                   ▼（进入后端发射）
 ```
@@ -29,8 +40,8 @@
 | 模块 | 职责 | 备注 |
 |------|------|------|
 | `FetchUnit` | PC 寄存器与 halt 闩锁（`programCounter` / `haltFetched`） | 每周期一个 `FetchDecision` 有效即推进 PC |
-| `InstructBuffer`（FQ） | 4 个物理槽、最多 3 条有效指令的环形取指队列，条目为 `{raw, pc, predictedPC, ckptId}` | 预译码为 RAS/BTB 提供精确跳转类型 |
-| `Decoder` / `DecodeUnit` | 指令译码 + Uop 环形队列 IQ（4 个物理槽、最多 3 条有效 Uop） | `Uop` 携带执行与恢复元数据 |
+| `InstructBuffer`（FQ） | 4 个物理槽、4 条有效指令；epoch 环形指针，条目为 `{raw, pc, predictedPC, ckptId}` | 预译码为 RAS/BTB 提供精确跳转类型 |
+| `Decoder` / `DecodeUnit` | 指令译码 + epoch 队列 IQ（4 个物理槽、4 条有效 Uop） | `Uop` 携带执行与恢复元数据 |
 | `BPU` | 方向预测（Tournament）+ 目标预测（BTB/RAS/SARAS） | 见 §4 |
 
 ---
@@ -41,33 +52,50 @@
 `FetchDecision` 输出 `Wire` 表达）：
 
 ```
+fillFire = IMEM.return.valid && ICache.selectRefill(return).valid && !needSquash
+readBlocked = fillFire && ICache.hit(PC)
 FetchDecision = build(BPU, PC, squashDetect, haltFetched, FQ.isFull(),
-                      ICache.isRequestFull() || IMEM.isRequestFull())
+                      ICache.isRequestFull() || IMEM.isRequestFull() || readBlocked)
 ```
+
+主树先求回填接受事件与读口冲突，再构建本拍 `FetchDecision`，最后分发给 FetchUnit、
+ICache、IMEM、BPU 和 SRAM 端口。`valid` 表示已获准的取指请求；所有消费者必须使用同一拍
+的决定。若在输入分发后才构建，消费者会收到上一拍决定，造成 PC、容量背压与端口使能错拍。
+模板由 `refillValid()` / `refillSlot()` 和 ICache Output `fillFire/readBlocked` 表达同一选择与仲裁；
+`readBlocked` 必须读取未门控的 FetchUnit PC，不能依赖 `BPU.outPC` 的取指准入门控。
 
 取指被**门控停止**当且仅当以下任一成立：
 
 - `squashDetect.needSquash`（有恢复在途，前端整窗清空后从目标 PC 重启）；
 - halt 已被闩锁（`haltFetched`，见 §2.2）；
 - FQ 满（背压）；
-- ICache/IMEM 请求队列满（回填在途）。
+- ICache/IMEM 请求队列满（回填在途）；
+- 同拍有获准回填写，且当前 PC 命中 ICache，无法获得单端口 SRAM 读口。
+
+这些条件反压取指级，后端和数据访存继续推进；新的 miss 不需要 ICache 读口，可与回填写同拍准入。
 
 ### 2.1 命中 / 缺失路径
 
-- **命中**：`ICache.hit(pc)` 成立则无需访问 IMEM，命中指令当拍组包入 FQ；
-- **缺失**：以**行对齐地址**（`pc & ~0xF`）向 IMEM 发起整行请求，IMEM 以 20 周期
-  主存延迟回填 16 B 行（`LineReturn` 四字总线），回填到达后由 ICache 持有并
-  组包供后续取指命中。
+- **命中**：无需访问 IMEM；第 n 拍接受请求并读取 SRAM。第 n+1 拍若保存的读身份
+  对应存活、未就绪队首，`headReadReady()` 让 `isReturnReady()/returnRaw()` 直接旁路
+  旧 SRAM 输出，FQ 无背压时当拍接收，PC/预测 PC/ckptId 仍来自队首请求槽。
+  已消费的读跳过落槽；非队首或未消费的读落槽保存，再按序交付。
+- **缺失**：以**64 B 行对齐地址**（`pc & ~0x3F`）向 IMEM 发起整行请求；20 周期主存
+  服务后返回 `LineReturn` 16-word 总线。组合逻辑从旧队首开始逐一检查 4 槽，将 critical word
+  写入第一个存活、未就绪、行地址匹配的 miss 槽。年轻请求可先完成，交付仍保持队首顺序。
+- **回填握手**：`fillFire` 同时确认 IMEM 返回被消费、ICache 请求槽完成及 SRAM 行写入；
+  没有匹配请求时 IMEM 保持返回。等待 SRAM 结果的 hit 不作为 miss 匹配。
 
 ICache 结果进入 FQ 的握手是组合谓词：`ICache 行返回就绪 ∧ ¬haltFetched ∧ ¬FQ满`；
 `popConsume` 表示该结果已被 FQ 接收，ICache 随后清除自己的持有状态。FQ 到 IQ
-是另一组握手：FQ 非空且 IQ 未满时，译码结果入 IQ，同时弹出 FQ 头。
+是另一组握手：FQ非空且IQ未满或本拍实际Issue时，旧FQ队首译码入IQ，同时弹出FQ头。
 
 ### 2.2 halt 闩锁
 
-ICache 头返回的指令字若等于停机字 `0x0ff00513`（`li a0, 255`），组合总线
-`haltSignal` 置位 → `FetchUnit` latch `haltFetched`，此后停止取指；该 halt 指令
-仍照常进入流水线并在后端提交时停机（程序出口 = 停机时 `x10` 低 8 位）。
+两树使用 `!FQ.full && ICache.isReturnReady() && returnRaw()==0x0ff00513` 生成
+`haltSignal`。在尚未停取时，这使 HALT 进入 FQ 与 `haltFetched` 锁存发生在同一拍；
+FQ 满时保持队首并等待，不能先锁存停取而把 HALT 自己挡在队列之外。该标记随后进入 ROB，
+提交并完成访存排空后停机（程序出口 = 停机时 `x10` 低 8 位）。
 
 ### 2.3 预译码（pre-decode, `scanJump`）
 
@@ -89,7 +117,7 @@ ICache 头返回的指令字若等于停机字 `0x0ff00513`（`li a0, 255`），
 
 `DecodeUnit` 的周期更新从 FQ 头取原始指令字，`Decoder::decode` 生成 `Uop`
 （类型/opcode/funct3/funct7/rd/rs1/rs2/imm/pc/halt/allocDest/predictedPC/
-ckptId），压入 IQ。FQ 头是否可被消费由 IQ 的周期初满状态决定。发射侧
+ckptId），压入IQ。FQ头能否消费由IQ拍初满状态与本拍实际Issue共同决定。发射侧
 （后端 IssueArbiter）从 IQ 头取指，见
 [`backend.md`](backend.md) §2。
 
@@ -123,8 +151,9 @@ selector 选出的结果记为 `directionTaken`。最终条件分支方向还受
 | 部件 | 配置 | 说明 |
 |------|------|------|
 | BTB | 64 条目 | 经典 Branch Target Buffer 的项目实现 [[5]](#front-ref-5)；语义项为 `{PC[31:8], target[31:2], state}`，`state` 编码 invalid/conditional/unconditional/return（后两者必 taken）；命中且无条件 ⇒ 必 taken |
-| RAS | 8 条目 `{retPC, times}` | RAS 用 call 压入的返回地址预测 return [[7]](#front-ref-7)；`times` 将连续相同返回地址压成计数项，是项目的递归去重策略；投机错位与修复机制见 [[8]](#front-ref-8) |
-| SARAS | 16 条目 `{addr, index, times}` | 受 Self-Aligning Return Address Stack 启发的恢复日志 [[9]](#front-ref-9)；论文使用传统 RAS、自对齐队列与栈顶计数器，本项目字段和 call-dedup/ret 撤销规则是具体适配，不宣称逐字段等同 |
+| RAS | 32 条目返回地址；`specRAS` 与 `archRAS` 各一份 | call 压入返回地址、return 弹栈并预测目标 [[7]](#front-ref-7)；恢复从提交基线重放存活 ROB，处理投机错位 [[8]](#front-ref-8) |
+
+当前源码不使用 `times` 去重或 SARAS 日志；旧方案的面积与实验数据保存在 benchmark 历史记录中。
 
 > 目标侧不设间接目标缓存（Target Cache）与提交级 BHT：方向侧改用 Tournament 后，BHT 仅服务
 > 间接目标哈希，二者构成闭环；活动语料中唯一的真间接站点为单目标，收益不可观测，遂按
@@ -139,17 +168,17 @@ selector 选出的结果记为 `directionTaken`。最终条件分支方向还受
 - **GHR 移位**：8-bit GHR 在取指侧于 `btbHit ∨ condSeen` 时随预测结果移位（`FetchDecision`
   携带 `shift/shiftValue`）；条件分支的解析结果也回填历史——历史成员资格不依赖
   BTB 驻留。
-- **checkpoint**：每次取指消耗一个 `ckptId`。活动池 `CKPT_CAP=32`，大于
-  `CKPT_LIVE_MAX = ROB16 + ICache request4 + FQ3 + IQ3 = 26`，由 `static_assert`
+- **checkpoint**：每次获准取指消耗一个 `ckptId`。活动池 `CKPT_CAP=32`，大于
+  `CKPT_LIVE_MAX = ROB16 + ICache request4 + FQ4 + IQ4 = 28`，由 `static_assert`
   守住不会在仍存活时复用 ID；逻辑 ID 与模板运输载体均按派生宽度收紧为 5 bit
   （`CKPT_ID_WIDTH`）。
-  `BPUSnapshot` 存 **8-bit GHR / AlignQueue tail / RAS_top**。`alignHead` 无消费者且不参与
-  队列索引，已删除。恢复时直接写回其余状态；
-  Tournament 不需要额外预测器元数据或派生历史视图。
+  当前 BPU checkpoint 仅保存 **8-bit GHR**。RAS 从旧 `archRAS` 提交基线恢复，按 ROB
+  从 head 到 `SquashTag`（含自身）的存活前缀重放 call/ret；不保存 per-checkpoint RAS 阵列。
 - **训练**：BRU 条件分支结果更新 localPHT/globalPHT/selector、condSeen 与目标侧状态；
   CDB 的 JAL/JALR 转移只更新目标侧。两个训练口共享周期初旧快照；表更新按资源固定写口
   仲裁（`fetch > cdb > bru`，BTB 的 identity/state 与 target 分两组），每个物理 Register
-  每拍至多一次写。BRU 侧维护投机态 GHR/RAS/bpCkpt；CDB 侧永不触碰投机态。
+  每拍至多一次写。获准取指维护投机 GHR，FQ 预译码维护 `specRAS`，ROB 提交维护
+  `archRAS`；squash 优先恢复投机态，CDB 训练侧不直接更新投机 GHR/RAS。
   **方向表不被 JAL/JALR 恒跳指令污染**。
 
 ---
@@ -158,8 +187,8 @@ selector 选出的结果记为 `directionTaken`。最终条件分支方向还受
 
 - **误预测恢复**：解析点（BRU 出队结果、CDB 上 JAL/JALR）在后端判对错；需要
   squash 时进入 `FlushArbiter` 排队（见 [`backend.md`](backend.md) §6）。前端侧
-  的恢复 = 按 `ckptId` 恢复 `BPUSnapshot`（GHR/Align/RAS）+ 整窗清空 FQ/IQ 后
-  从 `SquashPC` 重新取指。
+  的恢复 = 按 `ckptId` 恢复 GHR、从 `archRAS` 基线重放存活 ROB 的 call/ret，
+  并整窗清空投机取指/译码队列后从 `SquashPC` 重新取指。
 - **存储层次**：ICache 命中的取指数据来自 `cache.md` 描述的 L1I 行阵；缺失回填
   由 IMEM（20 周期主存延迟）承担。
 
@@ -169,13 +198,14 @@ selector 选出的结果记为 `directionTaken`。最终条件分支方向还受
 
 | 项 | 规格 |
 |----|------|
-| 取指带宽 | 每周期至多 1 条（FQ 有空位且无背压/无 squash/未闩锁 halt 时） |
-| FQ / IQ | 物理槽 4 / 4；环形队列保留一个空槽判满，实际最多容纳 3 / 3 条 |
+| 取指带宽 | 每周期至多 1 条；请求队列与 FQ 有空间、无 squash/未闩锁 halt，且命中读获得 SRAM 端口 |
+| 两树 ICache | 1 KB · 16×64 B · 单端口同步 SRAM · 4 项请求队列；队首命中最早 n+1 拍进入 FQ |
+| FQ / IQ | 各4项，3-bit epoch；IQ满时actualIssue可替换，FQ上游暂按满停收 |
 | 方向预测 | Tournament：localPHT 256×2b · globalPHT 256×2b · selector 256×2b · GHR 8b |
-| 目标预测与身份状态 | BTB 64 · RAS 8（times 9b）· SARAS 16（times 9b）· condSeen 512b |
-| checkpoint | ckptId 池 32（存活上界 26；逻辑与模板运输载体均 5 bit） |
+| 目标预测与身份状态 | BTB 64 · specRAS/archRAS 各 32 · condSeen 512b |
+| checkpoint | ckptId 池 32（存活上界 28；逻辑与模板运输载体均 5 bit） |
 | 预译码 | FQ 尾 jal/jalr 静态分类（call/ret/indirect + 静态 jal 目标） |
-| halt | ICache 头 = `0x0ff00513` ⇒ latch haltFetched 停取 |
+| halt | ready 队首 = `0x0ff00513` 且 FQ 不满 ⇒ 交付并 latch haltFetched 停取 |
 
 ## 相关文档
 

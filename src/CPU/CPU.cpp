@@ -1,8 +1,9 @@
 #include "../include/CPU.hpp"
 #include "../include/util.hpp"
+#include "common.hpp"
 #include <cassert>
-#include <cstdlib>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 
@@ -26,17 +27,16 @@ FetchTypeInfo scanJump(const struct lastPush &lp) {
   if (opcode == 0x6F) { // jal: direct call iff rd is a link register
     fi.isCall = rdLink;
     fi.jalTargetValid = true;
-    uint32_t uoff = ((raw >> 31) & 1U) << 20;         // imm[20]
-    uoff |= ((raw >> 20) & 1U) << 11;                 // imm[11]
-    for (int i = 12; i <= 19; ++i)                    // imm[19:12]
+    uint32_t uoff = ((raw >> 31) & 1U) << 20; // imm[20]
+    uoff |= ((raw >> 20) & 1U) << 11;         // imm[11]
+    for (int i = 12; i <= 19; ++i)            // imm[19:12]
       uoff |= ((raw >> i) & 1U) << i;
-    for (int i = 21; i <= 30; ++i)                    // imm[10:1]
+    for (int i = 21; i <= 30; ++i) // imm[10:1]
       uoff |= ((raw >> i) & 1U) << (i - 20);
     const auto off =
         static_cast<int32_t>((uoff ^ 0x100000U) - 0x100000U); // sign-extend
     // uint32 bit-vector add: signed int32_t add past the range is host UB.
-    fi.jalTarget =
-        static_cast<uint32_t>(lp.pc) + static_cast<uint32_t>(off);
+    fi.jalTarget = static_cast<uint32_t>(lp.pc) + static_cast<uint32_t>(off);
     fi.valid = true;
   } else if (opcode == 0x67 && funct3 == 0) { // jalr
     // Indirect call: rd is a link register (push ra), even for non-link rs1
@@ -58,8 +58,7 @@ uint32_t instructionAt(const IMEM &imem, uint32_t pc) {
 }
 } // namespace
 
-CPU::CPU(Memory mem)
-    : CPUstate(mem), IMEMModule(mem), DMEMModule(mem) {}
+CPU::CPU(Memory mem) : CPUstate(mem), IMEMModule(mem), DMEMModule(mem) {}
 
 void CPU::comb() {
   memcpy(&RSModule, &CPUstate.RSModule, sizeof(RSModule));
@@ -80,41 +79,48 @@ void CPU::comb() {
   memcpy(&BPUModule, &CPUstate.BPUModule, sizeof(BPUModule));
   IMEMModule.snapshotFrom(CPUstate.IMEMModule);
   memcpy(&flushArbiter, &CPUstate.flushArbiter, sizeof(flushArbiter));
-  memcpy(&FetchUnitModule, &CPUstate.FetchUnitModule,
-         sizeof(FetchUnitModule));
+  memcpy(&FetchUnitModule, &CPUstate.FetchUnitModule, sizeof(FetchUnitModule));
   DMEMModule.snapshotFrom(CPUstate.DMEMModule);
   DCacheModule.snapshotFrom(CPUstate.DCacheModule);
   squashDetect = CPUstate.flushArbiter.arbitResult();
+  // Build the accepted fetch before copying it into any consumer input.
+  const LineReturn lineReturn = IMEMModule.getReturn();
+  const auto refill = ICacheModule.selectRefill(lineReturn);
+  const bool fillFire =
+      lineReturn.valid && refill.valid && !squashDetect.needSquash;
+  const uint32_t pc = FetchUnitModule.getPC();
+  const bool icacheHit = ICacheModule.hit(pc);
+  const bool readBlocked = fillFire && icacheHit;
   fetchDecision = FetchDecision::build(
-      BPUModule, FetchUnitModule.getPC(), squashDetect,
-      FetchUnitModule.isHaltFetched(), FQModule.isFull(),
-      ICacheModule.isRequestFull() || IMEMModule.isRequestFull());
-  // FetchUnit halt signal: latch when the ICache head holds the halt
-  // instruction (combinational bus)
+      BPUModule, pc, squashDetect, FetchUnitModule.isHaltFetched(),
+      FQModule.isFull(), ICacheModule.isRequestFull() ||
+                             IMEMModule.isRequestFull() || readBlocked);
   {
     bool haltSignal =
-        ICacheModule.isReturnReady() && ICacheModule.returnRaw() == 0x0ff00513;
+      !FQModule.isFull() && ICacheModule.isReturnReady() && ICacheModule.returnRaw() == 0x0ff00513;
     fetchUnitInput.squashDetect = squashDetect;
     fetchUnitInput.fetchDecision = fetchDecision;
     fetchUnitInput.haltSignal = haltSignal;
   }
-  // ICache hit check (comb, read snapshot ICacheModule) -> gate IMEM miss request
-  // The line-return and FQ-consume handshakes are combinational predicates,
-  // each side clears its own state (write-own-only)
+  // ICache hit check (comb, read snapshot ICacheModule) -> gate IMEM miss
+  // request The line-return and FQ-consume handshakes are combinational
+  // predicates, each side clears its own state (write-own-only)
   {
-    bool icacheHit = fetchDecision.valid && ICacheModule.hit(fetchDecision.pc);
     FetchDecision imemFetch = fetchDecision;
     if (icacheHit)
       imemFetch.valid = false; // hit: no IMEM line fetch needed
     else if (fetchDecision.valid)
-      imemFetch.pc = fetchDecision.pc & ~0xF; // line-aligned block addr for IMEM
-    LineReturn lineReturn = IMEMModule.getReturn();
+      imemFetch.pc =
+          fetchDecision.pc &
+          ~ICACHE_OFFSET_MASK; // line-aligned block addr for IMEM
     imemInput.squashDetect = squashDetect;
     imemInput.fetchDecision = imemFetch;
-    imemInput.lineConsumed = lineReturn.valid;
+    imemInput.lineConsumed = fillFire;
     icacheInput.squashDetect = squashDetect;
     icacheInput.fetchDecision = fetchDecision;
     icacheInput.lineReturn = lineReturn;
+    icacheInput.lineReturn.valid = fillFire;
+    icacheInput.refillSlot = refill.slot;
     bool popConsume = ICacheModule.isReturnReady() &&
                       !FetchUnitModule.isHaltFetched() && !FQModule.isFull();
     icacheInput.popConsume = popConsume;
@@ -139,9 +145,9 @@ void CPU::comb() {
   } else if (cdbOfLQ.valid) {
     ++statLqOnly;
   }
-  DispatchBus dispatchBus = DispatchArbiter::arbitrate(
-      RSModule, ALUModule, AGUModule, BRUModule, MULModule, DIVModule,
-      PRFModule, squashDetect);
+  DispatchBus dispatchBus =
+      DispatchArbiter::arbitrate(RSModule, ALUModule, AGUModule, BRUModule,
+                                 MULModule, DIVModule, PRFModule, squashDetect);
   aguInput.squashDetect = squashDetect;
   aluInput.squashDetect = squashDetect;
   aluInput.cdbOutput = cdbOfALU;
@@ -161,10 +167,18 @@ void CPU::comb() {
   auto memDispatch = MemArbiter::arbitrate(LQModule, SQModule, ROBModule,
                                            DCacheModule, squashDetect);
   dcacheInput.decision = memDispatch;
+  dcacheInput.probe = CPUstate.DCacheModule.sampleProbe(memDispatch);
+#ifdef _DEBUG
+  // host-only: assertion reference sampled from Q[n], outside every tick().
+  if (memDispatch.valid && memDispatch.request.op == Operation::Load)
+    dcacheInput.referenceValue = CPUstate.DMEMModule.load_n_bytes(
+        memDispatch.request.address, memDispatch.request.n_bytes, memDispatch.request.isSigned);
+#endif
   // DMEM now only ever receives requests forwarded by the DCache: the DCache
   // emits its dual-channel pulse (registered in the live module at the end of
   // the previous tick, mirrored into the snapshot by snapshotFrom).
   dmemInput.request = DCacheModule.forwardRequest();
+  dmemInput.completedReadLine = CPUstate.DMEMModule.sampleReadCompletion();
   lqInput.decision = memDispatch;
   sqInput.decision = memDispatch;
   // store value-ready broadcast (data event): scan ready storeValueRS entries
@@ -210,6 +224,7 @@ void CPU::comb() {
   flarbInput.cdbOut = cdbOfALU;
   isarbInput.squashDetect = squashDetect;
   issuePacket = IssueArbiter::build(isarbInput);
+  fqInput.issueValid = issuePacket.valid;
   bruInput.squashDetect = squashDetect;
   bpuInput.squashDetect = squashDetect;
   bpuInput.cdbOut = cdbOfALU;
@@ -218,6 +233,20 @@ void CPU::comb() {
   // All load responses now come from the DCache (it is DMEM's sole client;
   // DMEM never receives Operation::Load anymore).
   lqInput.loadResp = DCacheModule.loadResp(squashDetect);
+
+  // SRAM combination logic
+  icacheDataInput.enable = icacheInput.lineReturn.valid || fetchDecision.valid;
+  icacheDataInput.writeEnable = icacheInput.lineReturn.valid;
+  icacheDataInput.addr =
+      ((icacheInput.lineReturn.valid ? icacheInput.lineReturn.lineAddr
+                                     : fetchDecision.pc) >>
+       ICACHE_OFFSET_BITS) &
+      ICACHE_INDEX_MASK;
+  for (int i = 0; i < ICACHE_WORDS_PER_LINE; ++i) {
+    icacheDataInput.writeData[i] = icacheInput.lineReturn.data[i];
+    icacheDataInput.writeMask[i] = true;
+  }
+
 }
 
 void CPU::run() {
@@ -236,16 +265,17 @@ void CPU::run() {
     comb();
     const uint32_t headBefore = static_cast<uint32_t>(ROBModule.getHead());
     const bool haltBefore = ROBModule.isHaltCommitted();
-    const uint32_t headPCBefore = ROBModule.isEmpty()
-                                      ? 0
-                                      : static_cast<uint32_t>(ROBModule.getPC(
-                                            headBefore & (ROB_CAP - 1)));
+    const uint32_t headPCBefore =
+        ROBModule.isEmpty() ? 0
+                            : static_cast<uint32_t>(
+                                  ROBModule.getPC(headBefore & (ROB_CAP - 1)));
     const uint32_t headInsnBefore = instructionAt(IMEMModule, headPCBefore);
     if (debug::enabled(debug::TOPIC_CFTRACE)) {
       if (fetchDecision.valid) {
         const auto prediction = BPUModule.predict(fetchDecision.pc);
       }
-      if (!BRUModule.isEmpty() && ROBModule.matchesTag(BRUModule.headRobTag()) &&
+      if (!BRUModule.isEmpty() &&
+          ROBModule.matchesTag(BRUModule.headRobTag()) &&
           (!squashDetect.needSquash ||
            ROB::isOlder(BRUModule.headRobTag(), squashDetect.SquashTag))) {
         const auto tag = BRUModule.headRobTag();
@@ -253,8 +283,8 @@ void CPU::run() {
         const auto pc = BRUModule.headPCFrom();
         const auto actual = BRUModule.headPCResult();
         const auto ckpt = ROBModule.getCkptId(index);
-        const auto predicted = static_cast<uint32_t>(ROBModule.getPredictedPC(index));
-        
+        const auto predicted =
+            static_cast<uint32_t>(ROBModule.getPredictedPC(index));
       }
       if (cdbOfALU.valid && cdbOfALU.isControl &&
           ROBModule.matchesTag(cdbOfALU.robTag) &&
@@ -264,10 +294,10 @@ void CPU::run() {
         const auto index = tag & (ROB_CAP - 1);
         const auto pc = static_cast<uint32_t>(ROBModule.getPC(index));
         const auto ckpt = ROBModule.getCkptId(index);
-        const auto predicted = static_cast<uint32_t>(ROBModule.getPredictedPC(index));
+        const auto predicted =
+            static_cast<uint32_t>(ROBModule.getPredictedPC(index));
         const auto actual = static_cast<uint32_t>(cdbOfALU.value);
         const uint32_t raw = instructionAt(IMEMModule, pc);
-        
       }
     }
     IMEMModule.tick(imemInput, CPUstate);
@@ -325,10 +355,11 @@ void CPU::run() {
         if (debug::enabled(debug::TOPIC_CFTRACE) &&
             (opcode == 0x63 || opcode == 0x6F || opcode == 0x67)) {
           const auto index = headBefore & (ROB_CAP - 1);
-          debug::print("CF_COMMIT t=%llu pc=%08x instr=%08x tag=%u pred=%08x ckpt=%u\n",
-                       clock, headPCBefore, headInsnBefore, headBefore,
-                       static_cast<uint32_t>(ROBModule.getPredictedPC(index)),
-                       ROBModule.getCkptId(index));
+          debug::print(
+              "CF_COMMIT t=%llu pc=%08x instr=%08x tag=%u pred=%08x ckpt=%u\n",
+              clock, headPCBefore, headInsnBefore, headBefore,
+              static_cast<uint32_t>(ROBModule.getPredictedPC(index)),
+              ROBModule.getCkptId(index));
         }
       }
       if (haltCommitted) {
@@ -362,11 +393,11 @@ void CPU::run() {
                  CPUstate.BPUModule.getMaxArchTopOfRAS());
   }
   if (debug::enabled(debug::TOPIC_PROFILE)) {
-    debug::print(
-        "PROFILE retired=%llu alu=%llu load=%llu store=%llu branch=%llu jal=%llu "
-        "jalr=%llu mul=%llu divrem=%llu other=%llu\n",
-        ipcRetired, mixAlu, mixLoad, mixStore, mixBranch, mixJal, mixJalr,
-        mixMul, mixDivRem, mixOther);
+    debug::print("PROFILE retired=%llu alu=%llu load=%llu store=%llu "
+                 "branch=%llu jal=%llu "
+                 "jalr=%llu mul=%llu divrem=%llu other=%llu\n",
+                 ipcRetired, mixAlu, mixLoad, mixStore, mixBranch, mixJal,
+                 mixJalr, mixMul, mixDivRem, mixOther);
   }
   if (debug::enabled(debug::TOPIC_BRANCH)) {
     // host-only: everything below this block is an end-of-run report for the
@@ -387,14 +418,14 @@ void CPU::run() {
     auto pct = [](uint64_t c, uint64_t t) {
       return t ? 100.0 * static_cast<double>(c) / static_cast<double>(t) : 0.0;
     };
-    debug::print(
-        "branch-type: cond=%llu/%llu(%.2f%%) jal=%llu/%llu(%.2f%%) "
-        "jalr=%llu/%llu(%.2f%%)\n",
-        bp.getCondCorrect(), bp.getCondTotal(),
-        pct(bp.getCondCorrect(), bp.getCondTotal()), bp.getJalCorrect(),
-        bp.getJalTotal(), pct(bp.getJalCorrect(), bp.getJalTotal()),
-        bp.getJalrCorrect(), bp.getJalrTotal(),
-        pct(bp.getJalrCorrect(), bp.getJalrTotal()));
+    debug::print("branch-type: cond=%llu/%llu(%.2f%%) jal=%llu/%llu(%.2f%%) "
+                 "jalr=%llu/%llu(%.2f%%)\n",
+                 bp.getCondCorrect(), bp.getCondTotal(),
+                 pct(bp.getCondCorrect(), bp.getCondTotal()),
+                 bp.getJalCorrect(), bp.getJalTotal(),
+                 pct(bp.getJalCorrect(), bp.getJalTotal()), bp.getJalrCorrect(),
+                 bp.getJalrTotal(),
+                 pct(bp.getJalrCorrect(), bp.getJalrTotal()));
   }
   if (debug::enabled(debug::TOPIC_BPMISS))
     CPUstate.BPUModule.dumpBpMiss();
@@ -403,15 +434,15 @@ void CPU::run() {
     uint32_t h = CPUstate.ICacheModule.getHitCount();
     uint32_t m = CPUstate.ICacheModule.getMissCount();
     uint32_t t = h + m;
-    debug::print("icache: hits=%u misses=%u total=%u hit-rate=%.2f%%\n", h, m, t,
-                 t ? 100.0 * h / t : 0.0);
+    debug::print("icache: hits=%u misses=%u total=%u hit-rate=%.2f%%\n", h, m,
+                 t, t ? 100.0 * h / t : 0.0);
     uint64_t dh = CPUstate.DCacheModule.getHitCount();
     uint64_t dm = CPUstate.DCacheModule.getMissCount();
     uint64_t dt = dh + dm;
     debug::print("dcache: hits=%llu misses=%llu total=%llu hit-rate=%.2f%%\n",
-                 dh, dm, dt, dt ? 100.0 * static_cast<double>(dh) /
-                                      static_cast<double>(dt)
-                                : 0.0);
+                 dh, dm, dt,
+                 dt ? 100.0 * static_cast<double>(dh) / static_cast<double>(dt)
+                    : 0.0);
   }
   if (debug::enabled(debug::TOPIC_CDB)) {
     debug::print("cdb: both=%llu aluOnly=%llu lqOnly=%llu "
@@ -419,8 +450,8 @@ void CPU::run() {
                  statBoth, statAluOnly, statLqOnly, statLqWins, statAluWins,
                  clock);
   }
-  const uint32_t halt_x10 = static_cast<uint32_t>(PRFModule.getValue(
-      RATModule.readRAT(ROBModule.getHaltRd())));
+  const uint32_t halt_x10 = static_cast<uint32_t>(
+      PRFModule.getValue(RATModule.readRAT(ROBModule.getHaltRd())));
   const bool print_full_x10 = std::getenv("RESULT_FULL") != nullptr;
   std::cout << std::dec << (print_full_x10 ? halt_x10 : (halt_x10 & 0xFF))
             << std::endl;

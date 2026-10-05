@@ -3,7 +3,7 @@
 #include "../include/common.hpp"
 #include <cstdint>
 void ALU::push(uint32_t op1, uint32_t op2, Operation op, RobTag robTag,
-               bool isControl) {
+               bool isControl, bool keep, systemState &CPUstate) const {
   // Operands and the result are uint32 bit vectors (RTL semantics).
   // Signedness is selected by the instruction: only SLT/SLTI and SRA
   // interpret the operand as int32_t; every other op is pure bit-vector
@@ -61,8 +61,8 @@ void ALU::push(uint32_t op1, uint32_t op2, Operation op, RobTag robTag,
   result.isControl = isControl;
   for (int i = 0; i < ALU_CAP; i++)
     if (!slotValid[i]) {
-      outputBuffer[i] = result;
-      slotValid[i] = true;
+      CPUstate.ALUModule.outputBuffer[i] = result;
+      CPUstate.ALUModule.slotValid[i] = keep;
       return;
     }
 }
@@ -114,35 +114,37 @@ bool ALU::isEmpty() const {
   return true;
 }
 
-void ALU::remove(uint8_t robTag) {
+void ALU::remove(uint8_t robTag, systemState &CPUstate) const {
   for (int i = 0; i < ALU_CAP; i++) {
     if (slotValid[i] && outputBuffer[i].robTag == robTag) {
-      slotValid[i] = false;
+      CPUstate.ALUModule.slotValid[i] = false;
       return;
     }
   }
 }
 
-void ALU::flush(uint8_t tag) {
+void ALU::flush(uint8_t tag, systemState &CPUstate) const {
   for (int i = 0; i < ALU_CAP; i++) {
     if (slotValid[i] && !ROB::isOlder(outputBuffer[i].robTag, tag))
-      slotValid[i] = false;
+      CPUstate.ALUModule.slotValid[i] = false;
   }
 }
 void ALU::tick(const ALUInput &input, systemState &CPUstate) {
   if (input.dispatch.valid) {
     auto &rs = input.RSModule.integerRS[input.dispatch.rsIndex];
-    CPUstate.ALUModule.push(
+    const bool keep = !input.squashDetect.needSquash ||
+                      ROB::isOlder(input.dispatch.robTag, input.squashDetect.SquashTag);
+    push(
         static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
         static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
-        rs.op, input.dispatch.robTag, isControlOp(rs.op));
+        rs.op, input.dispatch.robTag, isControlOp(rs.op), keep, CPUstate);
   }
   // ALU writeBack: consume this unit's own grant on the CDB result.
   if (input.cdbOutput.valid) {
-    CPUstate.ALUModule.remove(input.cdbOutput.robTag);
+    remove(input.cdbOutput.robTag, CPUstate);
   }
   // clear the wrong ALU outputBuffer
   if (input.squashDetect.needSquash) {
-    CPUstate.ALUModule.flush(input.squashDetect.SquashTag);
+    flush(input.squashDetect.SquashTag, CPUstate);
   }
 }

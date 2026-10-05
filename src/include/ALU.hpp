@@ -21,9 +21,9 @@ private:
   ArithmeticCalculateResult outputBuffer[ALU_CAP];
   bool slotValid[ALU_CAP] = {};
   void push(uint32_t op1, uint32_t op2, Operation op, RobTag robTag,
-            bool isControl);
-  void remove(uint8_t robTag);
-  void flush(uint8_t tag);
+            bool isControl, bool keep, systemState &CPUstate) const;
+  void remove(uint8_t robTag, systemState &CPUstate) const;
+  void flush(uint8_t tag, systemState &CPUstate) const;
 
 public:
   bool isFull() const;

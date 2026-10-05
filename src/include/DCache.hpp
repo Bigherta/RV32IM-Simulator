@@ -19,11 +19,19 @@ struct Cacheline {
   uint32_t tag = 0;
 };
 struct CacheSet {
-  std::array<Cacheline, NUM_OF_WAYS> lines;
+  std::array<Cacheline, NUM_OF_DCACHE_WAYS> lines;
   uint8_t plru = 0; // tree-PLRU: b2=root, b1=left, b0=right; 0=left,1=right
+};
+struct DCacheProbe {
+  CacheSet oldSet{};
+  uint32_t setIndex = 0;
+  uint8_t way = 0;
+  bool hit = false;
 };
 struct DCacheInput {
   MemDispatchDecision decision;
+  DCacheProbe probe; // Sampled by comb(), never from the write target in tick().
+  int32_t referenceValue = 0; // host-only clean-line assertion input.
   // Snapshot reference to the downstream memory: the DCache observes DMEM's
   // completion through the comb-refreshed snapshot (order-independent under
   // reorder_test; DMEM::tick only ever writes its own CPUstate members).
@@ -31,7 +39,8 @@ struct DCacheInput {
   DCacheInput(const DMEM &dmem) : DMEMModule(dmem) {}
 };
 
-// 64KB 4-way 16B line / LRU / write-back + write-allocate / dual-port DMEM
+// Parameterized data cache / direct mapping or tree-PLRU / write-back + write-allocate /
+// dual-port DMEM. Geometry is defined in common.hpp.
 // Hard constraints:
 //  * isBusy() == "a request is in flight" -- arbiter never issues while busy.
 //  * When !isBusy() the DCache must UNCONDITIONALLY accept the decision: the
@@ -42,7 +51,7 @@ private:
   enum class Phase : uint8_t { READY, WAIT };
   bool busy = false;
   Phase phase = Phase::READY;
-  std::array<CacheSet, NUM_OF_SETS> cacheSets;
+  std::array<CacheSet, NUM_OF_DCACHE_SETS> cacheSets;
   DCachePark cacheRequestBuffer;
   LoadResponse loadBuffer;
   DMEMRequest request;
@@ -78,4 +87,5 @@ public:
       const; // distribute the line without modifying anything
   void tick(const DCacheInput &, systemState &);
   void snapshotFrom(const DCache &other);
+  DCacheProbe sampleProbe(const MemDispatchDecision &) const;
 };

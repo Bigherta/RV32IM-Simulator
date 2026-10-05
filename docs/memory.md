@@ -1,5 +1,11 @@
 # 访存子系统：加载/存储队列 · 转发 · 保守准入
 
+> 3B-1只优化IQ/FQ转移，LSQ满时准入、释放与转发规则保持；两树全量周期一致。
+
+> **2026-10-05**：LQ/SQ 各 8 项全部可用，4-bit epoch 指针；恢复尾快照保存完整序号，
+> memIndex/getHead 仍是物理槽，getTail 返回序号。D$8 KB/64 B。主树所有 tick 只写 CPUstate，
+> DCache 行查询、DMEM 读完成载荷在 comb 采样；写完成从旧writeExecute读地址/数据，tick直接写内存。
+
 > 负责处理器侧的访存顺序语义：Load/Store 发射即入队，store 数据/地址以组合
 > 事件广播给 load（store→load 转发）；load 只有在更老 store 地址均已知且无
 > 已知同址冲突时才准入缓存，不再依赖 MDP 违例恢复；
@@ -14,6 +20,12 @@
 缓存与主存的存储行为（命中/回填/写回/延迟）见 [缓存与存储层次](cache.md)；
 本文件只描述 LQ/SQ 与仲裁逻辑。
 
+> **当前行粒度（2026-10-01）**：两树 ICache/IMEM 使用 64 B 的 `LineReturn`，
+> DCache/DMEM 使用独立的 64 B 字节载荷；D$ 为 16 KB 直接映射，两侧主存延迟均为 20 周期，返回总线与接受事件各自独立。
+> ICache 的 `fillFire/readBlocked` 只参与取指准入，不门控本节的 LQ/SQ、`MemArbiter`
+> 或 DCache 完成路径。活动性能结果见 [benchmarks.md](benchmarks.md)。
+> ICache 的队首 n+1 读输出旁路只缩短取指交付路径，不改变本节的 load/store 准入和数据侧延迟。
+
 ---
 
 ## 1. 边界与职责
@@ -22,10 +34,10 @@
          AGU（后端执行）                    ROB（后端提交）
         load/store 地址就绪                store 已提交
               │                                 │
-    StoreValue RS 数据就绪 ──(组合广播)──► SQ（8槽/7可用）◄── push（发射）
+    StoreValue RS 数据就绪 ──(组合广播)──► SQ（8槽/8可用）◄── push（发射）
               │ storeNotifies / addrNotify      │
               ▼                                 ▼
-       LQ（8槽/7可用）◄─────────────────── SQ 地址/数据事件
+       LQ（8槽/8可用）◄─────────────────── SQ 地址/数据事件
               │                                │
               │        MemArbiter（store 优先，每周期 1 请求）
               ▼                                ▼
@@ -37,8 +49,8 @@
 
 | 结构 | 容量 | 职责 |
 |------|-----:|------|
-| `LQ` | 8 个物理槽 / 7 个可用项 | load 条目：地址/值独立就绪、store 转发落值、完成总线 |
-| `SQ` | 8 个物理槽 / 7 个可用项 | store 条目：地址/数据两段就绪 + 显式 `committed`；是转发的**事实源**（查询周期初视图回答“是否存在更老同址 store”） |
+| `LQ` | 8 个物理槽 / 8 个可用项 | load 条目：地址/值独立就绪、store 转发落值、完成总线 |
+| `SQ` | 8 个物理槽 / 8 个可用项 | store 条目：地址/数据两段就绪 + 显式 `committed`；查询拍初快照 |
 | `MemArbiter` | —（无状态） | 每周期准入 1 个访存请求；**store 优先**、DCache busy 时停发 |
 | StoreValue RS | 4 | store 数据源（数据就绪事件的发生地） |
 
@@ -121,7 +133,7 @@ ALU/MUL/DIV 三路结果同周期并行。
 
 | 项 | 规格 |
 |----|------|
-| LQ / SQ | 各 8 个物理槽；保留一个空槽区分满/空，各最多 7 个有效项 |
+| LQ / SQ | 各 8 个物理/有效槽；4-bit epoch 序号区分满空，数组仅用 slot |
 | 地址/数据保留站 | StoreAddr 4（配合 AGU）+ StoreValue 4 |
 | 请求带宽 | 每周期 1 个访存请求（store 优先、DCache busy 停发） |
 | 转发 | 数据事件（StoreValue RS 就绪）+ 地址事件（AGU 最老有效 store 结果），基于 SQ 快照组合求值 |

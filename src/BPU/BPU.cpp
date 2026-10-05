@@ -77,7 +77,7 @@ PredictInfo BPU::predict(uint32_t pc) const {
   return out;
 }
 
-void BPU::update(uint32_t pc, bool taken, uint32_t target, uint8_t ghr) {
+void BPU::update(uint32_t pc, bool taken, uint32_t target, uint8_t ghr, systemState &CPUstate) const {
   const uint32_t p2 = static_cast<uint32_t>(pc) >> 2;
   const uint32_t localIndex = p2 & (BHT_CAP - 1);
   const uint32_t globalIndex = (p2 ^ ghr) & (BHT_CAP - 1);
@@ -85,8 +85,8 @@ void BPU::update(uint32_t pc, bool taken, uint32_t target, uint8_t ghr) {
   const bool localPred = dir.localPHT[localIndex] >= 2;
   const bool globalPred = dir.globalPHT[globalIndex] >= 2;
 
-  auto &local = dir.localPHT[localIndex];
-  auto &global = dir.globalPHT[globalIndex];
+  auto local = dir.localPHT[localIndex];
+  auto global = dir.globalPHT[globalIndex];
   if (taken) {
     if (local < 3)
       ++local;
@@ -99,7 +99,7 @@ void BPU::update(uint32_t pc, bool taken, uint32_t target, uint8_t ghr) {
       --global;
   }
 
-  auto &choice = dir.selector[selectorIndex];
+  auto choice = dir.selector[selectorIndex];
   if (globalPred == taken && localPred != taken) {
     if (choice < 3)
       ++choice;
@@ -108,30 +108,33 @@ void BPU::update(uint32_t pc, bool taken, uint32_t target, uint8_t ghr) {
       --choice;
   }
 
-  tgt.condSeen[p2 & (CONDSEEN_CAP - 1)] = true;
+  CPUstate.BPUModule.dir.localPHT[localIndex] = local;
+  CPUstate.BPUModule.dir.globalPHT[globalIndex] = global;
+  CPUstate.BPUModule.dir.selector[selectorIndex] = choice;
+  CPUstate.BPUModule.tgt.condSeen[p2 & (CONDSEEN_CAP - 1)] = true;
 
   // BTB train on taken conditional
   auto BTB_index = p2 & (BTB_CAP - 1);
   if (taken) {
-    tgt.BTB[BTB_index].actualPC = static_cast<uint32_t>(pc);
-    tgt.BTB[BTB_index].target = target;
-    tgt.BTB[BTB_index].valid = true;
-    tgt.BTB[BTB_index].unconditional = false;
-    tgt.BTB[BTB_index].isRet = false;
+    CPUstate.BPUModule.tgt.BTB[BTB_index].actualPC = static_cast<uint32_t>(pc);
+    CPUstate.BPUModule.tgt.BTB[BTB_index].target = target;
+    CPUstate.BPUModule.tgt.BTB[BTB_index].valid = true;
+    CPUstate.BPUModule.tgt.BTB[BTB_index].unconditional = false;
+    CPUstate.BPUModule.tgt.BTB[BTB_index].isRet = false;
   }
 
   // Committed target history: every resolved branch folds its outcome into
   // the per-slot 8b BHR consumed by the Target Cache hash.
 }
 
-void BPU::updateJump(uint32_t pc, uint32_t target, bool isRet) {
+void BPU::updateJump(uint32_t pc, uint32_t target, bool isRet, systemState &CPUstate) const {
   const uint32_t p2 = static_cast<uint32_t>(pc) >> 2;
   auto BTB_index = p2 & (BTB_CAP - 1);
-  tgt.BTB[BTB_index].actualPC = static_cast<uint32_t>(pc);
-  tgt.BTB[BTB_index].target = target;
-  tgt.BTB[BTB_index].valid = true;
-  tgt.BTB[BTB_index].unconditional = true;
-  tgt.BTB[BTB_index].isRet = isRet;
+  CPUstate.BPUModule.tgt.BTB[BTB_index].actualPC = static_cast<uint32_t>(pc);
+  CPUstate.BPUModule.tgt.BTB[BTB_index].target = target;
+  CPUstate.BPUModule.tgt.BTB[BTB_index].valid = true;
+  CPUstate.BPUModule.tgt.BTB[BTB_index].unconditional = true;
+  CPUstate.BPUModule.tgt.BTB[BTB_index].isRet = isRet;
 
   // true indirect jump: train Target Cache at this context's hash.
   // Direct JALs never touch TC — their BTB target is exact and must not
@@ -156,19 +159,27 @@ void BPU::dumpBpMiss() const {
   }
 }
 
-void BPU::shiftGHR(bool taken) {
-  dir.GHR = static_cast<uint8_t>(
+void BPU::shiftGHR(bool taken, systemState &CPUstate) const {
+  CPUstate.BPUModule.dir.GHR = static_cast<uint8_t>(
       ((static_cast<uint32_t>(dir.GHR) << 1) | (taken ? 1u : 0u)) &
       HISTORY_MASK);
 }
 
 uint8_t BPU::snapshotCheckPoint() const { return dir.GHR; }
 
-void BPU::recoverCheckPoint(const uint8_t ghr) {
-  dir.GHR = ghr;
+void BPU::recoverCheckPoint(const uint8_t ghr, systemState &CPUstate) const {
+  CPUstate.BPUModule.dir.GHR = ghr;
+}
+
+void BPU::noteMiss(uint32_t pc, bool extra, systemState &CPUstate) const {
+  const auto i = (pc >> 2) & (BTB_CAP - 1);
+  CPUstate.BPUModule.missCnt[i] = missCnt[i] + 1 + static_cast<unsigned>(extra);
+  CPUstate.BPUModule.missPC[i] = pc;
 }
 
 void BPU::tick(const BPUInput &input, systemState &CPUstate) {
+  uint64_t total = branchTotal, totalCorrect = branchCorrect;
+  uint32_t bruMissIndex = BTB_CAP;
   Cand bru, cdb;
   if (!input.BRUModule.isEmpty() &&
       input.ROBModule.matchesTag(input.BRUModule.headRobTag())) {
@@ -178,17 +189,19 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
     if (!input.squashDetect.needSquash ||
         (input.squashDetect.needSquash &&
          ROB::isOlder(brRobTag, input.squashDetect.SquashTag))) {
-      ++CPUstate.BPUModule.branchTotal;
+      ++total;
       // BRU resolves conditional branches only -> class = cond.
-      ++CPUstate.BPUModule.condTotal;
+      CPUstate.BPUModule.condTotal = condTotal + 1;
       const uint32_t predictedPC = static_cast<uint32_t>(
           input.ROBModule.getPredictedPC(robSlot(brRobTag)));
       bool correct = pcResult == predictedPC;
       if (correct) {
-        ++CPUstate.BPUModule.branchCorrect;
-        ++CPUstate.BPUModule.condCorrect;
-      } else
-        CPUstate.BPUModule.noteMiss(pcFrom);
+        ++totalCorrect;
+        CPUstate.BPUModule.condCorrect = condCorrect + 1;
+      } else {
+        noteMiss(pcFrom, false, CPUstate);
+        bruMissIndex = (pcFrom >> 2) & (BTB_CAP - 1);
+      }
       bru.valid = true;
       // PC values are uint32 bit vectors.
       bru.pc = static_cast<uint32_t>(pcFrom);
@@ -206,27 +219,28 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
     if (!input.squashDetect.needSquash ||
         (input.squashDetect.needSquash &&
          ROB::isOlder(cdbOut.robTag, input.squashDetect.SquashTag))) {
-      ++CPUstate.BPUModule.branchTotal;
+      ++total;
       // CDB control transfers are JAL/JALR (both decode to Operation::JALR;
       // the ROB distinguishes them): direct JAL has isIndirect == false,
       // register-driven JALR has isIndirect == true.
       const bool isJalr = input.ROBModule.isIndirect(robIdx);
       if (isJalr)
-        ++CPUstate.BPUModule.jalrTotal;
+        CPUstate.BPUModule.jalrTotal = jalrTotal + 1;
       else
-        ++CPUstate.BPUModule.jalTotal;
+        CPUstate.BPUModule.jalTotal = jalTotal + 1;
       bool correct = pc == input.ROBModule.getPredictedPC(robIdx);
       if (correct) {
-        ++CPUstate.BPUModule.branchCorrect;
+        ++totalCorrect;
         if (isJalr)
-          ++CPUstate.BPUModule.jalrCorrect;
+          CPUstate.BPUModule.jalrCorrect = jalrCorrect + 1;
         else
-          ++CPUstate.BPUModule.jalCorrect;
-      } else
+          CPUstate.BPUModule.jalCorrect = jalCorrect + 1;
+      } else {
         // record the jump SITE, not its target: targets are arbitrary
         // addresses that would poison the per-PC miss profile.
-        CPUstate.BPUModule.noteMiss(
-            static_cast<uint32_t>(input.ROBModule.getPC(robIdx)));
+        const auto site = static_cast<uint32_t>(input.ROBModule.getPC(robIdx));
+        noteMiss(site, bruMissIndex == ((site >> 2) & (BTB_CAP - 1)), CPUstate);
+      }
       cdb.valid = true;
       cdb.pc = input.ROBModule.getPC(robIdx);
       cdb.taken = true;
@@ -239,9 +253,9 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
 
   auto apply = [&](const Cand &c) {
     if (c.cond)
-      CPUstate.BPUModule.update(c.pc, c.taken, c.target, c.ghr);
+      update(c.pc, c.taken, c.target, c.ghr, CPUstate);
     else
-      CPUstate.BPUModule.updateJump(c.pc, c.target, c.isRet);
+      updateJump(c.pc, c.target, c.isRet, CPUstate);
   };
   if (bru.valid)
     apply(bru);
@@ -252,7 +266,7 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
   if (fd.valid) {
     CPUstate.BPUModule.GHRCheckpoint[fd.ckptId] = snapshotCheckPoint();
     if (fd.shift)
-      CPUstate.BPUModule.shiftGHR(fd.shiftValue);
+      shiftGHR(fd.shiftValue, CPUstate);
     CPUstate.BPUModule.nextCkptId = (fd.ckptId + 1) & (CKPT_CAP - 1);
   }
   // Pre-decode scanner: RAS maintenance keyed on decoded instruction type
@@ -264,17 +278,16 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
   const auto &fi = input.fetchInfo;
   if (fi.valid) {
     const uint32_t returnAddress = fi.pc + 4;
-    if (fi.isCall) {
-      CPUstate.BPUModule
-          .tgt.specRAS[CPUstate.BPUModule.tgt.specTopOfRAS++] = returnAddress;
-    } else if (fi.isRet) {
-      --CPUstate.BPUModule.tgt.specTopOfRAS;
+    if (fi.isCall && tgt.specTopOfRAS < RAS_CAP) {
+      CPUstate.BPUModule.tgt.specRAS[tgt.specTopOfRAS] = returnAddress;
+      CPUstate.BPUModule.tgt.specTopOfRAS = tgt.specTopOfRAS + 1;
+    } else if (fi.isRet && tgt.specTopOfRAS > 0) {
+      CPUstate.BPUModule.tgt.specTopOfRAS = tgt.specTopOfRAS - 1;
     }
     // Early BTB type/target training: jal carries its static target in the
     // encoding, so direct calls become perfectly predicted from their second
-    // encounter without waiting for a resolve. Writes MUST go to
-    // CPUstate.BPUModule (the committed state): tick() executes on the
-    // comb-snapshot copy, and bare tgt writes here never persisted.
+    // encounter without waiting for a resolve. Write only target fields;
+    // conditions and indices come from the snapshot and input.
     if (fi.isCall || (!fi.isCall && !fi.isRet)) {
       auto BTB_index = (fi.pc >> 2) & (BTB_CAP - 1);
       CPUstate.BPUModule.tgt.BTB[BTB_index].actualPC = fi.pc;
@@ -296,16 +309,17 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
   // Commit is the architectural RAS baseline used for later ROB replay.
   if (input.ROBModule.willCommit(input.squashDetect)) {
     const auto headIndex = robSlot(input.ROBModule.getHead());
-    if (input.ROBModule.isCall(headIndex))
-      CPUstate.BPUModule
-          .tgt.archRAS[CPUstate.BPUModule.tgt.archTopOfRAS++] =
+    if (input.ROBModule.isCall(headIndex) && tgt.archTopOfRAS < RAS_CAP) {
+      CPUstate.BPUModule.tgt.archRAS[tgt.archTopOfRAS] =
           static_cast<uint32_t>(input.ROBModule.getPC(headIndex)) + 4u;
-    else if (input.ROBModule.isRet(headIndex))
-      --CPUstate.BPUModule.tgt.archTopOfRAS;
+      CPUstate.BPUModule.tgt.archTopOfRAS = tgt.archTopOfRAS + 1;
+    } else if (input.ROBModule.isRet(headIndex) && tgt.archTopOfRAS > 0) {
+      CPUstate.BPUModule.tgt.archTopOfRAS = tgt.archTopOfRAS - 1;
+    }
   }
   if (input.squashDetect.needSquash) {
     // recover GHR
-    CPUstate.BPUModule.recoverCheckPoint(GHRCheckpoint[input.squashDetect.CkptId]);
+    recoverCheckPoint(GHRCheckpoint[input.squashDetect.CkptId], CPUstate);
     // Restore the old committed baseline, then replay every surviving ROB
     // entry through the squash instruction itself.
     assert(input.ROBModule.matchesTag(input.squashDetect.SquashTag));
@@ -318,10 +332,10 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
     for (int i = 0; i < ROB_CAP; ++i) {
       if (!recovered) {
         const auto robIndex = robSlot(robTag);
-        if (input.ROBModule.isCall(robIndex))
+        if (input.ROBModule.isCall(robIndex) && commitTOS < RAS_CAP)
           CPUstate.BPUModule.tgt.specRAS[commitTOS++] =
               static_cast<uint32_t>(input.ROBModule.getPC(robIndex)) + 4u;
-        else if (input.ROBModule.isRet(robIndex))
+        else if (input.ROBModule.isRet(robIndex) && commitTOS > 0)
           --commitTOS;
         recovered = robTag == input.squashDetect.SquashTag;
         robTag = robNextTag(robTag);
@@ -329,10 +343,12 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
     }
     assert(recovered);
     CPUstate.BPUModule.tgt.specTopOfRAS = commitTOS;
-    if (commitTOS > CPUstate.BPUModule.maxSpecTopOfRAS)
+    if (commitTOS > maxSpecTopOfRAS)
       CPUstate.BPUModule.maxSpecTopOfRAS = commitTOS;
     // recover next checkpoint id
     CPUstate.BPUModule.nextCkptId =
         (input.squashDetect.CkptId + 1) & (CKPT_CAP - 1);
   }
+  CPUstate.BPUModule.branchTotal = total;
+  CPUstate.BPUModule.branchCorrect = totalCorrect;
 }

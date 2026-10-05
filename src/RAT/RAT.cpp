@@ -48,7 +48,8 @@ void RAT::tick(const RATInput &input, systemState &CPUstate) {
     assert(validSquash);
 #endif
 
-    CPUstate.RATModule.restoreRAT();
+    for (int i = 0; i < REGISTER_CAP; ++i)
+      CPUstate.RATModule.specRAT[i] = archRAT[i];
     RobTag replayCursor = input.ROBModule.getHead();
     bool restoreDone = false;
     for (int k = 0; k < ROB_CAP; ++k) {
@@ -59,7 +60,7 @@ void RAT::tick(const RATInput &input, systemState &CPUstate) {
       const auto dest = input.ROBModule.getRd(index);
       const auto newPhy = input.ROBModule.getNewPhy(index);
       if (dest != 0 && newPhy != InvalidPhy) {
-        CPUstate.RATModule.setSpecRAT(dest, newPhy);
+        CPUstate.RATModule.specRAT[dest] = newPhy;
       }
 
       if (replayCursor == squashTag) {
@@ -72,8 +73,7 @@ void RAT::tick(const RATInput &input, systemState &CPUstate) {
     // 2. write speculative RAT with issue write intention
     if (input.issuePacket.valid) {
       if (input.issuePacket.allocDest) {
-        CPUstate.RATModule.setSpecRAT(input.issuePacket.robEntry.dest,
-                                      input.issuePacket.phy);
+        CPUstate.RATModule.specRAT[input.issuePacket.robEntry.dest] = input.issuePacket.phy;
       }
     }
   }
@@ -83,6 +83,6 @@ void RAT::tick(const RATInput &input, systemState &CPUstate) {
     auto dest = input.ROBModule.getRd(index);
     auto newPhy = input.ROBModule.getNewPhy(index);
     if (dest != 0 && newPhy != InvalidPhy)
-      CPUstate.RATModule.setArchRAT(dest, newPhy);
+      CPUstate.RATModule.archRAT[dest] = newPhy;
   }
 }

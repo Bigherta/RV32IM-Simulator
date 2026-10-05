@@ -29,22 +29,22 @@ uint8_t clz(uint32_t num) {
   return leadingZeros;
 } // require num >= 0
 } // namespace
-void DIV::receive(uint32_t op1, uint32_t op2, RobTag tag, Operation op) {
+void DIV::receive(uint32_t op1, uint32_t op2, RobTag tag, Operation op, systemState &CPUstate) const {
   // Stage 0 front-end (a): special cases (RISC-V semantics, return at once).
   // Parameters are (quotient, remain); the field this op does not produce is
   // written as 0. The signed paths' signs are already folded into the
   // patterns passed here (sec 2.1(b)), so no further sign fixup is needed.
   auto finish = [&](uint32_t quotientValue, uint32_t remainValue) {
-    quotient = quotientValue;
-    remain = remainValue;
+    CPUstate.DIVModule.quotient = quotientValue;
+    CPUstate.DIVModule.remain = remainValue;
     // The callers already fold the sign into the 32-bit pattern (sec 2.1(b)),
     // so getValue() must NOT negate again. These two flags are stale leftovers
     // from the previous instruction at this point -- clear them explicitly.
-    isResultNegative = false;
-    isDividendNegative = false;
-    resultValid = true;
-    robTag = tag;
-    operationType = op;
+    CPUstate.DIVModule.isResultNegative = false;
+    CPUstate.DIVModule.isDividendNegative = false;
+    CPUstate.DIVModule.resultValid = true;
+    CPUstate.DIVModule.robTag = tag;
+    CPUstate.DIVModule.operationType = op;
   };
   // d = 0 (checked first, so 0/0 lands here): div -> -1, divu -> 2^32-1,
   // rem/remu -> x.
@@ -85,67 +85,75 @@ void DIV::receive(uint32_t op1, uint32_t op2, RobTag tag, Operation op) {
       return finish(0u, 0u);
     }
   }
-  resultValid = false;
-  robTag = tag;
-  operationType = op;
+  CPUstate.DIVModule.resultValid = false;
+  CPUstate.DIVModule.robTag = tag;
+  CPUstate.DIVModule.operationType = op;
   // signed magnitudes only for DIV/REM; DIVU/REMU keep the raw bit patterns
   const bool signedOp = (op == Operation::DIV || op == Operation::REM);
-  isDividendNegative = signedOp && (((op1 >> 31) & 1u) != 0);
-  unsignedDividend = isDividendNegative ? (~op1 + 1u) : op1;
+  const bool dividendNegative = signedOp && (((op1 >> 31) & 1u) != 0);
+  CPUstate.DIVModule.isDividendNegative = dividendNegative;
+  CPUstate.DIVModule.unsignedDividend = dividendNegative ? (~op1 + 1u) : op1;
   const bool divisorNegative = signedOp && (((op2 >> 31) & 1u) != 0);
-  unsignedDivisor = divisorNegative ? (~op2 + 1u) : op2;
-  isResultNegative = (divisorNegative ^ isDividendNegative) ? 1 : 0;
-  prepareValid = true;
+  CPUstate.DIVModule.unsignedDivisor = divisorNegative ? (~op2 + 1u) : op2;
+  CPUstate.DIVModule.isResultNegative = (divisorNegative ^ dividendNegative) ? 1 : 0;
+  CPUstate.DIVModule.prepareValid = true;
 } // Dispatch is admitted only when canAccept() sees all stage flags and
   // resultValid low.
-void DIV::prepare() {
+void DIV::prepare(systemState &CPUstate) const {
   // unsignedDividend holds |x| (P side); unsignedDivisor holds |d| (D side).
-  clzX = clz(unsignedDividend); // clzX = CLZ of |x|
-  clzD = clz(unsignedDivisor);  // clzD = CLZ of |d|
-  prepareValid = false;
+  const auto clzXValue = clz(unsignedDividend);
+  const auto clzDValue = clz(unsignedDivisor);
+  CPUstate.DIVModule.clzX = clzXValue;
+  CPUstate.DIVModule.clzD = clzDValue;
+  CPUstate.DIVModule.prepareValid = false;
   // the special-case judge already handled the clzX > clzD scenario
-  unsignedDivisor = unsignedDivisor << clzD;   // D = |d| << clzD
-  unsignedDividend = unsignedDividend << clzX; // P_1 = |x| << clzX
-  auto align = clzD - clzX;
+  const auto dividend = unsignedDividend << clzXValue;
+  auto align = clzDValue - clzXValue;
   // ceil(align/2): prepare already consumed q_1, so loop() runs k-1 ticks
-  loopTimes = (align + 1) >> 1;
+  const auto loops = (align + 1) >> 1;
+  CPUstate.DIVModule.loopTimes = loops;
   // the 2^-shiftD factor lands on the divisor (sec 2.1(f))
-  shiftD = align & 1;
-  unsignedDivisor <<= shiftD; // D_dp = D << shiftD
-  dSlice = shiftD ? (unsignedDivisor >> ulpExpWithShiftD) & 31
-                  : (unsignedDivisor >> ulpExpNoShiftD) & 31;
-  dSlice3 = dSlice + (dSlice << 1);
+  const bool shift = align & 1;
+  const auto divisor = unsignedDivisor << clzDValue << shift;
+  const int32_t divisorSlice = shift ? (divisor >> ulpExpWithShiftD) & 31
+                                    : (divisor >> ulpExpNoShiftD) & 31;
+  const int32_t divisorSlice3 = divisorSlice + (divisorSlice << 1);
+  CPUstate.DIVModule.shiftD = shift;
+  CPUstate.DIVModule.unsignedDivisor = divisor;
+  CPUstate.DIVModule.unsignedDividend = dividend;
+  CPUstate.DIVModule.dSlice = divisorSlice;
+  CPUstate.DIVModule.dSlice3 = divisorSlice3;
   int32_t slice =
-      static_cast<int32_t>(shiftD ? (unsignedDividend >> (ulpExpWithShiftD - 1))
-                                  : (unsignedDividend >> (ulpExpNoShiftD - 1)));
+      static_cast<int32_t>(shift ? (dividend >> (ulpExpWithShiftD - 1))
+                                : (dividend >> (ulpExpNoShiftD - 1)));
 
-  if (slice >= dSlice3) {                   // q_1 = 2
-    auto subtrahend = unsignedDivisor << 1; // q_1 * D_dp
-    regS = (unsignedDividend ^ ~subtrahend ^ 1) << 2;
-    regC = ((unsignedDividend & ~subtrahend) | (unsignedDividend & 1) |
+  if (slice >= divisorSlice3) {         // q_1 = 2
+    auto subtrahend = divisor << 1;
+    CPUstate.DIVModule.regS = (dividend ^ ~subtrahend ^ 1) << 2;
+    CPUstate.DIVModule.regC = ((dividend & ~subtrahend) | (dividend & 1) |
             (~subtrahend & 1))
            << 3;
-    regA = 2;
-    regB = 1;
-  } else if (slice >= dSlice) {        // q_1 = 1
-    auto subtrahend = unsignedDivisor; // q_1 * D_dp
-    regS = (unsignedDividend ^ ~subtrahend ^ 1) << 2;
-    regC = ((unsignedDividend & ~subtrahend) | (unsignedDividend & 1) |
+    CPUstate.DIVModule.regA = 2;
+    CPUstate.DIVModule.regB = 1;
+  } else if (slice >= divisorSlice) { // q_1 = 1
+    auto subtrahend = divisor;
+    CPUstate.DIVModule.regS = (dividend ^ ~subtrahend ^ 1) << 2;
+    CPUstate.DIVModule.regC = ((dividend & ~subtrahend) | (dividend & 1) |
             (~subtrahend & 1))
            << 3;
-    regA = 1;
-    regB = 0;
+    CPUstate.DIVModule.regA = 1;
+    CPUstate.DIVModule.regB = 0;
   } else { // q_1 = 0: no subtrahend
-    regS = unsignedDividend << 2;
-    regC = 0;
-    regA = 0;
-    regB = 3;
+    CPUstate.DIVModule.regS = dividend << 2;
+    CPUstate.DIVModule.regC = 0;
+    CPUstate.DIVModule.regA = 0;
+    CPUstate.DIVModule.regB = 3;
   }
-  loopValid = (loopTimes != 0);
-  fullAdderValid = (loopTimes == 0);
+  CPUstate.DIVModule.loopValid = (loops != 0);
+  CPUstate.DIVModule.fullAdderValid = (loops == 0);
 }
 void DIV::loop(uint64_t oldRegS, uint64_t oldRegC, uint32_t oldRegA,
-               uint32_t oldRegB) {
+               uint32_t oldRegB, systemState &CPUstate) const {
   // QDS: two 9-bit slices -> 9-bit two's complement -> drop LSB (= estPShift)
   uint32_t sum9 = shiftD ? ((oldRegS >> sliceShiftWithShiftD) & 0x1FFu) +
                                ((oldRegC >> sliceShiftWithShiftD) & 0x1FFu)
@@ -159,106 +167,106 @@ void DIV::loop(uint64_t oldRegS, uint64_t oldRegC, uint32_t oldRegA,
   if (slice >= dSlice3) {                       // q = +2
     uint64_t subtrahend = unsignedDivisor << 3; // |q| * (D_dp << 2)
     uint64_t T = mask ^ subtrahend;             // ~qd; carry-in via regC bit0
-    regS = (S4 ^ C4 ^ T) & mask;
-    regC = ((((S4 & C4) | (S4 & T) | (C4 & T)) << 1) | 1) & mask;
-    regA = (oldRegA << 2) | 2;
-    regB = (oldRegA << 2) | 1;
+    CPUstate.DIVModule.regS = (S4 ^ C4 ^ T) & mask;
+    CPUstate.DIVModule.regC = ((((S4 & C4) | (S4 & T) | (C4 & T)) << 1) | 1) & mask;
+    CPUstate.DIVModule.regA = (oldRegA << 2) | 2;
+    CPUstate.DIVModule.regB = (oldRegA << 2) | 1;
   } else if (slice >= dSlice) { // q = +1
     uint64_t subtrahend = unsignedDivisor << 2;
     uint64_t T = mask ^ subtrahend;
-    regS = (S4 ^ C4 ^ T) & mask;
-    regC = ((((S4 & C4) | (S4 & T) | (C4 & T)) << 1) | 1) & mask;
-    regA = (oldRegA << 2) | 1;
-    regB = (oldRegA << 2) | 0;
+    CPUstate.DIVModule.regS = (S4 ^ C4 ^ T) & mask;
+    CPUstate.DIVModule.regC = ((((S4 & C4) | (S4 & T) | (C4 & T)) << 1) | 1) & mask;
+    CPUstate.DIVModule.regA = (oldRegA << 2) | 1;
+    CPUstate.DIVModule.regB = (oldRegA << 2) | 0;
   } else if (slice >= -dSlice) { // q = 0: no subtrahend
-    regS = (S4 ^ C4) & mask;
-    regC = ((S4 & C4) << 1) & mask;
-    regA = oldRegA << 2;
-    regB = (oldRegB << 2) | 3;
+    CPUstate.DIVModule.regS = (S4 ^ C4) & mask;
+    CPUstate.DIVModule.regC = ((S4 & C4) << 1) & mask;
+    CPUstate.DIVModule.regA = oldRegA << 2;
+    CPUstate.DIVModule.regB = (oldRegB << 2) | 3;
   } else if (slice >= -dSlice3) { // q = -1
     uint64_t subtrahend = unsignedDivisor << 2;
-    regS = (S4 ^ C4 ^ subtrahend) & mask;
-    regC = (((S4 & C4) | (S4 & subtrahend) | (C4 & subtrahend)) << 1) & mask;
-    regA = (oldRegB << 2) | 3;
-    regB = (oldRegB << 2) | 2;
+    CPUstate.DIVModule.regS = (S4 ^ C4 ^ subtrahend) & mask;
+    CPUstate.DIVModule.regC = (((S4 & C4) | (S4 & subtrahend) | (C4 & subtrahend)) << 1) & mask;
+    CPUstate.DIVModule.regA = (oldRegB << 2) | 3;
+    CPUstate.DIVModule.regB = (oldRegB << 2) | 2;
   } else { // q = -2
     uint64_t subtrahend = unsignedDivisor << 3;
-    regS = (S4 ^ C4 ^ subtrahend) & mask;
-    regC = (((S4 & C4) | (S4 & subtrahend) | (C4 & subtrahend)) << 1) & mask;
-    regA = (oldRegB << 2) | 2;
-    regB = (oldRegB << 2) | 1;
+    CPUstate.DIVModule.regS = (S4 ^ C4 ^ subtrahend) & mask;
+    CPUstate.DIVModule.regC = (((S4 & C4) | (S4 & subtrahend) | (C4 & subtrahend)) << 1) & mask;
+    CPUstate.DIVModule.regA = (oldRegB << 2) | 2;
+    CPUstate.DIVModule.regB = (oldRegB << 2) | 1;
   }
-  if (--loopTimes) {
-    loopValid = true;
+  CPUstate.DIVModule.loopTimes = loopTimes - 1;
+  if (loopTimes != 1) {
+    CPUstate.DIVModule.loopValid = true;
   } else {
-    loopValid = false;
-    fullAdderValid = true;
+    CPUstate.DIVModule.loopValid = false;
+    CPUstate.DIVModule.fullAdderValid = true;
   }
 }
 void DIV::calculateResult(uint64_t oldRegS, uint64_t oldRegC, uint32_t oldRegA,
-                          uint32_t oldRegB) {
+                          uint32_t oldRegB, systemState &CPUstate) const {
   uint64_t Pk = oldRegS + oldRegC;
   Pk &= shiftD ? (1ull << 36) - 1 : (1ull << 35) - 1;
   if ((shiftD && (Pk >> 35) & 1) || (!shiftD && (Pk >> 34) & 1)) {
     Pk -= shiftD ? 1ull << 36 : 1ull << 35;
   }
   if ((Pk >> 63) == 0) {
-    quotient = oldRegA;
-    remain = ((Pk >> 2) >> shiftD) >> clzD;
+    CPUstate.DIVModule.quotient = oldRegA;
+    CPUstate.DIVModule.remain = ((Pk >> 2) >> shiftD) >> clzD;
   } else {
-    quotient = oldRegB;
-    remain = (((Pk + (unsignedDivisor << 2)) >> 2) >> shiftD) >> clzD;
+    CPUstate.DIVModule.quotient = oldRegB;
+    CPUstate.DIVModule.remain = (((Pk + (unsignedDivisor << 2)) >> 2) >> shiftD) >> clzD;
   }
-  fullAdderValid = false;
-  resultValid = true;
+  CPUstate.DIVModule.fullAdderValid = false;
+  CPUstate.DIVModule.resultValid = true;
 }
-void DIV::flush(uint8_t tag) {
-  if (ROB::isOlder(tag, robTag)) {
-    unsignedDivisor = 0;
-    unsignedDividend = 0;
-    prepareValid = 0;
-    isDividendNegative = 0;
-    isResultNegative = 0;
-    clzX = 0;
-    clzD = 0;
-    loopTimes = 0;
-    regS = 0;
-    regC = 0;
-    regA = 0;
-    regB = 0;
-    dSlice = 0;
-    dSlice3 = 0;
-    loopValid = 0;
-    quotient = 0;
-    remain = 0;
-    robTag = 0;
-    fullAdderValid = 0;
-    shiftD = 0;
-    resultValid = 0;
+void DIV::flush(uint8_t tag, RobTag effectiveTag, systemState &CPUstate) const {
+  if (ROB::isOlder(tag, effectiveTag)) {
+    CPUstate.DIVModule.unsignedDivisor = 0;
+    CPUstate.DIVModule.unsignedDividend = 0;
+    CPUstate.DIVModule.prepareValid = 0;
+    CPUstate.DIVModule.isDividendNegative = 0;
+    CPUstate.DIVModule.isResultNegative = 0;
+    CPUstate.DIVModule.clzX = 0;
+    CPUstate.DIVModule.clzD = 0;
+    CPUstate.DIVModule.loopTimes = 0;
+    CPUstate.DIVModule.regS = 0;
+    CPUstate.DIVModule.regC = 0;
+    CPUstate.DIVModule.regA = 0;
+    CPUstate.DIVModule.regB = 0;
+    CPUstate.DIVModule.dSlice = 0;
+    CPUstate.DIVModule.dSlice3 = 0;
+    CPUstate.DIVModule.loopValid = 0;
+    CPUstate.DIVModule.quotient = 0;
+    CPUstate.DIVModule.remain = 0;
+    CPUstate.DIVModule.robTag = 0;
+    CPUstate.DIVModule.fullAdderValid = 0;
+    CPUstate.DIVModule.shiftD = 0;
+    CPUstate.DIVModule.resultValid = 0;
   }
 }
 void DIV::tick(const DIVInput &input, systemState &CPUstate) {
-  auto &div = CPUstate.DIVModule;
   if (input.cdbOutput.valid) {
-    div.resultValid = false;
+    CPUstate.DIVModule.resultValid = false;
   } // consume the result by cdb
   if (fullAdderValid) {
-    div.calculateResult(regS, regC, regA, regB);
+    calculateResult(regS, regC, regA, regB, CPUstate);
   }
   if (loopValid) {
-    div.loop(regS, regC, regA, regB);
+    loop(regS, regC, regA, regB, CPUstate);
   }
   if (prepareValid) {
-    div.prepare();
+    prepare(CPUstate);
   }
   if (input.dispatch.valid) {
     const auto &rs = input.RSModule.divideRS[input.dispatch.rsIndex];
-    div.receive(
+    receive(
         static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
         static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
-        input.dispatch.robTag, rs.op);
+        input.dispatch.robTag, rs.op, CPUstate);
   }
   if (input.squashDetect.needSquash) {
-    div.flush(input.squashDetect.SquashTag);
+    flush(input.squashDetect.SquashTag, input.dispatch.valid ? input.dispatch.robTag : robTag, CPUstate);
   }
 }

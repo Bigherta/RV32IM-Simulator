@@ -35,8 +35,9 @@ struct FlushArbiterInput {
 class FlushArbiter {
 private:
   FlushRequest requests[FLUSHARBITER_CAP];
-  void receive(SquashInfo request);
-  void clear(uint8_t tag);
+  void receive(const SquashInfo &branch, const SquashInfo &jump,
+               const SquashInfo &accepted, systemState &CPUstate) const;
+  void clear(uint8_t tag, systemState &CPUstate) const;
 
 public:
   FlushArbiter();

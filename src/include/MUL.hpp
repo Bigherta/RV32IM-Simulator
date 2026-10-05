@@ -48,11 +48,11 @@ private:
   SCResult scRes;
   MultiplyCalculateResult outputBuffer[MUL_CAP];
   bool slotValid[MUL_CAP] = {};
-  void calculateBooth(uint32_t op1, uint32_t op2, RobTag robTag, Operation op);
-  void calculateSC(const PartialProductResult &partial);
-  void calculateMulRes(const SCResult &sc);
-  void remove(uint8_t robTag);
-  void flush(uint8_t tag);
+  void calculateBooth(uint32_t op1, uint32_t op2, RobTag robTag, Operation op, systemState &CPUstate) const;
+  void calculateSC(const PartialProductResult &partial, systemState &CPUstate) const;
+  int calculateMulRes(const SCResult &sc, const mulCDB &cdb, bool keep, systemState &CPUstate) const;
+  void remove(uint8_t robTag, systemState &CPUstate) const;
+  void flush(uint8_t tag, int filled, RobTag partialTag, RobTag scTag, systemState &CPUstate) const;
 
 public:
   bool isFull() const;

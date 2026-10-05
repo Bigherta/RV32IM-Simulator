@@ -25,9 +25,9 @@ private:
   uint8_t freeList[PRF_CAP];
   PrfSeq headSeq = 0;
   PrfSeq tailSeq = 0;
-  uint8_t pop();
-  void push(int index);
-  void write(int index, int32_t value);
+  uint8_t pop(systemState &CPUstate) const;
+  void push(int index, PrfSeq &writeTail, systemState &CPUstate) const;
+  void write(int index, int32_t value, systemState &CPUstate) const;
 
 public:
   PRF();

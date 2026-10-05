@@ -1,5 +1,14 @@
 # 后端子系统：发射 · 乱序执行 · 写回 · 提交 · squash 恢复
 
+> **3B-1已验收**：IQ满且Issue实际成功时，旧FQ队首可同拍补入；单发射和ALU时序保持。
+> 两树18+6周期与3A一致，统计已更新；FQ上游及取指lookahead留3B-2。
+
+> **2026-10-05 容量同步 3A**：FQ/IQ4、LQ/SQ8 全容量 epoch 指针，D$8 KB；LSQ 尾快照
+> 保存完整 4-bit 序号，memIndex 仍取物理槽。ALU 保留派发拍运算、下一拍 CDB 的原时序。
+> 主树保留读this/Input、逐字段写CPUstate的原风格，不复制整个模块或整对象回写。
+> 查询helper在快照上const调用并显式传写目标，helper同样禁止目标读取；必要的小游标/
+> 位掩码表达同拍事件。20个tick及const writer helper审计通过，24例结果/周期/统计与模板一致。
+
 > 负责乱序核心本体：从 IQ 发射（rename）→ 保留站就绪乱序执行 → 结果总线写回 →
 > ROB 按序提交；误预测的排队与整窗恢复也在这里仲裁并触发。
 > 保留站/标签广播源自 Tomasulo 算法，ROB 精确提交与物理寄存器重命名属于后续
@@ -29,6 +38,12 @@ M 扩展的两个执行单元（**乘法**、**除法**）在 §4.3 / §4.4 给�
 > `Wire`、`Register` 和 `work()/sync()` 表达同一硬件语义。下文统一使用
 > “组合选择”和“周期更新”，只在源码映射处标出两者的表示差异。
 
+> **活动时序基线（2026-10-01）**：两树采用 1 KB 同步 SRAM ICache，队首命中最早 n+1 拍
+> 交付 FQ。取指端口背压只停止新取指，后端仍按本节的准入、写回和提交规则推进。
+> 数据侧为 16 KB/64 B 行直接映射 DCache；18 用例逐项 x10+cycles 已对齐，模板
+> `_DEBUG` 全量零断言，总 clock 12,209,929；结果见
+> [benchmarks.md](benchmarks.md)，ICache 接线见 [cache.md](cache.md)。
+
 ---
 
 ## 1. 边界与职责
@@ -51,7 +66,7 @@ M 扩展的两个执行单元（**乘法**、**除法**）在 §4.3 / §4.4 给�
 | `IssueArbiter`（StaticArbiter） | 组合构建每周期至多 1 个发射包（rename 决策） |
 | `DispatchArbiter`（StaticArbiter） | 保留站 → 执行单元的乱序派发（五独立通道） |
 | `RS` | 七个物理池：Integer 4 / Multiply 2 / **Divide 1** / Load 4 / StoreAddr 4 / StoreValue 4 / Branch 4 |
-| `PRF` | 物理寄存器堆 64：循环序号自由表、完成写口、checkpoint 恢复 |
+| `PRF` | 物理寄存器堆 48（32 架构寄存器 + ROB16）：循环序号自由表、完成写口、ROB 窗口恢复 |
 | `RAT` | 架构寄存器 → 物理寄存器映射 |
 | `ROB` | 重排序缓冲 16：按序提交、checkpoint 快照宿主、squash 边界 |
 | `ALU` | 算术/逻辑/移位 + JALR 目标（`isControl` 载荷） |
@@ -838,7 +853,7 @@ squash 回卷 `next`，提交推进 `head`，两者可同拍发生：若 ROB 头
 |------|----------|
 | `RAT` | 从已提交的 `archRAT` 恢复，再按 `head..SquashTag`（含自身）重放存活 ROB 条目的 rename |
 | `PRF` | ROB 窗口重放：从 `robNextTag(SquashTag)` 扫到 ROB 尾，把窗口内各条的 `robNewPhy` push 回自由环（未提交的分配即被回收）；squash 拍**不** pop |
-| `BPU` | 按 `ckptId` 恢复 `BPUSnapshot`（8-bit GHR / AlignQueue tail / RAS_top）；无派生折叠视图需要重建（见 [frontend.md](frontend.md) §4.3） |
+| `BPU` | 按 `ckptId` 恢复 8-bit GHR；RAS 从旧 `archRAS` 提交基线重放存活 ROB 的 call/ret，无 per-checkpoint RAS/AlignQueue 恢复（见 [frontend.md](frontend.md) §4.3） |
 | `FQ/IQ/RS/LQ/SQ` | 各按 ROB 条目记录的尾快照回卷（RS 释放槽位、LQ/SQ 按 `getTailSnapshot` 截断） |
 | `MUL` | `flush(tag)`：清 `partialRes/scRes` 的 valid + 清 `outputBuffer` 中不早于 tag 的槽位 |
 | `DIV` | `flush(tag)`：**整机清零**（`resultValid`/`regS`/`regC`/`regA`/`regB`/`dSlice`/`loopTimes`/`prepareValid`/`loopValid`/`fullAdderValid` 全归零）——单实例无缓冲，被 squash 即在算的那条已经作废 |

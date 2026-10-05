@@ -26,12 +26,13 @@ inline uint64_t signExtend32(uint32_t v) {
 } // namespace
 
 void MUL::calculateBooth(uint32_t op1, uint32_t op2, RobTag robTag,
-                         Operation op) {
-  partialRes.partialProductValid = true;
-  partialRes.op = op;
-  partialRes.robTag = robTag;
+                         Operation op, systemState &CPUstate) const {
+  CPUstate.MULModule.partialRes.partialProductValid = true;
+  CPUstate.MULModule.partialRes.op = op;
+  CPUstate.MULModule.partialRes.robTag = robTag;
   for (int i = 0; i < 19; ++i)
-    partialRes.partialProduct[i] = 0;
+    CPUstate.MULModule.partialRes.partialProduct[i] = 0;
+  uint64_t correction = 0;
   const uint64_t A = signExtend32(op1);
   for (int i = 0; i < 16; ++i) {
     // 3-bit window y[2i+1], y[2i], y[2i-1]; row 0 pads y[-1] = 0.
@@ -63,25 +64,26 @@ void MUL::calculateBooth(uint32_t op1, uint32_t op2, RobTag robTag,
     }
     if (neg) {
       row = ~row;
-      partialRes.partialProduct[18] |= (1ULL << (i << 1));
+      correction |= (1ULL << (i << 1));
     }
-    partialRes.partialProduct[i] = row << (i << 1);
+    CPUstate.MULModule.partialRes.partialProduct[i] = row << (i << 1);
   }
   // Unsigned-operand fixups.
   const uint64_t signA = (op1 >> 31) & 1;
   const uint64_t signB = (op2 >> 31) & 1;
   const bool isMulhu = (op == Operation::MULHU);
   const bool isMulhsu = (op == Operation::MULHSU);
-  partialRes.partialProduct[16] =
+  CPUstate.MULModule.partialRes.partialProduct[16] =
       (isMulhu && signA) ? (static_cast<uint64_t>(op2) << 32) : 0;
-  partialRes.partialProduct[17] =
+  CPUstate.MULModule.partialRes.partialProduct[17] =
       ((isMulhu || isMulhsu) && signB) ? (signExtend32(op1) << 32) : 0;
+  CPUstate.MULModule.partialRes.partialProduct[18] = correction;
 }
 
-void MUL::calculateSC(const PartialProductResult &partial) {
-  scRes.carryAdderValid = true;
-  scRes.op = partial.op;
-  scRes.robTag = partial.robTag;
+void MUL::calculateSC(const PartialProductResult &partial, systemState &CPUstate) const {
+  CPUstate.MULModule.scRes.carryAdderValid = true;
+  CPUstate.MULModule.scRes.op = partial.op;
+  CPUstate.MULModule.scRes.robTag = partial.robTag;
   const auto &P = partial.partialProduct; // 19 rows, all consumed
   // 3:2 compressor tree: 19 -> 13 -> 9 -> 6 -> 4 -> 3 -> 2 (17 cells)
   Csa3 a0 = csa3(P[0], P[1], P[2]);
@@ -101,15 +103,15 @@ void MUL::calculateSC(const PartialProductResult &partial) {
   Csa3 d1 = csa3(c1.carry, c2.sum, c2.carry);
   Csa3 e0 = csa3(d0.sum, d0.carry, d1.sum);
   Csa3 f0 = csa3(e0.sum, e0.carry, d1.carry);
-  scRes.S = f0.sum;
-  scRes.C = f0.carry;
+  CPUstate.MULModule.scRes.S = f0.sum;
+  CPUstate.MULModule.scRes.C = f0.carry;
 }
 
-void MUL::calculateMulRes(const SCResult &sc) {
+int MUL::calculateMulRes(const SCResult &sc, const mulCDB &cdb, bool keep, systemState &CPUstate) const {
   uint64_t res = sc.S + sc.C; // full 64-bit product (mod 2^64)
   int best = -1;
   for (int i = 0; i < MUL_CAP; ++i) {
-    if (!slotValid[i]) {
+    if (!slotValid[i] || (cdb.valid && outputBuffer[i].robTag == cdb.robTag)) {
       best = i;
       break;
     }
@@ -118,22 +120,23 @@ void MUL::calculateMulRes(const SCResult &sc) {
   // count (3), since a full buffer here means dispatch was granted faster than
   // the dedicated cdbOfMul bus drained it.
   assert(best != -1 && "MUL slot overflow: MUL_CAP must exceed in-flight stages");
-  outputBuffer[best].robTag = sc.robTag;
-  slotValid[best] = true;
+  CPUstate.MULModule.outputBuffer[best].robTag = sc.robTag;
+  CPUstate.MULModule.slotValid[best] = keep;
   switch (sc.op) {
   case Operation::MUL: {
-    outputBuffer[best].value = static_cast<uint32_t>(res);
+    CPUstate.MULModule.outputBuffer[best].value = static_cast<uint32_t>(res);
     break;
   }
   case Operation::MULH:
   case Operation::MULHSU:
   case Operation::MULHU: {
-    outputBuffer[best].value = static_cast<uint32_t>(res >> 32);
+    CPUstate.MULModule.outputBuffer[best].value = static_cast<uint32_t>(res >> 32);
     break;
   }
   default:
     break;
   }
+  return best;
 }
 
 uint32_t MUL::headValue() const {
@@ -170,56 +173,60 @@ bool MUL::isEmpty() const {
   return true;
 }
 
-void MUL::remove(uint8_t robTag) {
+void MUL::remove(uint8_t robTag, systemState &CPUstate) const {
   for (int i = 0; i < MUL_CAP; i++) {
     if (slotValid[i] && outputBuffer[i].robTag == robTag) {
-      slotValid[i] = false;
+      CPUstate.MULModule.slotValid[i] = false;
       return;
     }
   }
 }
 
-void MUL::flush(uint8_t tag) {
+void MUL::flush(uint8_t tag, int filled, RobTag partialTag, RobTag scTag, systemState &CPUstate) const {
   for (int i = 0; i < MUL_CAP; i++) {
-    if (slotValid[i] && !ROB::isOlder(outputBuffer[i].robTag, tag))
-      slotValid[i] = false;
+    if (i != filled && slotValid[i] && !ROB::isOlder(outputBuffer[i].robTag, tag))
+      CPUstate.MULModule.slotValid[i] = false;
   }
-  if (ROB::isOlder(tag, partialRes.robTag)) {
-    partialRes.partialProductValid = false;
+  if (ROB::isOlder(tag, partialTag)) {
+    CPUstate.MULModule.partialRes.partialProductValid = false;
   }
-  if (ROB::isOlder(tag, scRes.robTag)) {
-    scRes.carryAdderValid = false;
+  if (ROB::isOlder(tag, scTag)) {
+    CPUstate.MULModule.scRes.carryAdderValid = false;
   }
 }
 void MUL::tick(const MULInput &input, systemState &CPUstate) {
-  auto &mul = CPUstate.MULModule;
+  int filled = -1;
   if (input.cdbOutput.valid) {
-    mul.remove(input.cdbOutput.robTag);
+    remove(input.cdbOutput.robTag, CPUstate);
   }
 
   if (scRes.carryAdderValid) {
-    mul.calculateMulRes(scRes);
-    mul.scRes.carryAdderValid = false;
+    const bool keep = !input.squashDetect.needSquash ||
+                      ROB::isOlder(scRes.robTag, input.squashDetect.SquashTag);
+    filled = calculateMulRes(scRes, input.cdbOutput, keep, CPUstate);
+    CPUstate.MULModule.scRes.carryAdderValid = false;
   }
 
   if (partialRes.partialProductValid) {
-    mul.calculateSC(partialRes);
-    mul.partialRes.partialProductValid = false;
+    calculateSC(partialRes, CPUstate);
+    CPUstate.MULModule.partialRes.partialProductValid = false;
   } else {
-    mul.scRes.carryAdderValid = false;
+    CPUstate.MULModule.scRes.carryAdderValid = false;
   }
 
   if (input.dispatch.valid) {
     const auto &rs = input.RSModule.multiplyRS[input.dispatch.rsIndex];
-    mul.calculateBooth(
+    calculateBooth(
         static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
         static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
-        input.dispatch.robTag, rs.op);
+        input.dispatch.robTag, rs.op, CPUstate);
   } else {
-    mul.partialRes.partialProductValid = false;
+    CPUstate.MULModule.partialRes.partialProductValid = false;
   }
 
   if (input.squashDetect.needSquash) {
-    mul.flush(input.squashDetect.SquashTag);
+    flush(input.squashDetect.SquashTag, filled,
+          input.dispatch.valid ? input.dispatch.robTag : partialRes.robTag,
+          partialRes.partialProductValid ? partialRes.robTag : scRes.robTag, CPUstate);
   }
 }

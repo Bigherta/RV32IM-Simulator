@@ -17,9 +17,10 @@ class AGU {
 private:
   AddressCalculateResult outputBuffer[AGU_CAP];
   bool slotValid[AGU_CAP] = {};
-  void push(uint32_t op1, uint32_t op2, RobTag robTag, uint8_t memIndex);
-  void remove(uint8_t robTag);
-  void flush(uint8_t tag);
+  void push(uint32_t op1, uint32_t op2, RobTag robTag, uint8_t memIndex,
+            bool keep, systemState &CPUstate) const;
+  void remove(uint8_t robTag, systemState &CPUstate) const;
+  void flush(uint8_t tag, systemState &CPUstate) const;
 public:
   bool isFull() const;
   bool isEmpty() const;

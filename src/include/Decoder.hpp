@@ -19,24 +19,24 @@ private:
 public:
   bool isEmpty() const;
   bool isFull() const;
-  void push(Uop inst);
-  RISC_V headType() const { return uopQueueEntries[head].type; }
-  int headOpcode() const { return uopQueueEntries[head].opcode; }
-  int headFunct3() const { return uopQueueEntries[head].funct3; }
-  int headFunct7() const { return uopQueueEntries[head].funct7; }
-  int headRd() const { return uopQueueEntries[head].rd; }
-  int headRs1() const { return uopQueueEntries[head].rs1; }
-  int headRs2() const { return uopQueueEntries[head].rs2; }
-  int32_t headImm() const { return uopQueueEntries[head].imm; }
-  uint32_t headPc() const { return uopQueueEntries[head].pc; }
-  bool headIsHalt() const { return uopQueueEntries[head].isHalt; }
-  bool headAllocDest() const { return uopQueueEntries[head].allocDest; }
+  void push(Uop inst, systemState &CPUstate) const;
+  RISC_V headType() const { return uopQueueEntries[head & (IQ_CAP - 1)].type; }
+  int headOpcode() const { return uopQueueEntries[head & (IQ_CAP - 1)].opcode; }
+  int headFunct3() const { return uopQueueEntries[head & (IQ_CAP - 1)].funct3; }
+  int headFunct7() const { return uopQueueEntries[head & (IQ_CAP - 1)].funct7; }
+  int headRd() const { return uopQueueEntries[head & (IQ_CAP - 1)].rd; }
+  int headRs1() const { return uopQueueEntries[head & (IQ_CAP - 1)].rs1; }
+  int headRs2() const { return uopQueueEntries[head & (IQ_CAP - 1)].rs2; }
+  int32_t headImm() const { return uopQueueEntries[head & (IQ_CAP - 1)].imm; }
+  uint32_t headPc() const { return uopQueueEntries[head & (IQ_CAP - 1)].pc; }
+  bool headIsHalt() const { return uopQueueEntries[head & (IQ_CAP - 1)].isHalt; }
+  bool headAllocDest() const { return uopQueueEntries[head & (IQ_CAP - 1)].allocDest; }
   int32_t headPredictedPC() const {
-    return uopQueueEntries[head].predictedPC;
+    return uopQueueEntries[head & (IQ_CAP - 1)].predictedPC;
   }
-  uint8_t headCkptId() const { return uopQueueEntries[head].ckptId; }
-  void pop();
-  void clear();
+  uint8_t headCkptId() const { return uopQueueEntries[head & (IQ_CAP - 1)].ckptId; }
+  void pop(systemState &CPUstate) const;
+  void clear(systemState &CPUstate) const;
 };
 struct IssuePacket;
 struct DecodeInput {
@@ -48,16 +48,18 @@ struct DecodeInput {
 };
 struct systemState;
 class DecodeUnit {
+  friend class UopQueue;
 private:
   UopQueue iq;
-  void push(Uop inst) { iq.push(inst); }
-  void pop() { iq.pop(); }
-  void clear() { iq.clear(); }
+  void push(Uop inst, systemState &CPUstate) const { iq.push(inst, CPUstate); }
+  void pop(systemState &CPUstate) const { iq.pop(CPUstate); }
+  void clear(systemState &CPUstate) const { iq.clear(CPUstate); }
 
 public:
   void tick(const DecodeInput &input, systemState &CPUstate);
   bool isEmpty() const { return iq.isEmpty(); }
   bool isFull() const { return iq.isFull(); }
+  bool canAccept(bool willPop) const { return !isFull() || (willPop && !isEmpty()); }
   RISC_V headType() const { return iq.headType(); }
   int headOpcode() const { return iq.headOpcode(); }
   int headFunct3() const { return iq.headFunct3(); }

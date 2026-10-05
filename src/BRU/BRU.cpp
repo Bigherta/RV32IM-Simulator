@@ -2,7 +2,7 @@
 #include <cstdint>
 
 void BRU::BRUExecute(uint32_t op1, uint32_t op2, uint32_t pc, uint32_t imm,
-                     Operation op, RobTag robTag) {
+                     Operation op, RobTag robTag, bool keep, systemState &CPUstate) const {
   bool taken = false;
   switch (op) {
   case Operation::EQ:
@@ -28,14 +28,14 @@ void BRU::BRUExecute(uint32_t op1, uint32_t op2, uint32_t pc, uint32_t imm,
     break;
   }
   // uint32 bit-vector add: the target wraps at 32 bits by construction.
-  push({pc, taken ? pc + imm : pc + 4u, robTag});
+  push({pc, taken ? pc + imm : pc + 4u, robTag}, keep, CPUstate);
 }
 
-void BRU::push(BranchResult result) {
+void BRU::push(BranchResult result, bool keep, systemState &CPUstate) const {
   for (int i = 0; i < BRU_CAP; i++)
     if (!slotValid[i]) {
-      outputBuffer[i] = result;
-      slotValid[i] = true;
+      CPUstate.BRUModule.outputBuffer[i] = result;
+      CPUstate.BRUModule.slotValid[i] = keep;
       return;
     }
 }
@@ -87,19 +87,19 @@ bool BRU::isEmpty() const {
   return true;
 }
 
-void BRU::remove(uint8_t robTag) {
+void BRU::remove(uint8_t robTag, systemState &CPUstate) const {
   for (int i = 0; i < BRU_CAP; i++) {
     if (slotValid[i] && outputBuffer[i].robTag == robTag) {
-      slotValid[i] = false;
+      CPUstate.BRUModule.slotValid[i] = false;
       return;
     }
   }
 }
 
-void BRU::flush(uint8_t tag) {
+void BRU::flush(uint8_t tag, systemState &CPUstate) const {
   for (int i = 0; i < BRU_CAP; i++) {
     if (slotValid[i] && !ROB::isOlder(outputBuffer[i].robTag, tag))
-      slotValid[i] = false;
+      CPUstate.BRUModule.slotValid[i] = false;
   }
 }
 
@@ -108,19 +108,21 @@ void BRU::tick(const BRUInput &input, systemState &CPUstate) {
   // DispatchArbiter snapshot side; RS slot release is handled by RSUnit.tick)
   if (input.dispatch.valid) {
     auto &rs = input.RSModule.branchRS[input.dispatch.rsIndex];
-    CPUstate.BRUModule.BRUExecute(
+    const bool keep = !input.squashDetect.needSquash ||
+                      ROB::isOlder(input.dispatch.robTag, input.squashDetect.SquashTag);
+    BRUExecute(
         static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
         static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
         static_cast<uint32_t>(rs.pc), static_cast<uint32_t>(rs.imm), rs.op,
-        input.dispatch.robTag);
+        input.dispatch.robTag, keep, CPUstate);
   }
   // BRU writeBack
   if (!isEmpty()) {
     uint8_t brRobTag = headRobTag();
-    CPUstate.BRUModule.remove(brRobTag);
+    remove(brRobTag, CPUstate);
   }
   // clear the wrong BRU outputBuffer
   if (input.squashDetect.needSquash) {
-    CPUstate.BRUModule.flush(input.squashDetect.SquashTag);
+    flush(input.squashDetect.SquashTag, CPUstate);
   }
 }

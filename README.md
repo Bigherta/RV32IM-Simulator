@@ -2,15 +2,15 @@
 
 周期级（cycle-accurate）RISC-V **乱序执行处理器仿真器**。以 C++20 对 Tomasulo 风格微架构
 （重命名 / 物理寄存器堆 / 重排序缓冲 / 保留站）逐周期建模，并按**可综合硬件纪律**书写：
-模块单写口、跨模块信息走"周期初快照 + 组合总线"——19 个流水级以**任意顺序**调用均产生
-逐位一致的结果与时钟数。既作 RTL 移植的参考模型，也用于微架构方案的量化对比。
+跨模块信息走“周期初快照 + 组合总线”，20个时序模块的tick只写CPUstate目标，查询
+只读快照与Input。既作RTL移植参考，也用于微架构方案的量化对比。
 
 | | |
 |---|---|
 | **架构** | Tomasulo 乱序执行 · 按序提交（取指/提交有序，执行/写回/访存乱序） |
 | **ISA** | RV32I 全集 + RV32M（Booth 乘法、SRT radix-4 除法） |
 | **实现** | 单体 C++20，无外部依赖；Linux / WSL / MSYS 均可构建 |
-| **验证** | RV32IM 行为与周期回归（golden = `docs/benchmarks.md`）+ 双树 x10/clock 逐位一致 |
+| **验证** | 两树18/18 RV32IM + 6/6 IPC完整结果/周期/统计一致；主树tick只写审计通过 |
 
 ## 目录
 
@@ -26,13 +26,13 @@
 ```text
                     ┌──────────── 前端 Front-End ────────────┐
  FetchDecision ───► │ FetchUnit(PC/halt) → ICache → IMEM     │
- (Tournament+BTB+RAS │      │  8KB 直映      20 周期主存回填   │
+  (Tournament+BTB+RAS │      │  1KB SRAM      20 周期主存回填   │
    预测 + 预译码)    │      ▼                                  │
                      │ FetchQueue(FQ,4) ───► DecodeUnit → IQ(4)│
                      └───────────────────┬────────────────────┘
                                          ▼
                ┌────────────── 重命名 / 发射 Issue ──────────────┐
-               │ IssueArbiter：RAT rename + PRF(64) pop+LINK     │
+               │ IssueArbiter：RAT rename + PRF(48) pop+LINK     │
                │              + ROB(16) push + RS/LQ/SQ 入队     │
                └──────────────┬──────────────────────────────────┘
                               ▼
@@ -44,11 +44,12 @@
    └──────────────────────────────┬────────────────────────────┘
                                   ▼
               ROB 按序提交；误预测 ──► FlushArbiter
-              （RAT 从 archRAT 基线 + ROB 条目重放恢复；PRF/GHR/RAS 走 checkpoint）
+               （RAT/PRF/RAS 按提交边界与 ROB 重放恢复；GHR 按 checkpoint 恢复）
 ```
 
-取指与提交保持程序序，执行/写回/访存完全乱序。L1 命中零延迟（ICache 当拍组包、
-DCache 命中 1 拍自答），缺失回填与脏逐出统一走 **20 周期主存延迟**（IMEM/DMEM）；
+取指与提交保持程序序，执行/写回/访存完全乱序。两树 ICache 为 **1 KB（16×64 B）单端口
+同步 SRAM**：n 拍读，队首且无背压时 n+1 拍旁路交付 FQ，否则落槽保存。DCache
+命中 load 1 拍自答；缺失回填与脏逐出统一走 **20 周期主存延迟**（IMEM/DMEM）；
 误预测经 `FlushArbiter` 排队，按最老优先整窗恢复（RAT 重放到 `SquashTag`，
 PRF/BPU 取边界 checkpoint，队列整体清空）。
 
@@ -61,6 +62,9 @@ PRF/BPU 取边界 checkpoint，队列整体清空）。
    store 就绪广播、DCache 应答等。
 2. **`tick()`**——19 个模块各自沿采样，只读快照、只写自身状态。
 
+取指组合求值按“回填选槽与接受事件 → 端口仲裁 → 构建 `FetchDecision` → 分发输入”排列。
+所有消费者必须使用本拍的同一决定；不能先复制旧决定，再在 `comb()` 末尾构建新决定。
+
 阶段顺序可任意交换。停机条件 = halt 已提交 且 FQ/IQ/ROB 全空，并完成**访存 drain**
 （SQ 空、DCache 空闲、DMEM 读/写口空闲），保证停机瞬间无"已提交但未写达缓存"的在途 store。
 
@@ -70,10 +74,10 @@ PRF/BPU 取边界 checkpoint，队列整体清空）。
 
 | 子系统 | 功能 | 关键规格 | 详设 |
 |---|---|---|---|
-| 前端 | 分支预测 → 取指 → 预译码 → 译码 | 8 KB 直映 ICache；FQ 4 / IQ 4；Tournament 方向 + BTB/RAS/SARAS | [`frontend.md`](docs/frontend.md) |
-| 后端 | 发射 rename → 乱序执行 → 写回 → 按序提交 | ROB 16 / PRF 64 / RAT 32；RS 七个物理池共 23 槽；四路独立结果总线；MUL Booth 三级流水、DIV SRT 单实例背压 | [`backend.md`](docs/backend.md) |
+| 前端 | 分支预测 → 取指 → 预译码 → 译码 | 1 KB 单端口同步 SRAM ICache；FQ 4 / IQ 4；Tournament + BTB64 + RAS32 | [`frontend.md`](docs/frontend.md) |
+| 后端 | 发射 rename → 乱序执行 → 写回 → 按序提交 | ROB 16 / PRF 48 / RAT 32；RS 七个物理池共 23 槽；四路独立结果总线；MUL Booth 三级流水、DIV SRT 单实例背压 | [`backend.md`](docs/backend.md) |
 | 访存 | LQ/SQ、store→load 转发、保守访存准入 | LQ 8 / SQ 8；每周期 1 个请求（store 优先）；store 提交点落缓存 | [`memory.md`](docs/memory.md) |
-| 缓存 | L1I / L1D / 片上主存 | L1I 8 KB 直映；L1D 64 KB 4 路写回+写分配；主存 20 周期 | [`cache.md`](docs/cache.md) |
+| 缓存 | L1I / L1D / 片上主存 | L1I 1 KB 直映 SRAM；L1D 8 KB、64 B 行、直映写回+写分配；主存 20 周期 | [`cache.md`](docs/cache.md) |
 
 ### 1.3 指令集
 
@@ -152,10 +156,16 @@ VERBOSE=branch,clock ./code < data/testcases/gcd.data   # 统计走 stderr
 也在该文档，本 README 不再重复。重排一致性与旧单元直驱脚手架已退役；现行闭环 =
 ① 两树分别对 golden 校验 x10+cycles → ② 双树结果逐位一致。
 
+2026-10-01 两树缓存几何参数化已完成，采用 **16 KB、64 B 行、直接映射 DCache**；
+主树、模板 Release 与模板 `_DEBUG` x10 与活动 cycles 均为 18/18，总 clock **12,209,929**，
+相对原 64 KB 四路 D$ **−0.150397%**，满足相差 ≤1% 的门槛。独立六例几何 IPC
+**0.720539**。阶段进度见
+[`docs/process.md`](docs/process.md)。
+
 ### 4.1 行为回归 — `test.sh`
 
 以 `data/testcases/*.data` 中的 RV32IM 镜像运行 `./code`，校验退出码、`x10&0xFF` 和
-cycles（均对照 golden），汇总分支正确率、总时钟、退休指令数与加权 IPC。缺失镜像、
+cycles（均对照 golden），汇总分支正确率、总时钟、退休指令数与逐用例几何平均 IPC。缺失镜像、
 缺失 golden、零用例、统计不完整或任一结果不一致都会非 0 退出。
 
 ```bash
@@ -187,9 +197,15 @@ BP_BIN=/path/to/code ./test_IPC.sh   # 指定二进制
 ## 5. 开发状态与路线图
 
 - **RTL 化重建线**：`RISC-V-Simulator-Template/`（git submodule）以 `Register` / `Wire` /
-  `dark::Module` 框架把同一架构逐模块改写为可综合风格；两树共用 golden，clock 逐位对拍一致是迁移硬门禁。
+  `dark::Module` 框架把架构逐模块改写为可综合风格；两树 SRAM ICache 已通过同配置
+  x10+clock 逐位对齐及模板 `_DEBUG` 全量验收。
+- **两树 ICache SRAM 化 + n+1 旁路（2026-10-01）**：16×64 B、单端口同步 SRAM，4 项请求队列
+  从 head 顺序扫描回填槽，`fillFire` 统一接受返回，回填写优先于命中读；`FetchDecision`
+  在输入分发前构建；模板保留 `refillValid/refillSlot`，嵌套 SRAM 由 ICache work/sync。
+  队首读通过统一 ready/raw 接口最早 n+1 拍交付 FQ，已消费结果跳过落槽，背压/年轻结果仍保存。
+  主树先通过再移植模板；15 用例更快、3 不变，完整 A/B 见 [`docs/benchmarks.md`](docs/benchmarks.md)。
 - **DIV/REM 已落地（2026-09-12）**：SRT radix-4 除法器完成接线、验证并同步接入模板树（见 §4.2）。
-- **BPU 面积终态（2026-09-21）**：方向侧采用 local/global/selector 各 256×2-bit 的 Tournament
+- **历史 BPU 面积复核（2026-09-21）**：方向侧采用 local/global/selector 各 256×2-bit 的 Tournament
   预测器与 8-bit GHR；目标侧保留 BTB/RAS/SARAS。BTB 的 64 项以 `{PC[31:8], target[31:2], state}`
   收紧至 56 bit/项；间接目标缓存（BHT+Target Cache）在活动语料上无可观测收益，已按面积/效率权衡
   删除。完整模板 BPU Register 状态由 TAGE 基线的 24,357 bit 降至 7,542 bit（-69.04%），该变换
@@ -205,3 +221,9 @@ BP_BIN=/path/to/code ./test_IPC.sh   # 指定二进制
 - `reference/riscv-spec-20191213.pdf` — RISC-V 官方规范（RV32I/M 精确定义）
 - `reference/RISC-V-Reader-Chinese-v2p1.pdf` — 《RISC-V 读者》中文版
 - `reference/CAAQA5.pdf` — 计算机组成与设计：硬件/软件接口
+## 公共容量同步 3A（2026-10-05）
+
+当前主树与模板树均采用FQ/IQ4、LQ/SQ8全容量epoch指针，D$8 KiB/64 B/直接映射，
+保留软件七池RS和原ALU时序。主树tick中CPUstate仅为写目标；大数组查询在comb采样。
+18个RV32IM与6个IPC用例的完整结果、周期和统计逐项一致；活动基线见docs/benchmarks.md。
+满时同拍替换3B尚未实施。公共同步规范与验证入口在父目录CPU-SYNC-SPEC.md及sync/。

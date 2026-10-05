@@ -22,7 +22,9 @@ int ROB::getHaltRd() const { return haltRd; }
 
 uint8_t ROB::getNextTag() const { return next_tag; }
 
-void ROB::updateNextTag() { next_tag = robNextTag(next_tag); }
+void ROB::updateNextTag(systemState &CPUstate) const {
+  CPUstate.ROBModule.next_tag = robNextTag(next_tag);
+}
 
 bool ROB::isFull() const {
   // Packed tags repeat every ROB_CAP allocations, so "full" is exactly
@@ -47,18 +49,20 @@ bool ROB::storeWillCommit(const SquashInfo &squash) const {
   return willCommit(squash) && headType() == ROBType::STORE;
 }
 
-int ROB::push(ROBEntry entry) {
+int ROB::push(ROBEntry entry, systemState &CPUstate) const {
   // The issue path must gate on isFull: a push into a full ROB silently
   // overwrites the head entry.
   assert(!isFull());
   entry.tag = next_tag;
-  ROBqueue[robSlot(next_tag)] = entry;
+  CPUstate.ROBModule.ROBqueue[robSlot(next_tag)] = entry;
   int index = robSlot(next_tag);
-  updateNextTag();
+  updateNextTag(CPUstate);
   return index;
 }
 
-void ROB::pop() { head = robNextTag(head); }
+void ROB::pop(systemState &CPUstate) const {
+  CPUstate.ROBModule.head = robNextTag(head);
+}
 
 bool ROB::isCommitReadyAt(int index) const {
   return ROBqueue[index].isCommitReady;
@@ -72,10 +76,12 @@ bool ROB::isHalt(int index) const { return ROBqueue[index].halt; }
 
 uint8_t ROB::getCkptId(int index) const { return ROBqueue[index].ckptId; }
 
-void ROB::setROBCommitReady(RobTag tag) {
-  if (!matchesTag(tag))
+void ROB::setROBCommitReady(RobTag tag, bool issued, systemState &CPUstate) const {
+  const auto slot = robSlot(tag);
+  if (slot >= ROB_CAP || (isEmpty() && !issued))
     return;
-  ROBqueue[robSlot(tag)].isCommitReady = true;
+  const auto rowTag = issued && slot == robSlot(next_tag) ? next_tag : ROBqueue[slot].tag;
+  if (rowTag == tag) CPUstate.ROBModule.ROBqueue[slot].isCommitReady = true;
 }
 
 int ROB::getPredictedPC(int index) const { return ROBqueue[index].predictedPC; }
@@ -112,16 +118,16 @@ ROBType ROB::headType() const { return getType(robSlot(getHead())); }
 
 int ROB::headDest() const { return ROBqueue[robSlot(head)].dest; }
 
-void ROB::flush(RobTag squashTag) {
+void ROB::flush(RobTag squashTag, systemState &CPUstate) const {
   if (!matchesTag(squashTag))
     return;
-  next_tag = robNextTag(squashTag);
+  CPUstate.ROBModule.next_tag = robNextTag(squashTag);
 }
 
 void ROB::tick(const ROBInput &input, systemState &CPUstate) {
   const bool willCommitNow = willCommit(input.squashDetect);
   if (input.issuePacket.valid) {
-    CPUstate.ROBModule.push(input.issuePacket.robEntry);
+    push(input.issuePacket.robEntry, CPUstate);
   }
   // BRU set ROB ready
   if (!input.BRUModule.isEmpty()) {
@@ -129,7 +135,7 @@ void ROB::tick(const ROBInput &input, systemState &CPUstate) {
     if (!input.squashDetect.needSquash ||
         (input.squashDetect.needSquash &&
          ROB::isOlder(brRobTag, input.squashDetect.SquashTag))) {
-      CPUstate.ROBModule.setROBCommitReady(brRobTag);
+      setROBCommitReady(brRobTag, input.issuePacket.valid, CPUstate);
     }
   }
   // SQ set ROB ready (stores)
@@ -143,7 +149,7 @@ void ROB::tick(const ROBInput &input, systemState &CPUstate) {
       if (!input.squashDetect.needSquash ||
           (input.squashDetect.needSquash &&
            ROB::isOlder(sqTag, input.squashDetect.SquashTag))) {
-        CPUstate.ROBModule.setROBCommitReady(sqTag);
+        setROBCommitReady(sqTag, input.issuePacket.valid, CPUstate);
       }
     }
   }
@@ -151,20 +157,20 @@ void ROB::tick(const ROBInput &input, systemState &CPUstate) {
   if (input.cdbOfALU.valid) {
     if (!input.squashDetect.needSquash ||
         ROB::isOlder(input.cdbOfALU.robTag, input.squashDetect.SquashTag)) {
-      CPUstate.ROBModule.setROBCommitReady(input.cdbOfALU.robTag);
+      setROBCommitReady(input.cdbOfALU.robTag, input.issuePacket.valid, CPUstate);
     }
   }
   if (input.cdbOfLQ.valid) {
     if (!input.squashDetect.needSquash ||
         ROB::isOlder(input.cdbOfLQ.robTag, input.squashDetect.SquashTag)) {
-      CPUstate.ROBModule.setROBCommitReady(input.cdbOfLQ.robTag);
+      setROBCommitReady(input.cdbOfLQ.robTag, input.issuePacket.valid, CPUstate);
     }
   }
   if (input.cdbOfMul.valid) {
     if (!input.squashDetect.needSquash ||
         ROB::isOlder(input.cdbOfMul.robTag, input.squashDetect.SquashTag)) {
       if (matchesTag(input.cdbOfMul.robTag)) {
-        CPUstate.ROBModule.setROBCommitReady(input.cdbOfMul.robTag);
+        setROBCommitReady(input.cdbOfMul.robTag, input.issuePacket.valid, CPUstate);
         if (debug::enabled(debug::TOPIC_EXEC))
           debug::print("rob mul-ready rob=%u\n", input.cdbOfMul.robTag);
       }
@@ -174,7 +180,7 @@ void ROB::tick(const ROBInput &input, systemState &CPUstate) {
     if (!input.squashDetect.needSquash ||
         ROB::isOlder(input.cdbOfDiv.robTag, input.squashDetect.SquashTag)) {
       if (matchesTag(input.cdbOfDiv.robTag)) {
-        CPUstate.ROBModule.setROBCommitReady(input.cdbOfDiv.robTag);
+        setROBCommitReady(input.cdbOfDiv.robTag, input.issuePacket.valid, CPUstate);
         if (debug::enabled(debug::TOPIC_EXEC))
           debug::print("rob div-ready rob=%u\n", input.cdbOfDiv.robTag);
       }
@@ -182,14 +188,15 @@ void ROB::tick(const ROBInput &input, systemState &CPUstate) {
   }
   // ROB squash
   if (input.squashDetect.needSquash) {
-    CPUstate.ROBModule.flush(input.squashDetect.SquashTag);
+    flush(input.squashDetect.SquashTag, CPUstate);
   }
-  if (!willCommitNow)
+  if (!willCommitNow) {
     return;
+  }
   const bool halt = isHeadHalt();
   if (debug::enabled(debug::TOPIC_EXEC))
     debug::print("rob commit rob=%u halt=%d\n", getHead(), halt ? 1 : 0);
-  CPUstate.ROBModule.pop();
+  pop(CPUstate);
   if (halt) {
     CPUstate.ROBModule.haltCommitted = true;
     CPUstate.ROBModule.haltRd = headDest();

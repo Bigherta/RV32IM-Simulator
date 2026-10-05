@@ -100,32 +100,35 @@ Uop Decoder::decode(int32_t raw_inst) {
 
 bool UopQueue::isEmpty() const { return head == tail; }
 
-bool UopQueue::isFull() const { return ((tail + 1) & (IQ_CAP - 1)) == head; }
+bool UopQueue::isFull() const { return tail == (head ^ IQ_CAP); }
 
-void UopQueue::push(Uop inst) {
-  uopQueueEntries[tail] = inst;
-  tail = (tail + 1) & (IQ_CAP - 1);
+void UopQueue::push(Uop inst, systemState &CPUstate) const {
+  CPUstate.DecodeUnitModule.iq.uopQueueEntries[tail & (IQ_CAP - 1)] = inst;
+  CPUstate.DecodeUnitModule.iq.tail = (tail + 1) & IQ_SEQ_MASK;
 }
-void UopQueue::pop() { head = (head + 1) & (IQ_CAP - 1); }
-void UopQueue::clear() {
-  std::memset(this, 0, sizeof(*this));
-  head = tail = 0;
+void UopQueue::pop(systemState &CPUstate) const {
+  CPUstate.DecodeUnitModule.iq.head = (head + 1) & IQ_SEQ_MASK;
+}
+void UopQueue::clear(systemState &CPUstate) const {
+  CPUstate.DecodeUnitModule.iq.head = 0;
+  CPUstate.DecodeUnitModule.iq.tail = 0;
 }
 
 void DecodeUnit::tick(const DecodeInput &input, systemState &CPUstate) {
   if (input.squashDetect.needSquash) {
-    CPUstate.DecodeUnitModule.clear();
+    clear(CPUstate);
     return;
   }
-  if (input.issuePacket.valid)
-    CPUstate.DecodeUnitModule.pop();
-  if (input.FQModule.isEmpty() || isFull())
+  if (input.issuePacket.valid && !isEmpty())
+    pop(CPUstate);
+  if (input.FQModule.isEmpty() || !canAccept(input.issuePacket.valid)) {
     return;
+  }
   auto raw = input.FQModule.headRaw();
   Uop uop = Decoder::decode(static_cast<int32_t>(raw));
   uop.pc = input.FQModule.headpc();
   uop.predictedPC = input.FQModule.headPredictedPC();
   uop.ckptId = input.FQModule.headCkptId();
   uop.isHalt = (raw == 0x0ff00513);
-  CPUstate.DecodeUnitModule.push(uop);
+  push(uop, CPUstate);
 }
