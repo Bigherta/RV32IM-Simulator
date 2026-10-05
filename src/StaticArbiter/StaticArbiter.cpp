@@ -477,7 +477,7 @@ IssuePacket IssueArbiter::issue_Load(const IssueArbiterInput &input,
   p.nBytes = n_bytes;
   p.isUnsigned = isUnsigned;
   p.robTag = input.ROBModule.getNextTag();
-  p.loadRS.memIndex = input.LQModule.getTail();
+  p.loadRS.memIndex = input.LQModule.getTail() & LQ_MASK;
   p.loadRS.free = false;
   p.loadRS.op = decodeOp(inst);
   auto destination = inst.rd;
@@ -524,7 +524,7 @@ IssuePacket IssueArbiter::issue_Store(const IssueArbiterInput &input,
   p.nBytes = n_bytes;
   p.robTag = input.ROBModule.getNextTag();
   p.storeAddrRS.memIndex =
-      static_cast<uint8_t>(input.SQModule.getTail() | MEM_STORE_BIT);
+      static_cast<uint8_t>((input.SQModule.getTail() & SQ_MASK) | MEM_STORE_BIT);
   p.storeValueRS.memIndex = p.storeAddrRS.memIndex;
   p.storeAddrRS.free = false;
   p.storeAddrRS.op = decodeOp(inst);

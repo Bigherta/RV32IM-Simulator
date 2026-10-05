@@ -7,56 +7,57 @@
 
 bool LQ::isEmpty() const { return tail == head; }
 
-bool LQ::isFull() const { return ((tail + 1) & LQ_MASK) == head; }
+bool LQ::isFull() const { return tail == (head ^ LQ_CAP); }
 
 bool LQ::isActive(uint8_t index) const {
   if (head == tail)
     return false;
-  return ((index - head + LQ_CAP) & LQ_MASK) <
-         ((tail - head + LQ_CAP) & LQ_MASK);
+  return index < LQ_CAP && ((index - head) & LQ_MASK) <
+         ((tail - head) & LQ_SEQ_MASK);
 }
 
-void LQ::pop() { head = (head + 1) & LQ_MASK; }
+void LQ::pop(systemState &CPUstate) const { CPUstate.LQModule.head = (head + 1) & LQ_SEQ_MASK; }
 
-void LQ::pushLoad(RobTag robTag, int n_bytes, bool isUnsigned) {
-  LQqueue[tail] = {};
-  LQqueue[tail].robTag = robTag;
-  LQqueue[tail].n_bytes = n_bytes;
-  LQqueue[tail].isUnsigned = isUnsigned;
-  LQqueue[tail].isAddressReady = false;
-  LQqueue[tail].valueState = ValueState::NOTREADY;
-  tail = (tail + 1) & LQ_MASK;
+void LQ::pushLoad(RobTag robTag, int n_bytes, bool isUnsigned, systemState &CPUstate) const {
+  const auto slot = tail & LQ_MASK;
+  CPUstate.LQModule.LQqueue[slot] = {};
+  CPUstate.LQModule.LQqueue[slot].robTag = robTag;
+  CPUstate.LQModule.LQqueue[slot].n_bytes = n_bytes;
+  CPUstate.LQModule.LQqueue[slot].isUnsigned = isUnsigned;
+  CPUstate.LQModule.LQqueue[slot].isAddressReady = false;
+  CPUstate.LQModule.LQqueue[slot].valueState = ValueState::NOTREADY;
+  CPUstate.LQModule.tail = (tail + 1) & LQ_SEQ_MASK;
 }
 
-uint8_t LQ::getHead() const { return head; }
+uint8_t LQ::getHead() const { return head & LQ_MASK; }
 uint8_t LQ::getTail() const { return tail; }
 
-void LQ::flush(uint8_t tailSnapshot) { tail = tailSnapshot; }
+void LQ::flush(uint8_t tailSnapshot, systemState &CPUstate) const { CPUstate.LQModule.tail = tailSnapshot; }
 
-void LQ::writeAddress(uint32_t address, int index) {
-  LQqueue[index].address = address;
-  LQqueue[index].isAddressReady = true;
+void LQ::writeAddress(uint32_t address, int index, systemState &CPUstate) const {
+  CPUstate.LQModule.LQqueue[index].address = address;
+  CPUstate.LQModule.LQqueue[index].isAddressReady = true;
 }
 
-void LQ::writeValue(int32_t value, int index) {
-  LQqueue[index].value = value;
-  LQqueue[index].valueState = ValueState::READY;
-  LQqueue[index].isCDBBroadcast = false;
+void LQ::writeValue(int32_t value, int index, systemState &CPUstate) const {
+  CPUstate.LQModule.LQqueue[index].value = value;
+  CPUstate.LQModule.LQqueue[index].valueState = ValueState::READY;
+  CPUstate.LQModule.LQqueue[index].isCDBBroadcast = false;
 }
 
-void LQ::writeValueIfFetching(uint8_t robTag, int index, int32_t value) {
+void LQ::writeValueIfFetching(uint8_t robTag, int index, int32_t value, systemState &CPUstate) const {
   if (LQqueue[index].robTag != robTag)
     return;
   if (LQqueue[index].valueState != ValueState::FETCHING)
     return;
-  writeValue(value, index);
+  writeValue(value, index, CPUstate);
 }
 
-void LQ::setValueState(int index, ValueState state) {
-  LQqueue[index].valueState = state;
+void LQ::setValueState(int index, ValueState state, systemState &CPUstate) const {
+  CPUstate.LQModule.LQqueue[index].valueState = state;
 }
 
-void LQ::setCDBBroadcast(int index) { LQqueue[index].isCDBBroadcast = true; }
+void LQ::setCDBBroadcast(int index, systemState &CPUstate) const { CPUstate.LQModule.LQqueue[index].isCDBBroadcast = true; }
 
 auto LQ::getAddress(int index) const -> uint32_t {
   if (LQqueue[index].isAddressReady)
@@ -70,7 +71,7 @@ auto LQ::getValue(int index) const -> int32_t {
   throw std::runtime_error("Value is not ready!");
 }
 
-auto LQ::headRobTag() const -> uint8_t { return LQqueue[head].robTag; }
+auto LQ::headRobTag() const -> uint8_t { return LQqueue[head & LQ_MASK].robTag; }
 
 auto LQ::getRobTag(int index) const -> uint8_t { return LQqueue[index].robTag; }
 
@@ -117,7 +118,8 @@ int LQ::CDBDetect() const {
   return detectedIndex;
 }
 
-void LQ::applyStoreForward(const StoreNotify &notify) {
+uint32_t LQ::applyStoreForward(const StoreNotify &notify, systemState &CPUstate) const {
+  uint32_t forwarded = 0;
   for (int k = 0; k < LQ_CAP; ++k) {
     uint8_t i = (head + k) & LQ_MASK;
     if (!isActive(i))
@@ -134,21 +136,24 @@ void LQ::applyStoreForward(const StoreNotify &notify) {
         (notify.foundUnknown &&
          ROB::isOlder(notify.unknownOldestTag, LQqueue[i].robTag));
     if (!blocked) {
-      writeValue(notify.value, i);
+      writeValue(notify.value, i, CPUstate);
+      forwarded |= 1u << i;
     }
   }
+  return forwarded;
 }
 
 void LQ::tick(const LQInput &input, systemState &CPUstate) {
+  uint32_t forwarded = 0; // Comb flag only: forwarding wins over a late reply.
   const auto &p = input.issuePacket;
   if (p.valid && p.isLoad)
-    CPUstate.LQModule.pushLoad(p.robTag, p.nBytes, p.isUnsigned);
+    pushLoad(p.robTag, p.nBytes, p.isUnsigned, CPUstate);
   // store-forward broadcasts from SQ (data-ready events pre-computed in comb)
   for (int i = 0; i < STORERS_CAP; ++i)
     if (input.storeNotifies[i].valid)
-      CPUstate.LQModule.applyStoreForward(input.storeNotifies[i]);
+      forwarded |= applyStoreForward(input.storeNotifies[i], CPUstate);
   if (input.storeAddrNotify.valid)
-    CPUstate.LQModule.applyStoreForward(input.storeAddrNotify);
+    forwarded |= applyStoreForward(input.storeAddrNotify, CPUstate);
   // AGU: load address ready -> write address + query SQ for forwarding
   if (!input.AGUModule.isEmpty() &&
       !isStoreMem(input.AGUModule.headMemIndex())) {
@@ -159,42 +164,42 @@ void LQ::tick(const LQInput &input, systemState &CPUstate) {
       auto aguMemIndex = input.AGUModule.headMemIndex();
       const uint32_t value = input.AGUModule.headValue();
       auto index = memSlot(aguMemIndex);
-      CPUstate.LQModule.writeAddress(value, index);
+      writeAddress(value, index, CPUstate);
       auto reply = input.SQModule.replyToLoadRequest(value, aguRobTag);
       if (reply.valid) {
-        CPUstate.LQModule.writeValue(reply.value, index);
+        writeValue(reply.value, index, CPUstate);
+        forwarded |= 1u << index;
       }
     }
   }
   // dispatch decision apply
   const auto &decision = input.decision;
-  if (decision.valid && decision.request.op == Operation::Load)
-    CPUstate.LQModule.setValueState(memSlot(decision.request.memIndex),
-                                    ValueState::FETCHING);
+  if (decision.valid && decision.request.op == Operation::Load) {
+    const auto index = memSlot(decision.request.memIndex);
+    setValueState(index, ValueState::FETCHING, CPUstate);
+    forwarded &= ~(1u << index);
+  }
   // retire pop
-  uint8_t cur = getHead();
-  bool retireLoad = !input.squashDetect.needSquash && cur != getTail() &&
+  bool retireLoad = !input.squashDetect.needSquash && !isEmpty() &&
                     (input.ROBModule.isEmpty() ||
                      ROB::isOlder(headRobTag(), input.ROBModule.getHead()));
   if (retireLoad)
-    CPUstate.LQModule.pop();
+    pop(CPUstate);
   // load response from DMEM
   if (input.loadResp.valid) {
     auto index = memSlot(input.loadResp.memIndex);
-    if (LQqueue[index].valueState == ValueState::FETCHING)
-      CPUstate.LQModule.writeValueIfFetching(input.loadResp.robTag, index,
-                                             input.loadResp.value);
+    if (LQqueue[index].valueState == ValueState::FETCHING && !(forwarded & (1u << index)))
+      writeValueIfFetching(input.loadResp.robTag, index, input.loadResp.value, CPUstate);
   }
   // CDB consume (LQ bus)
   if (input.cdbOutput.valid) {
     if (!input.squashDetect.needSquash ||
         ROB::isOlder(input.cdbOutput.robTag, input.squashDetect.SquashTag)) {
-      CPUstate.LQModule.setCDBBroadcast(memSlot(input.cdbOutput.memIndex));
+      setCDBBroadcast(memSlot(input.cdbOutput.memIndex), CPUstate);
     }
   }
   // flush on squash
   if (input.squashDetect.needSquash &&
       input.ROBModule.matchesTag(input.squashDetect.SquashTag))
-    CPUstate.LQModule.flush(
-        input.ROBModule.getLqTailSnapshot(robSlot(input.squashDetect.SquashTag)));
+    flush(input.ROBModule.getLqTailSnapshot(robSlot(input.squashDetect.SquashTag)), CPUstate);
 }

@@ -7,6 +7,7 @@ struct systemState;
 
 struct DMEMInput {
   DMEMRequest request;
+  std::array<uint8_t, DCACHE_BLOCK_CAP> completedReadLine{};
   DMEMInput() = default;
 };
 
@@ -19,7 +20,7 @@ class DMEM : public Memory {
   ReadRequest readExecute = {};
   MemReply readOutputBuffer = {};
   WriteRequest writeExecute = {};
-  void writeLine(uint32_t addr, const uint8_t* lineData);
+  void writeLine(uint32_t addr, const uint8_t* lineData, systemState &CPUstate) const;
   void MemPull();
 
 public:
@@ -36,4 +37,5 @@ public:
   const MemReply& reply() const { return readOutputBuffer; }
   void tick(const DMEMInput &, systemState &);
   void snapshotFrom(const DMEM &other);
+  std::array<uint8_t, DCACHE_BLOCK_CAP> sampleReadCompletion() const;
 };

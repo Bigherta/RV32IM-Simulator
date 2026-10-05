@@ -7,34 +7,35 @@
 
 FlushArbiter::FlushArbiter() { std::memset(this, 0, sizeof(*this)); }
 
-void FlushArbiter::receive(SquashInfo request) {
-  int w = 0;
-  for (int r = 0; r < FLUSHARBITER_CAP; ++r) {
-    if (requests[r].valid) {
-      if (r != w) {
-        requests[w] = requests[r];
-        requests[r].valid = false;
-      }
-      ++w;
+void FlushArbiter::receive(const SquashInfo &branch, const SquashInfo &jump,
+                           const SquashInfo &accepted, systemState &CPUstate) const {
+  auto candidate = [&](int i) -> const SquashInfo & {
+    return i < FLUSHARBITER_CAP ? requests[i].requestArgs :
+           i == FLUSHARBITER_CAP ? branch : jump;
+  };
+  auto valid = [&](int i) {
+    const bool active = i < FLUSHARBITER_CAP ? requests[i].valid : candidate(i).needSquash;
+    return active && (!accepted.needSquash || ROB::isOlder(candidate(i).SquashTag, accepted.SquashTag));
+  };
+  int count = 0;
+  for (int i = 0; i < FLUSHARBITER_CAP + 2; ++i) if (valid(i)) ++count;
+  if (count > FLUSHARBITER_CAP) throw std::runtime_error("flush arbiter overload!");
+  for (int i = 0; i < FLUSHARBITER_CAP; ++i)
+    CPUstate.flushArbiter.requests[i].valid = false;
+  for (int i = 0; i < FLUSHARBITER_CAP + 2; ++i) {
+    if (!valid(i)) continue;
+    int pos = 0;
+    for (int j = 0; j < FLUSHARBITER_CAP + 2; ++j) {
+      if (!valid(j) || i == j) continue;
+      const auto a = candidate(j).SquashTag, b = candidate(i).SquashTag;
+      // Original insert order: jump before branch before equal old requests.
+      const bool tie = j >= FLUSHARBITER_CAP ? j > i :
+                       i < FLUSHARBITER_CAP && j < i;
+      if (ROB::isOlder(a, b) || (a == b && tie)) ++pos;
     }
+    CPUstate.flushArbiter.requests[pos].valid = true;
+    CPUstate.flushArbiter.requests[pos].requestArgs = candidate(i);
   }
-  if (w == FLUSHARBITER_CAP)
-    throw std::runtime_error("flush arbiter overload!");
-  int pos = 0;
-  bool scanning = true;
-  for (int i = 0; i < FLUSHARBITER_CAP; ++i) {
-    if (!scanning || i >= w)
-      continue;
-    if (ROB::isYounger(request.SquashTag, requests[i].requestArgs.SquashTag))
-      ++pos;
-    else
-      scanning = false;
-  }
-  for (int i = FLUSHARBITER_CAP - 1; i > 0; --i)
-    if (i > pos)
-      requests[i] = requests[i - 1];
-  requests[pos].valid = true;
-  requests[pos].requestArgs = request;
 }
 
 SquashInfo FlushArbiter::arbitResult() const {
@@ -52,23 +53,23 @@ SquashInfo FlushArbiter::arbitResult() const {
   return result;
 }
 
-void FlushArbiter::clear(uint8_t tag) {
+void FlushArbiter::clear(uint8_t tag, systemState &CPUstate) const {
   for (int i = 0; i < FLUSHARBITER_CAP; ++i) {
     if (requests[i].valid) {
       if (!ROB::isOlder(requests[i].requestArgs.SquashTag, tag)) {
-        requests[i].valid = false;
+        CPUstate.flushArbiter.requests[i].valid = false;
       }
     }
   }
 }
 
 void FlushArbiter::tick(const FlushArbiterInput &input, systemState &CPUstate) {
+  SquashInfo BranchSquash, JumpSquash;
   if (input.squashDetect.needSquash)
-    CPUstate.flushArbiter.clear(input.squashDetect.SquashTag);
+    clear(input.squashDetect.SquashTag, CPUstate);
 
   if (!input.BRUModule.isEmpty() &&
       input.ROBModule.matchesTag(input.BRUModule.headRobTag())) {
-    SquashInfo BranchSquash;
     uint8_t brRobTag = input.BRUModule.headRobTag();
     const uint32_t pcResult = input.BRUModule.headPCResult();
     const uint32_t pcFrom = input.BRUModule.headPCFrom();
@@ -88,8 +89,6 @@ void FlushArbiter::tick(const FlushArbiterInput &input, systemState &CPUstate) {
             input.ROBModule.getCkptId(robSlot(BranchSquash.SquashTag));
       }
     }
-    if (BranchSquash.needSquash)
-      CPUstate.flushArbiter.receive(BranchSquash);
   }
 
   const auto &cdbOut = input.cdbOut;
@@ -101,7 +100,6 @@ void FlushArbiter::tick(const FlushArbiterInput &input, systemState &CPUstate) {
       if (!input.ROBModule.isEmpty() &&
           !ROB::isOlder(cdbOut.robTag, input.ROBModule.getHead()) &&
           isControl) {
-        SquashInfo JumpSquash;
         const auto pc = static_cast<uint32_t>(cdbOut.value);
         if (pc != input.ROBModule.getPredictedPC(robSlot(cdbOut.robTag))) {
           if (debug::enabled(debug::TOPIC_BPMISS))
@@ -112,9 +110,9 @@ void FlushArbiter::tick(const FlushArbiterInput &input, systemState &CPUstate) {
           JumpSquash.CkptId =
               input.ROBModule.getCkptId(robSlot(JumpSquash.SquashTag));
         }
-        if (JumpSquash.needSquash)
-          CPUstate.flushArbiter.receive(JumpSquash);
       }
     }
   }
+  if (BranchSquash.needSquash || JumpSquash.needSquash)
+    receive(BranchSquash, JumpSquash, input.squashDetect, CPUstate);
 }

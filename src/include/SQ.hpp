@@ -55,11 +55,11 @@ private:
   SQEntry SQqueue[SQ_CAP];
   uint8_t head = 0;
   uint8_t tail = 0;
-  void flush(uint8_t tailSnapshot);
-  void pushStore(RobTag robTag, int n_bytes);
-  void pop();
-  void writeAddress(uint32_t address, int index);
-  void writeValue(int32_t value, int index);
+  void flush(uint8_t tailSnapshot, systemState &CPUstate) const;
+  void pushStore(RobTag robTag, int n_bytes, systemState &CPUstate) const;
+  void pop(systemState &CPUstate) const;
+  void writeAddress(uint32_t address, int index, systemState &CPUstate) const;
+  void writeValue(int32_t value, int index, systemState &CPUstate) const;
 
 public:
   SQ() { std::memset(this, 0, sizeof(*this)); }
@@ -67,10 +67,10 @@ public:
   bool isFull() const;
   bool isActive(uint8_t index) const;
   uint8_t getHead() const;
-  uint8_t getTail() const;
+  uint8_t getTail() const; // Packed epoch+slot sequence; mask before memIndex use.
   // Occupancy boundary AFTER this cycle's own enqueue (see
   // LQ::getTailSnapshot).
-  uint8_t getTailSnapshot() const { return (tail + 1) & SQ_MASK; }
+  uint8_t getTailSnapshot() const { return (tail + 1) & SQ_SEQ_MASK; }
   bool isReadyToCommit(int index) const;
   bool isCommitted(int index) const { return isActive(index) && SQqueue[index].isCommitted; }
   auto getAddress(int index) const -> uint32_t;
@@ -85,6 +85,6 @@ public:
   auto replyToLoadRequest(uint32_t addr,
                           uint8_t loadTag) const -> StoreResponse;
   bool canDispatchLoad(uint32_t addr, RobTag loadTag) const;
-  void setCommitted(int index) { SQqueue[index].isCommitted = true; }
+  void setCommitted(int index, systemState &CPUstate) const;
   void tick(const SQInput &, systemState &);
 };

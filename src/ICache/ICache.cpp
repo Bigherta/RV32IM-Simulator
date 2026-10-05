@@ -1,80 +1,127 @@
 #include "../include/ICache.hpp"
 #include "../include/CPU.hpp"
+#include "common.hpp"
+#include <cassert>
 #include <cstdint>
 
-void ICache::clear() {
+void ICache::clear(systemState &CPUstate) const {
   // only clear the request queue; cache lines are non-speculative and kept
-  for (int i = 0; i < REQUEST_CAP; ++i) requestBuffer[i].valid = false;
-  head = 0;
-  count = 0;
+  for (int i = 0; i < REQUEST_CAP; ++i)
+    CPUstate.ICacheModule.requestBuffer[i].valid = false;
+  CPUstate.ICacheModule.head = 0;
+  CPUstate.ICacheModule.count = 0;
+  CPUstate.ICacheModule.readIndex = 0;
+  CPUstate.ICacheModule.readLaneIndex = 0;
+  CPUstate.ICacheModule.readValid = 0;
 }
 
-void ICache::pop() {
-  requestBuffer[head].valid = false;
-  head = (head + 1) & (REQUEST_CAP - 1);
-  --count;
+void ICache::pop(systemState &CPUstate) const {
+  CPUstate.ICacheModule.requestBuffer[head].valid = false;
+  CPUstate.ICacheModule.head = (head + 1) & (REQUEST_CAP - 1);
 }
 
-void ICache::pushRequest(uint32_t raw_inst, uint32_t pc, int32_t predictPC,
-                         uint8_t ckptId, bool valid) {
+void ICache::pushRequest(uint32_t pc, int32_t predictPC, uint8_t ckptId, systemState &CPUstate) const {
   ICacheRequest request{};
-  request.raw_inst = raw_inst;
+  request.raw_inst = 0;
   request.PC = pc;
   request.predictPC = predictPC;
   request.ckptId = ckptId;
-  request.valid = valid;
-  requestBuffer[(head + count) & (REQUEST_CAP - 1)] = request;
-  ++count;
+  request.valid = false;
+  CPUstate.ICacheModule.requestBuffer[(head + count) & (REQUEST_CAP - 1)] = request;
 }
 
 bool ICache::hit(uint32_t addr) const {
-  auto index = (addr >> 4) & (ICACHE_CAP - 1);
-  return blocks[index].valid && (blocks[index].tag == (addr >> 13));
+  auto index = (addr >> ICACHE_OFFSET_BITS) & ICACHE_INDEX_MASK;
+  return requestBlocks[index].valid &&
+         (requestBlocks[index].tag ==
+          (addr >> ICACHE_TAG_SHIFT));
+}
+
+ICacheRefillSelection ICache::selectRefill(const LineReturn &lineReturn) const {
+  static_assert(REQUEST_CAP > 0 && (REQUEST_CAP & (REQUEST_CAP - 1)) == 0);
+  ICacheRefillSelection selection{};
+  // Scan the old occupied window in age order, not the physical slot order.
+  // valid means ready; a pending SRAM hit must not be mistaken for a miss.
+  for (int age = 0; age < REQUEST_CAP; ++age) {
+    const auto slot = (head + age) & (REQUEST_CAP - 1);
+    const auto &request = requestBuffer[slot];
+    const uint32_t requestLine =
+        static_cast<uint32_t>(request.PC) & ~ICACHE_OFFSET_MASK;
+    if (lineReturn.valid && age < count && !selection.valid &&
+        !request.valid && !(readValid && readIndex == slot) &&
+        requestLine == lineReturn.lineAddr) {
+      selection.valid = true;
+      selection.slot = static_cast<uint8_t>(slot);
+    }
+  }
+  return selection;
 }
 
 void ICache::tick(const ICacheInput &input, systemState &CPUstate) {
   // stage 3 flush: clear the speculative request queue (cache lines kept)
   if (input.squashDetect.needSquash) {
-    CPUstate.ICacheModule.clear();
+    clear(CPUstate);
     return;
   }
   // stage 2 pop: self-release once FQ consumed the ICache head (write-own-only)
+  const bool readConsumed = input.popConsume && headReadReady();
   if (input.popConsume) {
-    CPUstate.ICacheModule.pop();
+    assert(isReturnReady());
+    pop(CPUstate);
   }
-  // stage 2 line refill: consume the IMEM line-return bus (word4), fill the
-  // cache line and backfill the placeholder entry
+  // stage 2 line refill: consume the accepted IMEM line-return bus, fill the
+  // cache line and backfill the selected placeholder entry
   if (input.lineReturn.valid) {
-    auto cachelineIndex = (input.lineReturn.lineAddr >> 4) & (ICACHE_CAP - 1);
-    CPUstate.ICacheModule.blocks[cachelineIndex].valid = true;
-    CPUstate.ICacheModule.blocks[cachelineIndex].tag = input.lineReturn.lineAddr >> 13;
-    for (int w = 0; w < 4; ++w) {
-      CPUstate.ICacheModule.blocks[cachelineIndex].data[w] =
-          input.lineReturn.data[w];
-    }
-    // backfill placeholder: head now points to the placeholder awaiting this
-    // line (already past pop); only refill when the queue is non-empty and the
-    // head entry is still an invalid placeholder
-    if (CPUstate.ICacheModule.count > 0 &&
-        !CPUstate.ICacheModule.requestBuffer[CPUstate.ICacheModule.head].valid) {
-      uint32_t pc = CPUstate.ICacheModule.requestBuffer[CPUstate.ICacheModule.head].PC;
-      uint32_t word = input.lineReturn.data[(pc >> 2) & 3];
-      CPUstate.ICacheModule.requestBuffer[CPUstate.ICacheModule.head].raw_inst = word;
-      CPUstate.ICacheModule.requestBuffer[CPUstate.ICacheModule.head].valid = true;
-    }
+    assert(input.refillSlot < REQUEST_CAP);
+    auto cachelineIndex =
+        (input.lineReturn.lineAddr >> ICACHE_OFFSET_BITS) & ICACHE_INDEX_MASK;
+    CPUstate.ICacheModule.requestBlocks[cachelineIndex].valid = true;
+    CPUstate.ICacheModule.requestBlocks[cachelineIndex].tag =
+        input.lineReturn.lineAddr >>
+        ICACHE_TAG_SHIFT;
+    // The combinational selector chose one live miss from the old snapshot.
+    // It cannot be the ready head popped above or the new request pushed below.
+    const auto slot = input.refillSlot;
+    const uint32_t pc = static_cast<uint32_t>(requestBuffer[slot].PC);
+    CPUstate.ICacheModule.requestBuffer[slot].raw_inst =
+        input.lineReturn.data[(pc >> RV32_WORD_BYTE_BITS) & ICACHE_WORD_INDEX_MASK];
+    CPUstate.ICacheModule.requestBuffer[slot].valid = true;
   }
-  // stage 1 push new request: enqueue on a valid fetchDecision (hit -> valid,
-  // miss -> placeholder)
+  // stage 1 push: both hits and misses occupy an unready placeholder.
   if (input.fetchDecision.valid) {
     bool isHit = hit(input.fetchDecision.pc);
-    uint32_t raw_inst = 0;
+    // host-only: accepted-fetch classification for cross-tree trace diagnosis.
+    if (debug::enabled(debug::TOPIC_MEM))
+      debug::print("IC_ACCEPT idx=%u pc=%08x hit=%u\n", hitCount + missCount,
+                   input.fetchDecision.pc, static_cast<unsigned>(isHit));
     if (isHit) {
-      auto cachelineIndex = (input.fetchDecision.pc >> 4) & (ICACHE_CAP - 1);
-      raw_inst = blocks[cachelineIndex].data[(input.fetchDecision.pc >> 2) & 3];
+      CPUstate.ICacheModule.readIndex = (head + count) & (REQUEST_CAP - 1);
+      CPUstate.ICacheModule.readLaneIndex =
+          (input.fetchDecision.pc >> RV32_WORD_BYTE_BITS) & ICACHE_WORD_INDEX_MASK;
     }
-    CPUstate.ICacheModule.pushRequest(raw_inst, input.fetchDecision.pc,
-        input.fetchDecision.predictedPC, input.fetchDecision.ckptId, isHit);
-    if (isHit) CPUstate.ICacheModule.hitCount++;
-    else CPUstate.ICacheModule.missCount++;
+    pushRequest(input.fetchDecision.pc,
+                                      input.fetchDecision.predictedPC,
+                                       input.fetchDecision.ckptId, CPUstate);
+    if (isHit)
+      CPUstate.ICacheModule.hitCount = hitCount + 1;
+    else
+      CPUstate.ICacheModule.missCount = missCount + 1;
   }
+
+  // A head read already delivered through the return interface must not
+  // resurrect its popped slot. Backpressured/younger reads still land here.
+  if (readValid && !readConsumed) {
+    CPUstate.ICacheModule.requestBuffer[readIndex].valid = true;
+    CPUstate.ICacheModule.requestBuffer[readIndex].raw_inst =
+        datas.readLane(readLaneIndex);
+  }
+  datas.tick(input.InputICacheDataSRAMInput, CPUstate.ICacheModule.datas);
+  CPUstate.ICacheModule.readValid =
+      input.fetchDecision.valid && hit(input.fetchDecision.pc) &&
+              input.InputICacheDataSRAMInput.enable &&
+              !input.InputICacheDataSRAMInput.writeEnable
+          ? true
+          : false;
+  CPUstate.ICacheModule.count = count + static_cast<unsigned>(input.fetchDecision.valid) -
+                               static_cast<unsigned>(input.popConsume);
 }

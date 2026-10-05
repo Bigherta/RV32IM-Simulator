@@ -47,11 +47,11 @@ private:
   uint8_t next_tag = 0;
   bool haltCommitted = false;
   int haltRd = -1;
-  void updateNextTag();
-  int push(ROBEntry entry);
-  void pop();
-  void setROBCommitReady(RobTag tag);
-  void flush(RobTag squashTag);
+  void updateNextTag(systemState &CPUstate) const;
+  int push(ROBEntry entry, systemState &CPUstate) const;
+  void pop(systemState &CPUstate) const;
+  void setROBCommitReady(RobTag tag, bool issued, systemState &CPUstate) const;
+  void flush(RobTag squashTag, systemState &CPUstate) const;
 
 public:
   static bool isOlder(RobTag tag_a, RobTag tag_b);

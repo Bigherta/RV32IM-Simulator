@@ -15,6 +15,7 @@ struct FQInput {
   const ICache &ICacheModule;
   const DecodeUnit &DecodeUnitModule;
   bool haltFetched;
+  bool issueValid = false; // Actual IQ dequeue, evaluated from the old IQ head.
   FQInput(const ICache &icache, const DecodeUnit &du)
       : ICacheModule(icache), DecodeUnitModule(du) {}
 };
@@ -30,9 +31,9 @@ private:
   lastPush pushCache;
   uint8_t head = 0;
   uint8_t tail = 0;
-  void push(uint32_t raw, int pc, int32_t predictedPC, uint8_t ckptId);
-  void pop();
-  void clear();
+  void push(uint32_t raw, int pc, int32_t predictedPC, uint8_t ckptId, systemState &CPUstate) const;
+  void pop(systemState &CPUstate) const;
+  void clear(systemState &CPUstate) const;
 
 public:
   InstructBuffer() { std::memset(this, 0, sizeof(*this)); }

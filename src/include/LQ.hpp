@@ -39,15 +39,15 @@ private:
   LQEntry LQqueue[LQ_CAP];
   uint8_t head = 0;
   uint8_t tail = 0;
-  void pushLoad(RobTag robTag, int n_bytes, bool isUnsigned);
-  void pop();
-  void writeAddress(uint32_t address, int index);
-  void writeValue(int32_t value, int index);
-  void writeValueIfFetching(uint8_t robTag, int index, int32_t value);
-  void setValueState(int index, ValueState state);
-  void setCDBBroadcast(int index);
-  void applyStoreForward(const StoreNotify &notify);
-  void flush(uint8_t tailSnapshot);
+  void pushLoad(RobTag robTag, int n_bytes, bool isUnsigned, systemState &CPUstate) const;
+  void pop(systemState &CPUstate) const;
+  void writeAddress(uint32_t address, int index, systemState &CPUstate) const;
+  void writeValue(int32_t value, int index, systemState &CPUstate) const;
+  void writeValueIfFetching(uint8_t robTag, int index, int32_t value, systemState &CPUstate) const;
+  void setValueState(int index, ValueState state, systemState &CPUstate) const;
+  void setCDBBroadcast(int index, systemState &CPUstate) const;
+  uint32_t applyStoreForward(const StoreNotify &notify, systemState &CPUstate) const;
+  void flush(uint8_t tailSnapshot, systemState &CPUstate) const;
 
 public:
   LQ() { std::memset(this, 0, sizeof(*this)); }
@@ -55,12 +55,12 @@ public:
   bool isFull() const;
   bool isActive(uint8_t index) const;
   uint8_t getHead() const;
-  uint8_t getTail() const;
+  uint8_t getTail() const; // Packed epoch+slot sequence; mask before memIndex use.
   // Occupancy boundary AFTER this cycle's own enqueue (the caller pushes
   // exactly one entry at [tail] later this cycle). Distinct from the raw
   // tail: memIndex wants "my slot" (= old tail), squash snapshots want
   // "the border that keeps me alive" (= old tail + 1).
-  uint8_t getTailSnapshot() const { return (tail + 1) & LQ_MASK; }
+  uint8_t getTailSnapshot() const { return (tail + 1) & LQ_SEQ_MASK; }
   auto getAddress(int index) const -> uint32_t;
   auto getValue(int index) const -> int32_t;
   auto headRobTag() const -> uint8_t;

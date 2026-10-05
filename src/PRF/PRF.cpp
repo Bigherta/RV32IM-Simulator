@@ -23,23 +23,24 @@ PRF::PRF() {
     tailSeq = prfSeqNext(tailSeq);
   }
 }
-uint8_t PRF::pop() {
+uint8_t PRF::pop(systemState &CPUstate) const {
   if (isFreeListEmpty())
     throw std::runtime_error("PRF free list underflow!");
   uint8_t phy = freeList[prfSlot(headSeq)];
   assert(phy !=
          InvalidPhy); // P0-dead invariant: popped tags are real registers
-  headSeq = prfSeqNext(headSeq);
-  PhysicalRegs[phy].ready = false; // prevent reading the stale data
+  CPUstate.PRFModule.headSeq = prfSeqNext(headSeq);
+  CPUstate.PRFModule.PhysicalRegs[phy].ready = false;
   return phy;
 }
 
-void PRF::push(int index) {
+void PRF::push(int index, PrfSeq &writeTail, systemState &CPUstate) const {
   assert(index != InvalidPhy); // P0-dead invariant: only real tags are recycled
-  assert(prfSeqDistance(headSeq, tailSeq) <
+  assert(prfSeqDistance(headSeq, writeTail) <
          PRF_CAP); // free list never overflows
-  freeList[prfSlot(tailSeq)] = index;
-  tailSeq = prfSeqNext(tailSeq);
+  CPUstate.PRFModule.freeList[prfSlot(writeTail)] = index;
+  writeTail = prfSeqNext(writeTail);
+  CPUstate.PRFModule.tailSeq = writeTail;
 }
 
 bool PRF::isFreeListEmpty() const { return headSeq == tailSeq; }
@@ -48,12 +49,13 @@ PrfSeq PRF::getHeadSeq() const { return headSeq; }
 
 bool PRF::isReady(int index) const { return PhysicalRegs[index].ready; }
 int32_t PRF::getValue(int index) const { return PhysicalRegs[index].value; }
-void PRF::write(int index, int32_t value) {
-  PhysicalRegs[index].ready = true;
-  PhysicalRegs[index].value = value;
+void PRF::write(int index, int32_t value, systemState &CPUstate) const {
+  CPUstate.PRFModule.PhysicalRegs[index].ready = true;
+  CPUstate.PRFModule.PhysicalRegs[index].value = value;
 }
 
 void PRF::tick(const PRFInput &input, systemState &CPUstate) {
+  PrfSeq writeTail = tailSeq; // Multiple recycle writes share one local cursor.
   // 1. cdb of alu wake up prf
   if (input.cdbOfALU.valid &&
       input.ROBModule.matchesTag(input.cdbOfALU.robTag)) {
@@ -65,7 +67,7 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
         auto value = input.cdbOfALU.value;
         int newPhy = input.ROBModule.getNewPhy(robIdx);
         if (newPhy != InvalidPhy) {
-          CPUstate.PRFModule.write(newPhy, value);
+          write(newPhy, value, CPUstate);
         }
       }
     }
@@ -78,7 +80,7 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
       auto value = input.cdbOfLQ.value;
       int newPhy = input.ROBModule.getNewPhy(robIdx);
       if (newPhy != InvalidPhy) {
-        CPUstate.PRFModule.write(newPhy, value);
+        write(newPhy, value, CPUstate);
       }
     }
   }
@@ -91,7 +93,7 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
       auto value = input.cdbOfMul.value;
       int newPhy = input.ROBModule.getNewPhy(robIdx);
       if (newPhy != InvalidPhy) {
-        CPUstate.PRFModule.write(newPhy, value);
+        write(newPhy, value, CPUstate);
       }
     }
   }
@@ -104,7 +106,7 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
       auto value = input.cdbOfDiv.value;
       int newPhy = input.ROBModule.getNewPhy(robIdx);
       if (newPhy != InvalidPhy) {
-        CPUstate.PRFModule.write(newPhy, value);
+        write(newPhy, value, CPUstate);
       }
     }
   }
@@ -119,7 +121,7 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
         continue;
       auto recoverPRF = input.ROBModule.getNewPhy(robSlot(tag));
       if (recoverPRF != InvalidPhy)
-        CPUstate.PRFModule.push(recoverPRF);
+        push(recoverPRF, writeTail, CPUstate);
       tag = robNextTag(tag);
       if (tag == oldNext)
         scanDone = true;
@@ -128,11 +130,10 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
     // 6. if not, distribute a free PRF to the logic register
     if (input.issuePacket.valid) {
       if (input.issuePacket.allocDest) {
-        auto headphy = CPUstate.PRFModule.pop();
+        auto headphy = pop(CPUstate);
         assert(headphy == input.issuePacket.phy);
         if (input.issuePacket.isControl) {
-          CPUstate.PRFModule.write(input.issuePacket.phy,
-                                   input.issuePacket.pc + 4);
+          write(input.issuePacket.phy, input.issuePacket.pc + 4, CPUstate);
         }
       }
     }
@@ -145,7 +146,7 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
          input.ROBModule.headType() == ROBType::LINK)) {
       int oldPhy = input.ROBModule.getOldPhy(headIdx);
       if (oldPhy != InvalidPhy)
-        CPUstate.PRFModule.push(oldPhy);
+        push(oldPhy, writeTail, CPUstate);
     }
   }
 }

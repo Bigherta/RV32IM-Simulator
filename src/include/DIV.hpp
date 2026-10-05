@@ -45,13 +45,13 @@ private:
   bool fullAdderValid = false;
   bool shiftD = false;
   bool resultValid = false;
-  void receive(uint32_t op1, uint32_t op2, RobTag robTag, Operation op);
-  void prepare();
+  void receive(uint32_t op1, uint32_t op2, RobTag robTag, Operation op, systemState &CPUstate) const;
+  void prepare(systemState &CPUstate) const;
   void loop(uint64_t oldRegS, uint64_t oldRegC, uint32_t oldRegA,
-            uint32_t oldRegB);
+            uint32_t oldRegB, systemState &CPUstate) const;
   void calculateResult(uint64_t oldRegS, uint64_t oldRegC, uint32_t oldRegA,
-                       uint32_t oldRegB);
-  void flush(uint8_t tag);
+                       uint32_t oldRegB, systemState &CPUstate) const;
+  void flush(uint8_t tag, RobTag effectiveTag, systemState &CPUstate) const;
 
 public:
   // The CPU drives the divider the same way it drives the MUL: one tick() per
