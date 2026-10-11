@@ -13,12 +13,11 @@ struct DIVInput {
   const RSUnit &RSModule;
   const PRF &PRFModule;
   divCDB cdbOutput;
+  bool outReady = true;
   DispatchInfo dispatch;
   DIVInput(const RSUnit &rs, const PRF &prf) : RSModule(rs), PRFModule(prf) {}
 };
 class DIV {
-  friend struct DIVTester; // warehouse-external probe (same convention as
-                           // MULTester in MUL.hpp); never used by the CPU.
 private:
   // Every member is default-initialised: systemState is built with `= default`,
   // so an uninitialised DIV would let divCDB::build broadcast a ghost result
@@ -58,12 +57,10 @@ public:
   // cycle, reading the local snapshot and writing CPUstate.DIVModule.
   void tick(const DIVInput &, systemState &);
   bool isReady() const { return resultValid; }
-  // The divider is a single iterative unit (no output buffer like MUL), so it
-  // must not be handed a new op while it is still computing OR while a
-  // finished result has not been broadcast yet.
-  bool canAccept() const {
-    return !prepareValid && !loopValid && !fullAdderValid && !resultValid;
-  }
+  // A computing context stays exclusive. Its result may drain and refill in
+  // one cycle; a flush-boundary result is retained without a CDB grant.
+  bool canAccept(const divCDB &grant, const SquashInfo &squash,
+                 bool outReady) const;
   uint8_t getResultRobtag() const { return robTag; }
   uint32_t getValue() const {
     // Results are uint32 bit vectors. The sign fixups run on uint32 so that

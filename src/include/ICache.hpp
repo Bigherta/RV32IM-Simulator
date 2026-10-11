@@ -45,7 +45,8 @@ private:
   uint32_t missCount = 0;
   void clear(systemState &CPUstate) const;
   void pop(systemState &CPUstate) const;
-  void pushRequest(uint32_t pc, int32_t predictPC, uint8_t ckptId, systemState &CPUstate) const;
+  void pushRequest(uint32_t pc, int32_t predictPC, uint8_t ckptId,
+                   uint32_t raw, bool ready, systemState &CPUstate) const;
   // The previous synchronous read can bypass the request-slot register only
   // when its saved identity matches the occupied, not-yet-ready queue head.
   bool headReadReady() const {
@@ -60,6 +61,9 @@ public:
     return count > 0 && (requestBuffer[head].valid || headReadReady());
   }
   bool hit(uint32_t addr) const;
+  static bool refillHit(uint32_t pc, const LineReturn &refill) {
+    return refill.valid && (pc & ~ICACHE_OFFSET_MASK) == refill.lineAddr;
+  }
   ICacheRefillSelection selectRefill(const LineReturn &) const;
   uint32_t getHitCount() const { return hitCount; }
   uint32_t getMissCount() const { return missCount; }

@@ -29,7 +29,9 @@ class DispatchArbiter {
 public:
   static DispatchBus arbitrate(const RSUnit &rs, const ALU &alu, const AGU &agu,
                                const BRU &bru, const MUL &mul, const DIV &div,
-                               const PRF &prf, const SquashInfo &squash);
+                               const PRF &prf, const SquashInfo &squash,
+                               const mulCDB &mulGrant, const divCDB &divGrant,
+                               bool divOutReady);
 };
 
 // Named MemArbiter (was MemRequestArbiter) to match the template tree file
@@ -104,9 +106,9 @@ private:
                                  const UopView &inst,
                                  bool has_PC, bool isControl = false);
   static IssuePacket issue_Load(const IssueArbiterInput &, const UopView &inst,
-                                int n_bytes, bool isUnsigned);
+                                int nBytes, bool isUnsigned);
   static IssuePacket issue_Store(const IssueArbiterInput &, const UopView &inst,
-                                 int n_bytes);
+                                 int nBytes);
   static IssuePacket issue_B(const IssueArbiterInput &, const UopView &inst);
   static Operation decodeOp(const UopView &inst);
 

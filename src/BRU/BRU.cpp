@@ -28,7 +28,7 @@ void BRU::BRUExecute(uint32_t op1, uint32_t op2, uint32_t pc, uint32_t imm,
     break;
   }
   // uint32 bit-vector add: the target wraps at 32 bits by construction.
-  push({pc, taken ? pc + imm : pc + 4u, robTag}, keep, CPUstate);
+  push({pc, taken ? pc + imm : pc + 4u, robTag, taken}, keep, CPUstate);
 }
 
 void BRU::push(BranchResult result, bool keep, systemState &CPUstate) const {
@@ -69,6 +69,17 @@ uint8_t BRU::headRobTag() const {
       best = i;
   }
   return best >= 0 ? outputBuffer[best].robTag : 0;
+}
+
+bool BRU::headActualTaken() const {
+  int best = -1;
+  for (int i = 0; i < BRU_CAP; i++) {
+    if (slotValid[i] &&
+        (best == -1 ||
+         ROB::isOlder(outputBuffer[i].robTag, outputBuffer[best].robTag)))
+      best = i;
+  }
+  return best >= 0 ? outputBuffer[best].actualTaken : false;
 }
 
 bool BRU::isFull() const {

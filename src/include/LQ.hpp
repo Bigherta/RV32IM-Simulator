@@ -13,7 +13,7 @@ struct LQEntry {
   RobTag robTag;
   uint32_t address;
   int32_t value;
-  int n_bytes;
+  int nBytes;
   bool isAddressReady;
   ValueState valueState;
   bool isUnsigned;
@@ -30,8 +30,7 @@ struct LQInput {
   MemDispatchDecision decision;
   StoreNotify storeNotifies[STORERS_CAP];
   StoreNotify storeAddrNotify;
-  LQInput(const AGU &agu, const ROB &rob, const SQ &sq,
-          const IssuePacket &pkt)
+  LQInput(const AGU &agu, const ROB &rob, const SQ &sq, const IssuePacket &pkt)
       : AGUModule(agu), ROBModule(rob), issuePacket(pkt), SQModule(sq) {}
 };
 class LQ {
@@ -39,14 +38,19 @@ private:
   LQEntry LQqueue[LQ_CAP];
   uint8_t head = 0;
   uint8_t tail = 0;
-  void pushLoad(RobTag robTag, int n_bytes, bool isUnsigned, systemState &CPUstate) const;
+  void pushLoad(RobTag robTag, int nBytes, bool isUnsigned,
+                systemState &CPUstate) const;
   void pop(systemState &CPUstate) const;
   void writeAddress(uint32_t address, int index, systemState &CPUstate) const;
-  void writeValue(int32_t value, int index, systemState &CPUstate) const;
-  void writeValueIfFetching(uint8_t robTag, int index, int32_t value, systemState &CPUstate) const;
+  void writeValue(int32_t value, int index, uint8_t nBytes, bool isSigned,
+                  systemState &CPUstate) const;
+  void writeValueIfFetching(uint8_t robTag, int32_t value, int index,
+                            uint8_t nBytes, bool isSigned,
+                            systemState &CPUstate) const;
   void setValueState(int index, ValueState state, systemState &CPUstate) const;
   void setCDBBroadcast(int index, systemState &CPUstate) const;
-  uint32_t applyStoreForward(const StoreNotify &notify, systemState &CPUstate) const;
+  uint32_t applyStoreForward(const StoreNotify &notify,
+                             systemState &CPUstate) const;
   void flush(uint8_t tailSnapshot, systemState &CPUstate) const;
 
 public:
@@ -54,8 +58,12 @@ public:
   bool isEmpty() const;
   bool isFull() const;
   bool isActive(uint8_t index) const;
+  bool matchesAddress(uint8_t index, RobTag tag) const {
+    return isActive(index) && getRobTag(index) == tag;
+  }
   uint8_t getHead() const;
-  uint8_t getTail() const; // Packed epoch+slot sequence; mask before memIndex use.
+  uint8_t
+  getTail() const; // Packed epoch+slot sequence; mask before memIndex use.
   // Occupancy boundary AFTER this cycle's own enqueue (the caller pushes
   // exactly one entry at [tail] later this cycle). Distinct from the raw
   // tail: memIndex wants "my slot" (= old tail), squash snapshots want

@@ -2,24 +2,28 @@
 #include "../include/CPU.hpp"
 #include <cstdint>
 void AGU::push(uint32_t op1, uint32_t op2, RobTag robTag, uint8_t memIndex,
-               bool keep, systemState &CPUstate) const {
+               bool keep, const AGUInput &input, systemState &CPUstate) const {
   // uint32 bit-vector add: the address wraps at 32 bits by construction.
   const uint32_t value = op1 + op2;
   AddressCalculateResult result{value, robTag, memIndex};
-  for (int i = 0; i < AGU_CAP; i++)
-    if (!slotValid[i]) {
+  for (int i = 0; i < AGU_CAP; i++) {
+    const bool removed = slotValid[i] && outputBuffer[i].robTag == headRobTag();
+    const bool flushed =
+        slotValid[i] && input.squashDetect.needSquash &&
+        !ROB::isOlder(outputBuffer[i].robTag, input.squashDetect.SquashTag);
+    if (!slotValid[i] || removed || flushed) {
       CPUstate.AGUModule.outputBuffer[i] = result;
       CPUstate.AGUModule.slotValid[i] = keep;
       return;
-    }
+    } // reuse the removed or flushed slot
+  }
 }
 
 uint32_t AGU::headValue() const {
   int best = -1;
   for (int i = 0; i < AGU_CAP; i++) {
-    if (slotValid[i] &&
-        (best == -1 ||
-         ROB::isOlder(outputBuffer[i].robTag, outputBuffer[best].robTag)))
+    if (slotValid[i] && (best == -1 || ROB::isOlder(outputBuffer[i].robTag,
+                                                    outputBuffer[best].robTag)))
       best = i;
   }
   return best >= 0 ? outputBuffer[best].value : 0;
@@ -27,9 +31,8 @@ uint32_t AGU::headValue() const {
 uint8_t AGU::headRobTag() const {
   int best = -1;
   for (int i = 0; i < AGU_CAP; i++) {
-    if (slotValid[i] &&
-        (best == -1 ||
-         ROB::isOlder(outputBuffer[i].robTag, outputBuffer[best].robTag)))
+    if (slotValid[i] && (best == -1 || ROB::isOlder(outputBuffer[i].robTag,
+                                                    outputBuffer[best].robTag)))
       best = i;
   }
   return best >= 0 ? outputBuffer[best].robTag : 0;
@@ -37,9 +40,8 @@ uint8_t AGU::headRobTag() const {
 uint8_t AGU::headMemIndex() const {
   int best = -1;
   for (int i = 0; i < AGU_CAP; i++) {
-    if (slotValid[i] &&
-        (best == -1 ||
-         ROB::isOlder(outputBuffer[i].robTag, outputBuffer[best].robTag)))
+    if (slotValid[i] && (best == -1 || ROB::isOlder(outputBuffer[i].robTag,
+                                                    outputBuffer[best].robTag)))
       best = i;
   }
   return best >= 0 ? outputBuffer[best].memIndex : 0;
@@ -76,23 +78,6 @@ void AGU::flush(uint8_t tag, systemState &CPUstate) const {
   }
 }
 void AGU::tick(const AGUInput &input, systemState &CPUstate) {
-  if (input.dispatch.valid) {
-    const bool keep = !input.squashDetect.needSquash ||
-                      ROB::isOlder(input.dispatch.robTag, input.squashDetect.SquashTag);
-    if (input.dispatch.rsType == RSType::Load) {
-      auto &rs = input.RSModule.loadRS[input.dispatch.rsIndex];
-      push(
-          static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
-          static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
-          input.dispatch.robTag, rs.memIndex, keep, CPUstate);
-    } else {
-      auto &rs = input.RSModule.storeAddressRS[input.dispatch.rsIndex];
-      push(
-          static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
-          static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
-          input.dispatch.robTag, rs.memIndex, keep, CPUstate);
-    }
-  }
   // AGU remove the first entry every cycle
   if (!isEmpty()) {
     remove(headRobTag(), CPUstate);
@@ -100,5 +85,22 @@ void AGU::tick(const AGUInput &input, systemState &CPUstate) {
   // clear the wrong AGU buffer
   if (input.squashDetect.needSquash) {
     flush(input.squashDetect.SquashTag, CPUstate);
+  }
+  // push in the new entry if agu can accept it
+  if (input.dispatch.valid) {
+    const bool keep =
+        !input.squashDetect.needSquash ||
+        ROB::isOlder(input.dispatch.robTag, input.squashDetect.SquashTag);
+    if (input.dispatch.rsType == RSType::Load) {
+      auto &rs = input.RSModule.loadRS[input.dispatch.rsIndex];
+      push(static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
+           static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
+           input.dispatch.robTag, rs.memIndex, keep, input, CPUstate);
+    } else {
+      auto &rs = input.RSModule.storeAddressRS[input.dispatch.rsIndex];
+      push(static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
+           static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
+           input.dispatch.robTag, rs.memIndex, keep, input, CPUstate);
+    }
   }
 }

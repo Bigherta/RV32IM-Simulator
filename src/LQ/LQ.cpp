@@ -12,17 +12,20 @@ bool LQ::isFull() const { return tail == (head ^ LQ_CAP); }
 bool LQ::isActive(uint8_t index) const {
   if (head == tail)
     return false;
-  return index < LQ_CAP && ((index - head) & LQ_MASK) <
-         ((tail - head) & LQ_SEQ_MASK);
+  return index < LQ_CAP &&
+         ((index - head) & LQ_MASK) < ((tail - head) & LQ_SEQ_MASK);
 }
 
-void LQ::pop(systemState &CPUstate) const { CPUstate.LQModule.head = (head + 1) & LQ_SEQ_MASK; }
+void LQ::pop(systemState &CPUstate) const {
+  CPUstate.LQModule.head = (head + 1) & LQ_SEQ_MASK;
+}
 
-void LQ::pushLoad(RobTag robTag, int n_bytes, bool isUnsigned, systemState &CPUstate) const {
+void LQ::pushLoad(RobTag robTag, int nBytes, bool isUnsigned,
+                  systemState &CPUstate) const {
   const auto slot = tail & LQ_MASK;
   CPUstate.LQModule.LQqueue[slot] = {};
   CPUstate.LQModule.LQqueue[slot].robTag = robTag;
-  CPUstate.LQModule.LQqueue[slot].n_bytes = n_bytes;
+  CPUstate.LQModule.LQqueue[slot].nBytes = nBytes;
   CPUstate.LQModule.LQqueue[slot].isUnsigned = isUnsigned;
   CPUstate.LQModule.LQqueue[slot].isAddressReady = false;
   CPUstate.LQModule.LQqueue[slot].valueState = ValueState::NOTREADY;
@@ -32,32 +35,51 @@ void LQ::pushLoad(RobTag robTag, int n_bytes, bool isUnsigned, systemState &CPUs
 uint8_t LQ::getHead() const { return head & LQ_MASK; }
 uint8_t LQ::getTail() const { return tail; }
 
-void LQ::flush(uint8_t tailSnapshot, systemState &CPUstate) const { CPUstate.LQModule.tail = tailSnapshot; }
+void LQ::flush(uint8_t tailSnapshot, systemState &CPUstate) const {
+  CPUstate.LQModule.tail = tailSnapshot;
+}
 
-void LQ::writeAddress(uint32_t address, int index, systemState &CPUstate) const {
+void LQ::writeAddress(uint32_t address, int index,
+                      systemState &CPUstate) const {
   CPUstate.LQModule.LQqueue[index].address = address;
   CPUstate.LQModule.LQqueue[index].isAddressReady = true;
 }
 
-void LQ::writeValue(int32_t value, int index, systemState &CPUstate) const {
+void LQ::writeValue(int32_t value, int index, uint8_t nBytes, bool isSigned,
+                    systemState &CPUstate) const {
+  if (nBytes == 1) {
+    value = value & 0xff;
+  } else if (nBytes == 2) {
+    value = value & 0xffff;
+  }
+  if (isSigned && nBytes != 4) {
+    if (value & (1 << ((8 << (nBytes - 1)) - 1))) {
+      value |= ~((1 << (8 << (nBytes - 1))) - 1);
+    }
+  }
   CPUstate.LQModule.LQqueue[index].value = value;
   CPUstate.LQModule.LQqueue[index].valueState = ValueState::READY;
   CPUstate.LQModule.LQqueue[index].isCDBBroadcast = false;
 }
 
-void LQ::writeValueIfFetching(uint8_t robTag, int index, int32_t value, systemState &CPUstate) const {
+void LQ::writeValueIfFetching(uint8_t robTag, int32_t value, int index,
+                              uint8_t nBytes, bool isSigned,
+                              systemState &CPUstate) const {
   if (LQqueue[index].robTag != robTag)
     return;
   if (LQqueue[index].valueState != ValueState::FETCHING)
     return;
-  writeValue(value, index, CPUstate);
+  writeValue(value, index, nBytes, isSigned, CPUstate);
 }
 
-void LQ::setValueState(int index, ValueState state, systemState &CPUstate) const {
+void LQ::setValueState(int index, ValueState state,
+                       systemState &CPUstate) const {
   CPUstate.LQModule.LQqueue[index].valueState = state;
 }
 
-void LQ::setCDBBroadcast(int index, systemState &CPUstate) const { CPUstate.LQModule.LQqueue[index].isCDBBroadcast = true; }
+void LQ::setCDBBroadcast(int index, systemState &CPUstate) const {
+  CPUstate.LQModule.LQqueue[index].isCDBBroadcast = true;
+}
 
 auto LQ::getAddress(int index) const -> uint32_t {
   if (LQqueue[index].isAddressReady)
@@ -71,7 +93,9 @@ auto LQ::getValue(int index) const -> int32_t {
   throw std::runtime_error("Value is not ready!");
 }
 
-auto LQ::headRobTag() const -> uint8_t { return LQqueue[head & LQ_MASK].robTag; }
+auto LQ::headRobTag() const -> uint8_t {
+  return LQqueue[head & LQ_MASK].robTag;
+}
 
 auto LQ::getRobTag(int index) const -> uint8_t { return LQqueue[index].robTag; }
 
@@ -79,7 +103,7 @@ auto LQ::getIsUnsigned(int index) const -> bool {
   return LQqueue[index].isUnsigned;
 }
 
-auto LQ::getNBytes(int index) const -> int { return LQqueue[index].n_bytes; }
+auto LQ::getNBytes(int index) const -> int { return LQqueue[index].nBytes; }
 
 int LQ::LoadDetect() const {
   if (head == tail)
@@ -91,10 +115,10 @@ int LQ::LoadDetect() const {
     if (!isActive(cur) || foundUnload)
       continue;
     if (LQqueue[cur].isAddressReady &&
-               LQqueue[cur].valueState == ValueState::NOTREADY) {
-        foundUnload = true;
-        UnloadIndex = cur;
-      }
+        LQqueue[cur].valueState == ValueState::NOTREADY) {
+      foundUnload = true;
+      UnloadIndex = cur;
+    }
   }
   return foundUnload ? UnloadIndex : 0xFFFFFFFF;
 }
@@ -118,7 +142,8 @@ int LQ::CDBDetect() const {
   return detectedIndex;
 }
 
-uint32_t LQ::applyStoreForward(const StoreNotify &notify, systemState &CPUstate) const {
+uint32_t LQ::applyStoreForward(const StoreNotify &notify,
+                               systemState &CPUstate) const {
   uint32_t forwarded = 0;
   for (int k = 0; k < LQ_CAP; ++k) {
     uint8_t i = (head + k) & LQ_MASK;
@@ -126,7 +151,7 @@ uint32_t LQ::applyStoreForward(const StoreNotify &notify, systemState &CPUstate)
       break;
     if (!LQqueue[i].isAddressReady)
       continue;
-    if (LQqueue[i].address != notify.addr)
+    if (LQqueue[i].address != notify.addr || LQqueue[i].nBytes != notify.nBytes)
       continue;
     if (!ROB::isOlder(notify.storeTag, LQqueue[i].robTag))
       continue;
@@ -136,7 +161,8 @@ uint32_t LQ::applyStoreForward(const StoreNotify &notify, systemState &CPUstate)
         (notify.foundUnknown &&
          ROB::isOlder(notify.unknownOldestTag, LQqueue[i].robTag));
     if (!blocked) {
-      writeValue(notify.value, i, CPUstate);
+      writeValue(notify.value, i, LQqueue[i].nBytes, !LQqueue[i].isUnsigned,
+                 CPUstate);
       forwarded |= 1u << i;
     }
   }
@@ -146,8 +172,6 @@ uint32_t LQ::applyStoreForward(const StoreNotify &notify, systemState &CPUstate)
 void LQ::tick(const LQInput &input, systemState &CPUstate) {
   uint32_t forwarded = 0; // Comb flag only: forwarding wins over a late reply.
   const auto &p = input.issuePacket;
-  if (p.valid && p.isLoad)
-    pushLoad(p.robTag, p.nBytes, p.isUnsigned, CPUstate);
   // store-forward broadcasts from SQ (data-ready events pre-computed in comb)
   for (int i = 0; i < STORERS_CAP; ++i)
     if (input.storeNotifies[i].valid)
@@ -158,16 +182,18 @@ void LQ::tick(const LQInput &input, systemState &CPUstate) {
   if (!input.AGUModule.isEmpty() &&
       !isStoreMem(input.AGUModule.headMemIndex())) {
     auto aguRobTag = input.AGUModule.headRobTag();
-    if (!input.squashDetect.needSquash ||
-        (input.squashDetect.needSquash &&
-         ROB::isOlder(aguRobTag, input.squashDetect.SquashTag))) {
-      auto aguMemIndex = input.AGUModule.headMemIndex();
+    const auto index = memSlot(input.AGUModule.headMemIndex());
+    if (matchesAddress(index, aguRobTag) &&
+        (!input.squashDetect.needSquash ||
+         (input.squashDetect.needSquash &&
+          ROB::isOlder(aguRobTag, input.squashDetect.SquashTag)))) {
       const uint32_t value = input.AGUModule.headValue();
-      auto index = memSlot(aguMemIndex);
       writeAddress(value, index, CPUstate);
-      auto reply = input.SQModule.replyToLoadRequest(value, aguRobTag);
+      auto reply = input.SQModule.replyToLoadRequest(
+          value, LQqueue[index].nBytes, aguRobTag);
       if (reply.valid) {
-        writeValue(reply.value, index, CPUstate);
+        writeValue(reply.value, index, LQqueue[index].nBytes,
+                   !LQqueue[index].isUnsigned, CPUstate);
         forwarded |= 1u << index;
       }
     }
@@ -180,16 +206,19 @@ void LQ::tick(const LQInput &input, systemState &CPUstate) {
     forwarded &= ~(1u << index);
   }
   // retire pop
-  bool retireLoad = !input.squashDetect.needSquash && !isEmpty() &&
-                    (input.ROBModule.isEmpty() ||
-                     ROB::isOlder(headRobTag(), input.ROBModule.getHead()));
+  const bool retireLoad = !isEmpty() &&
+                          input.ROBModule.willCommit(input.squashDetect) &&
+                          headRobTag() == input.ROBModule.getHead();
   if (retireLoad)
     pop(CPUstate);
   // load response from DMEM
   if (input.loadResp.valid) {
     auto index = memSlot(input.loadResp.memIndex);
-    if (LQqueue[index].valueState == ValueState::FETCHING && !(forwarded & (1u << index)))
-      writeValueIfFetching(input.loadResp.robTag, index, input.loadResp.value, CPUstate);
+    if (LQqueue[index].valueState == ValueState::FETCHING &&
+        !(forwarded & (1u << index)))
+      writeValueIfFetching(input.loadResp.robTag, input.loadResp.value, index,
+                           LQqueue[index].nBytes, !LQqueue[index].isUnsigned,
+                           CPUstate);
   }
   // CDB consume (LQ bus)
   if (input.cdbOutput.valid) {
@@ -198,8 +227,14 @@ void LQ::tick(const LQInput &input, systemState &CPUstate) {
       setCDBBroadcast(memSlot(input.cdbOutput.memIndex), CPUstate);
     }
   }
+  // Allocation owns the last write to an old inactive tail slot; a late
+  // response for its previous occupant cannot initialize the new load.
+  if (p.valid && p.isLoad)
+    pushLoad(p.robTag, p.nBytes, p.isUnsigned, CPUstate);
   // flush on squash
   if (input.squashDetect.needSquash &&
       input.ROBModule.matchesTag(input.squashDetect.SquashTag))
-    flush(input.ROBModule.getLqTailSnapshot(robSlot(input.squashDetect.SquashTag)), CPUstate);
+    flush(input.ROBModule.getLqTailSnapshot(
+              robSlot(input.squashDetect.SquashTag)),
+          CPUstate);
 }

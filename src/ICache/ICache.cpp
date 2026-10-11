@@ -20,13 +20,14 @@ void ICache::pop(systemState &CPUstate) const {
   CPUstate.ICacheModule.head = (head + 1) & (REQUEST_CAP - 1);
 }
 
-void ICache::pushRequest(uint32_t pc, int32_t predictPC, uint8_t ckptId, systemState &CPUstate) const {
+void ICache::pushRequest(uint32_t pc, int32_t predictPC, uint8_t ckptId,
+                         uint32_t raw, bool ready, systemState &CPUstate) const {
   ICacheRequest request{};
-  request.raw_inst = 0;
+  request.raw_inst = raw;
   request.PC = pc;
   request.predictPC = predictPC;
   request.ckptId = ckptId;
-  request.valid = false;
+  request.valid = ready;
   CPUstate.ICacheModule.requestBuffer[(head + count) & (REQUEST_CAP - 1)] = request;
 }
 
@@ -87,21 +88,21 @@ void ICache::tick(const ICacheInput &input, systemState &CPUstate) {
         input.lineReturn.data[(pc >> RV32_WORD_BYTE_BITS) & ICACHE_WORD_INDEX_MASK];
     CPUstate.ICacheModule.requestBuffer[slot].valid = true;
   }
-  // stage 1 push: both hits and misses occupy an unready placeholder.
+  // stage 1 push: accepted refill data can pass forward to the new request.
+  // SRAM hits still read synchronously; other misses remain placeholders.
   if (input.fetchDecision.valid) {
-    bool isHit = hit(input.fetchDecision.pc);
-    // host-only: accepted-fetch classification for cross-tree trace diagnosis.
-    if (debug::enabled(debug::TOPIC_MEM))
-      debug::print("IC_ACCEPT idx=%u pc=%08x hit=%u\n", hitCount + missCount,
-                   input.fetchDecision.pc, static_cast<unsigned>(isHit));
-    if (isHit) {
+    const bool forwarded = refillHit(input.fetchDecision.pc, input.lineReturn);
+    const bool isHit = hit(input.fetchDecision.pc) || forwarded;
+    if (isHit && !forwarded) {
       CPUstate.ICacheModule.readIndex = (head + count) & (REQUEST_CAP - 1);
       CPUstate.ICacheModule.readLaneIndex =
           (input.fetchDecision.pc >> RV32_WORD_BYTE_BITS) & ICACHE_WORD_INDEX_MASK;
     }
     pushRequest(input.fetchDecision.pc,
-                                      input.fetchDecision.predictedPC,
-                                       input.fetchDecision.ckptId, CPUstate);
+                input.fetchDecision.predictedPC, input.fetchDecision.ckptId,
+                forwarded ? input.lineReturn.data[(input.fetchDecision.pc >>
+                    RV32_WORD_BYTE_BITS) & ICACHE_WORD_INDEX_MASK] : 0,
+                forwarded, CPUstate);
     if (isHit)
       CPUstate.ICacheModule.hitCount = hitCount + 1;
     else

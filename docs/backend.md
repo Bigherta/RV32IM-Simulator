@@ -31,13 +31,13 @@ Wallace-style CSA 树 [[7]](#back-ref-7)[[8]](#back-ref-8)，本文的 19→2 �
 ```
 第 1 级  calculateBooth(dispatch)      → 19 行部分积
 第 2 级  calculateSC(partialRes)       → (S, C)
-第 3 级  calculateMulRes(scRes)        → outputBuffer[slot]（结果 + robTag）
+第 3 级  calculateMulRes(scRes)        → outputBuffer[0]（单槽结果 + robTag）
 ```
 
 周期更新只读各级的旧状态并同时前推。主树在 `tick()` 内逆序调用
 `calculateMulRes` → `calculateSC` → `calculateBooth`；模板树在 `work()` 中读取
-`Register` 旧值达到同样效果。空级会清 valid，避免气泡被误当作结果。
-`flush(tag)` 同时清 `partialRes/scRes` 的 valid 与 `outputBuffer` 中不早于 tag 的槽位。
+`Register` 旧值达到同样效果。只推进准入开放的级；上游无live工作时清valid，关闭级不写，
+valid/data/tag/op一起保持。flush将各级不严格更老的工作视为空，支持取消同拍更老重填。
 
 **(a) 部分积的 19 行**（`PartialProductResult::partialProduct[19]`，全部 64 bit 全宽）：
 
@@ -66,16 +66,23 @@ c0–c2 / d0–d1 / e0 / f0），末级输出 `scRes.S / scRes.C`。
 - `MUL` → `(int32_t)res`（低 32 位）；
 - `MULH / MULHSU / MULHU` → `(int32_t)(res >> 32)`（高 32 位）。
 
-结果写入任一空闲 `outputBuffer` 槽（`slotValid[]` 标位），输出选择逻辑按
-**最老** robTag 取唯一的 mulCDB 写回候选；槽位本身没有 FIFO 次序。
+结果写入单槽`outputBuffer[0]`，`slotValid[0]`标位；该槽提供唯一mulCDB候选。
+无背压时n拍partial、n+1 CSA、n+2结果、n+3 CDB/拍末PRF和ROB更新，n+4依赖最早派发。
 
-**(d) 为什么 MUL 不需要背压门控**：`MUL_CAP=4` $>$ 在飞指令数（3 级流水 $\le3$），
-且 `cdbOfMul` 每拍排空最老结果（被 squash 清掉的结果除外），故槽位永远够用 ——
-派发通道只需 `!mul.isFull()` 这一道门（`StaticArbiter.cpp` 的 MUL 分支），
-MUL 侧**不提供 `canAccept()`**。`calculateMulRes` 里那个
-`assert(best != -1 && "MUL slot overflow: MUL_CAP must exceed in-flight stages")`
-就是这条不变量的运行时守护：缓冲满了即代表派发跑得比总线排空快。
-**任何可能破坏该不变量的改动（缩 `MUL_CAP`、给流水加级），都必须先保留这条断言。**
+**(d) 三级弹性准入**（SPEC §38，替代历史4槽预算）：
+
+```text
+stageLive = valid && (!flush || tag严格更老)
+resultCanAccept = !resultLive || 实际匹配tag的CDB授权
+CSACanAccept = !CSALive || resultCanAccept
+partialCanAccept = !partialLive || CSACanAccept
+```
+
+结果消费或取消允许同拍接收旧CSA，CSA/partial同理；全流水占用且出侧受阻时反压输入，
+各级整体保持。主树三个const方法接`(const mulCDB &grant, const SquashInfo &squash)`，
+模板无参方法读Input Wires。主树tick及helper只读this/Input、逐字段写目标；模板单写Register。
+正式core专用CDB恒授权，但准入必须读取实际授权，不能在仲裁器重新假设恒真。
+模块2207步/21字段及真实返回链2302步/508字段四方一致；背压、受阻恢复及旧溢出负向已验。
 
 ### 4.4 DIV 实现：SRT radix-4
 
@@ -397,17 +404,17 @@ $$\boxed{A' = 4A + q\ (\text{数字串拼接}),\qquad B' = A'-1\ (\text{悲观�
 | 多条除法之间 | 可交错或复制上下文 | 需要保存每条指令私有的余数、`dSlice` 与迭代状态；本项目未实现 |
 | 除法 vs 乘法 | 乘法天然可流水 | 乘法是单向 DAG，除法是反馈环 |
 
-- `canAccept(){return !(prepareValid || loopValid || fullAdderValid) && !resultValid;}`——三个阶段任一在算、或结果还没广播出去，都得拒；独立 `busy` 状态已由三阶段 valid 的 OR 精确替代；
-- 一般路径从派发到 divCDB 的延迟为 $3+k$；满宽 $k=17$ → **20 周期**。
+- 准入=`!busy && (!resultValid || actualConsume || (youngerCancelled && outReady))`；busy是
+  三阶段valid的OR。结果实际消费可同拍接新工作，计算中仍独占；边界结果不消费/不取消时保持。
+- 一般路径接受n拍，n+L+2拍末结果、n+L+3 divCDB，L=k−1=ceil(align/2)，拍差3..19。
+  满宽k=17/L=16，在n+19写回；若含接受拍共20采样拍，不能误写成n+20。
   其中 `prepare` 产生 $q_1$，`loop()` 只运行 $k-1$ 次；$align=0$ 的一般路径因此
   是 **0 次 `loop()`**，但不是 0-cycle；
 - RISC-V 特判路径在 `receive()` 直接锁存 `resultValid`，绕过 `prepare/loop/calculateResult`，
   即 **0 次 SRT 迭代**；结果仍须跨周期变为可见并经 divCDB 广播，也不是组合零延迟；
-- 对照 MUL：乘法器是流水线 + 4 槽输出缓冲，派发只需 `!isFull()` 一道门，
-  **MUL 侧无 `canAccept()`**（§4.3(d)）；DIV 则必须反过来用三阶段 valid 归约与 `resultValid`
-  双门控——这是两者在派发准入上的差异，也是 `DispatchArbiter` 里 MUL 走 `isFull()`、
-  DIV 走 `canAccept()` 的原因；
-- 无输出缓冲（不像 MUL 有 `outputBuffer[MUL_CAP]`），结果靠 `resultValid` 单发。
+- 对照MUL：乘法器以`partialCanAccept`传播三级弹性准入，可重叠多条工作；DIV仍是单上下文
+  迭代接口，但结果消费可同拍接收下一条（§4.3(d)）。
+- 结果靠`resultValid`单发；MUL的单槽结果则允许消费/取消同拍从旧CSA重填。
 
 SRT 可把 QDS 与 CSA 切级、展开多拍或交错多条指令；是否值得取决于综合关键路径、面积和
 目标负载的动态除法占比。本项目选择最小面积的单上下文迭代实现，不把该取舍泛化为通用结论。

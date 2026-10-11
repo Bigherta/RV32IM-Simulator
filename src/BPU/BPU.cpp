@@ -1,6 +1,5 @@
 #include "../include/BPU.hpp"
 #include "../include/CPU.hpp"
-#include "../include/util.hpp"
 #include "common.hpp"
 #include <cassert>
 #include <cstdint>
@@ -8,9 +7,9 @@
 
 FetchDecision FetchDecision::build(const BPU &bp, uint32_t pc,
                                    const SquashInfo &squash, bool haltFetched,
-                                   bool fqFull, bool imemReqFull) {
+                                   bool fqCanAccept, bool memCanAccept) {
   FetchDecision fdec{};
-  if (!squash.needSquash && !haltFetched && !fqFull && !imemReqFull) {
+  if (!squash.needSquash && !haltFetched && fqCanAccept && memCanAccept) {
     auto prediction = bp.predict(pc);
     fdec.valid = true;
     fdec.pc = pc;
@@ -123,8 +122,6 @@ void BPU::update(uint32_t pc, bool taken, uint32_t target, uint8_t ghr, systemSt
     CPUstate.BPUModule.tgt.BTB[BTB_index].isRet = false;
   }
 
-  // Committed target history: every resolved branch folds its outcome into
-  // the per-slot 8b BHR consumed by the Target Cache hash.
 }
 
 void BPU::updateJump(uint32_t pc, uint32_t target, bool isRet, systemState &CPUstate) const {
@@ -136,27 +133,6 @@ void BPU::updateJump(uint32_t pc, uint32_t target, bool isRet, systemState &CPUs
   CPUstate.BPUModule.tgt.BTB[BTB_index].unconditional = true;
   CPUstate.BPUModule.tgt.BTB[BTB_index].isRet = isRet;
 
-  // true indirect jump: train Target Cache at this context's hash.
-  // Direct JALs never touch TC — their BTB target is exact and must not
-  // be overridable through a colliding history hash.
-}
-
-void BPU::dumpBpMiss() const {
-  uint64_t total = 0;
-  for (int i = 0; i < BTB_CAP; ++i)
-    total += missCnt[i];
-  debug::print("bpmiss: %llu total, top PCs (pc[11:2] aliased):\n", total);
-  bool used[BTB_CAP] = {};
-  for (int n = 0; n < 16; ++n) {
-    int best = -1;
-    for (int i = 0; i < BTB_CAP; ++i)
-      if (!used[i] && (best < 0 || missCnt[i] > missCnt[best]))
-        best = i;
-    if (best < 0 || missCnt[best] == 0)
-      break;
-    used[best] = true;
-    debug::print("  pc 0x%04x: %llu\n", missPC[best], missCnt[best]);
-  }
 }
 
 void BPU::shiftGHR(bool taken, systemState &CPUstate) const {
@@ -171,15 +147,8 @@ void BPU::recoverCheckPoint(const uint8_t ghr, systemState &CPUstate) const {
   CPUstate.BPUModule.dir.GHR = ghr;
 }
 
-void BPU::noteMiss(uint32_t pc, bool extra, systemState &CPUstate) const {
-  const auto i = (pc >> 2) & (BTB_CAP - 1);
-  CPUstate.BPUModule.missCnt[i] = missCnt[i] + 1 + static_cast<unsigned>(extra);
-  CPUstate.BPUModule.missPC[i] = pc;
-}
-
 void BPU::tick(const BPUInput &input, systemState &CPUstate) {
   uint64_t total = branchTotal, totalCorrect = branchCorrect;
-  uint32_t bruMissIndex = BTB_CAP;
   Cand bru, cdb;
   if (!input.BRUModule.isEmpty() &&
       input.ROBModule.matchesTag(input.BRUModule.headRobTag())) {
@@ -198,14 +167,11 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
       if (correct) {
         ++totalCorrect;
         CPUstate.BPUModule.condCorrect = condCorrect + 1;
-      } else {
-        noteMiss(pcFrom, false, CPUstate);
-        bruMissIndex = (pcFrom >> 2) & (BTB_CAP - 1);
       }
       bru.valid = true;
       // PC values are uint32 bit vectors.
       bru.pc = static_cast<uint32_t>(pcFrom);
-      bru.taken = pcResult != pcFrom + 4u;
+      bru.taken = input.BRUModule.headActualTaken(); // use the actual taken to train
       bru.target = static_cast<uint32_t>(pcResult);
       const uint8_t cid = input.ROBModule.getCkptId(robSlot(brRobTag));
       bru.ghr = GHRCheckpoint[cid];
@@ -235,11 +201,6 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
           CPUstate.BPUModule.jalrCorrect = jalrCorrect + 1;
         else
           CPUstate.BPUModule.jalCorrect = jalCorrect + 1;
-      } else {
-        // record the jump SITE, not its target: targets are arbitrary
-        // addresses that would poison the per-PC miss profile.
-        const auto site = static_cast<uint32_t>(input.ROBModule.getPC(robIdx));
-        noteMiss(site, bruMissIndex == ((site >> 2) & (BTB_CAP - 1)), CPUstate);
       }
       cdb.valid = true;
       cdb.pc = input.ROBModule.getPC(robIdx);
@@ -271,50 +232,48 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
   }
   // Pre-decode scanner: RAS maintenance keyed on decoded instruction type
   // (routed from the FQ push of the PREVIOUS cycle), never on BTB hits.
-  // Journal + checkpoint-rewind machinery is unchanged -- only the event
-  // source moved. Must stay BEFORE the squash-recover block: events landing
-  // this tick belong to fetches younger than the squash point and must be
-  // undone by it.
+  // A pop-push overwrites the old top even though depth can be unchanged.
+  // Squash reconstructs CONTENTS from the old architectural stack and live
+  // ROB prefix; a depth-only checkpoint cannot undo that overwrite.
   const auto &fi = input.fetchInfo;
   if (fi.valid) {
     const uint32_t returnAddress = fi.pc + 4;
-    if (fi.isCall && tgt.specTopOfRAS < RAS_CAP) {
-      CPUstate.BPUModule.tgt.specRAS[tgt.specTopOfRAS] = returnAddress;
-      CPUstate.BPUModule.tgt.specTopOfRAS = tgt.specTopOfRAS + 1;
-    } else if (fi.isRet && tgt.specTopOfRAS > 0) {
-      CPUstate.BPUModule.tgt.specTopOfRAS = tgt.specTopOfRAS - 1;
+    if (!input.squashDetect.needSquash && (fi.isCall || fi.isRet)) {
+      auto specTop = tgt.specTopOfRAS;
+      if (fi.isRet && specTop > 0) --specTop;
+      if (fi.isCall && specTop < RAS_CAP) {
+        CPUstate.BPUModule.tgt.specRAS[specTop] = returnAddress;
+        ++specTop;
+      }
+      CPUstate.BPUModule.tgt.specTopOfRAS = specTop;
     }
     // Early BTB type/target training: jal carries its static target in the
     // encoding, so direct calls become perfectly predicted from their second
     // encounter without waiting for a resolve. Write only target fields;
     // conditions and indices come from the snapshot and input.
-    if (fi.isCall || (!fi.isCall && !fi.isRet)) {
-      auto BTB_index = (fi.pc >> 2) & (BTB_CAP - 1);
-      CPUstate.BPUModule.tgt.BTB[BTB_index].actualPC = fi.pc;
-      CPUstate.BPUModule.tgt.BTB[BTB_index].valid = true;
-      CPUstate.BPUModule.tgt.BTB[BTB_index].unconditional = true;
-      CPUstate.BPUModule.tgt.BTB[BTB_index].isRet = false;
-      if (fi.jalTargetValid)
-        CPUstate.BPUModule.tgt.BTB[BTB_index].target = fi.jalTarget;
-    }
-    if (fi.isRet) {
-      auto BTB_index = (fi.pc >> 2) & (BTB_CAP - 1);
-      CPUstate.BPUModule.tgt.BTB[BTB_index].actualPC = fi.pc;
-      CPUstate.BPUModule.tgt.BTB[BTB_index].valid = true;
-      CPUstate.BPUModule.tgt.BTB[BTB_index].unconditional = true;
-      CPUstate.BPUModule.tgt.BTB[BTB_index].isRet = true;
-    }
+    const auto BTB_index = (fi.pc >> 2) & (BTB_CAP - 1);
+    CPUstate.BPUModule.tgt.BTB[BTB_index].actualPC = fi.pc;
+    CPUstate.BPUModule.tgt.BTB[BTB_index].valid = true;
+    CPUstate.BPUModule.tgt.BTB[BTB_index].unconditional = true;
+    CPUstate.BPUModule.tgt.BTB[BTB_index].isRet = fi.isRet;
+    if (fi.jalTargetValid && !fi.isRet)
+      CPUstate.BPUModule.tgt.BTB[BTB_index].target = fi.jalTarget;
   }
 
   // Commit is the architectural RAS baseline used for later ROB replay.
   if (input.ROBModule.willCommit(input.squashDetect)) {
     const auto headIndex = robSlot(input.ROBModule.getHead());
-    if (input.ROBModule.isCall(headIndex) && tgt.archTopOfRAS < RAS_CAP) {
-      CPUstate.BPUModule.tgt.archRAS[tgt.archTopOfRAS] =
-          static_cast<uint32_t>(input.ROBModule.getPC(headIndex)) + 4u;
-      CPUstate.BPUModule.tgt.archTopOfRAS = tgt.archTopOfRAS + 1;
-    } else if (input.ROBModule.isRet(headIndex) && tgt.archTopOfRAS > 0) {
-      CPUstate.BPUModule.tgt.archTopOfRAS = tgt.archTopOfRAS - 1;
+    const bool push = input.ROBModule.isCall(headIndex);
+    const bool pop = input.ROBModule.isRet(headIndex);
+    if (push || pop) {
+      auto archTop = tgt.archTopOfRAS;
+      if (pop && archTop > 0) --archTop;
+      if (push && archTop < RAS_CAP) {
+        CPUstate.BPUModule.tgt.archRAS[archTop] =
+            static_cast<uint32_t>(input.ROBModule.getPC(headIndex)) + 4u;
+        ++archTop;
+      }
+      CPUstate.BPUModule.tgt.archTopOfRAS = archTop;
     }
   }
   if (input.squashDetect.needSquash) {
@@ -332,19 +291,17 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
     for (int i = 0; i < ROB_CAP; ++i) {
       if (!recovered) {
         const auto robIndex = robSlot(robTag);
+        if (input.ROBModule.isRet(robIndex) && commitTOS > 0)
+          --commitTOS;
         if (input.ROBModule.isCall(robIndex) && commitTOS < RAS_CAP)
           CPUstate.BPUModule.tgt.specRAS[commitTOS++] =
               static_cast<uint32_t>(input.ROBModule.getPC(robIndex)) + 4u;
-        else if (input.ROBModule.isRet(robIndex) && commitTOS > 0)
-          --commitTOS;
         recovered = robTag == input.squashDetect.SquashTag;
         robTag = robNextTag(robTag);
       }
     }
     assert(recovered);
     CPUstate.BPUModule.tgt.specTopOfRAS = commitTOS;
-    if (commitTOS > maxSpecTopOfRAS)
-      CPUstate.BPUModule.maxSpecTopOfRAS = commitTOS;
     // recover next checkpoint id
     CPUstate.BPUModule.nextCkptId =
         (input.squashDetect.CkptId + 1) & (CKPT_CAP - 1);

@@ -1,6 +1,5 @@
 #include "../include/DynamicArbiter.hpp"
 #include "../include/CPU.hpp"
-#include "../include/util.hpp"
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
@@ -72,16 +71,12 @@ void FlushArbiter::tick(const FlushArbiterInput &input, systemState &CPUstate) {
       input.ROBModule.matchesTag(input.BRUModule.headRobTag())) {
     uint8_t brRobTag = input.BRUModule.headRobTag();
     const uint32_t pcResult = input.BRUModule.headPCResult();
-    const uint32_t pcFrom = input.BRUModule.headPCFrom();
     if (!input.squashDetect.needSquash ||
         (input.squashDetect.needSquash &&
          ROB::isOlder(brRobTag, input.squashDetect.SquashTag))) {
       auto actualPC = pcResult;
       if (actualPC != static_cast<uint32_t>(
                           input.ROBModule.getPredictedPC(robSlot(brRobTag)))) {
-        if (debug::enabled(debug::TOPIC_BPMISS))
-          debug::print("squash tag=%u pc=%u (from %u)\n", brRobTag, actualPC,
-                       pcFrom);
         BranchSquash.needSquash = true;
         BranchSquash.SquashPC = actualPC;
         BranchSquash.SquashTag = brRobTag;
@@ -102,8 +97,6 @@ void FlushArbiter::tick(const FlushArbiterInput &input, systemState &CPUstate) {
           isControl) {
         const auto pc = static_cast<uint32_t>(cdbOut.value);
         if (pc != input.ROBModule.getPredictedPC(robSlot(cdbOut.robTag))) {
-          if (debug::enabled(debug::TOPIC_BPMISS))
-            debug::print("squash tag=%u pc=%u (jalr)\n", cdbOut.robTag, pc);
           JumpSquash.needSquash = true;
           JumpSquash.SquashPC = pc;
           JumpSquash.SquashTag = cdbOut.robTag;

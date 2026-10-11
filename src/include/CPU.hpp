@@ -24,6 +24,8 @@
 #include "common.hpp"
 #include <cstring>
 
+enum class FinishPhase : uint8_t { RUN, WAIT_IDLE, WRITEBACK, DONE };
+
 struct systemState {
   RSUnit RSModule;
   RAT RATModule;
@@ -45,6 +47,8 @@ struct systemState {
   BPU BPUModule;
   FlushArbiter flushArbiter;
   FetchUnit FetchUnitModule;
+  bool initialized = false;
+  FinishPhase finishPhase = FinishPhase::RUN;
 
   systemState() = default;
   systemState(Memory mem) : DMEMModule(mem), IMEMModule(mem) {}
@@ -52,6 +56,7 @@ struct systemState {
 
 class CPU {
 private:
+  void clock(); // Commit all module updates from the same old snapshot.
   systemState CPUstate;
   RSUnit RSModule;
   RAT RATModule;
@@ -73,17 +78,13 @@ private:
   BPU BPUModule;
   FlushArbiter flushArbiter;
   FetchUnit FetchUnitModule;
+  bool initialized = false;
+  FinishPhase finishPhase = FinishPhase::RUN;
   aluCDB cdbOfALU;
   lqCDB cdbOfLQ;
   mulCDB cdbOfMul; // MUL 专用结果总线（cdbOfALU/cdbOfLQ/cdbOfMul
                    // 三路，各源独立、无跨单元仲裁）
   divCDB cdbOfDiv; // fourth independent result bus (ALU/LQ/MUL/DIV)
-  uint64_t statAluOnly = 0; // cycles with only an ALU CDB candidate
-  uint64_t statLqOnly = 0;  // cycles with only an LQ CDB candidate
-  uint64_t statBoth = 0;    // cycles both valid (dual-CDB parallel grant)
-  uint64_t statLqWins = 0;  // both valid, LQ older (single-CDB would grant LQ)
-  uint64_t statAluWins =
-      0; // both valid, ALU older (single-CDB would grant ALU)
   IssuePacket issuePacket;
   AGUInput aguInput{RSModule, PRFModule};
   ALUInput aluInput{RSModule, PRFModule};
@@ -97,7 +98,7 @@ private:
   LQInput lqInput{AGUModule, ROBModule, SQModule, issuePacket};
   SQInput sqInput{AGUModule, RSModule, PRFModule, ROBModule, issuePacket};
   RSInput rsInput{issuePacket, PRFModule};
-  ROBInput robInput{BRUModule, SQModule, issuePacket};
+  ROBInput robInput{BRUModule, issuePacket};
   PRFInput prfInput{ROBModule, issuePacket};
   RATInput ratInput{ROBModule, issuePacket};
   FlushArbiterInput flarbInput{BRUModule, ROBModule};

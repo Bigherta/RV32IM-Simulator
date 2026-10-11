@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <stdexcept>
 
 namespace {
 // Pre-decode scan of a fetched word: classify the unconditional-jump family
@@ -39,23 +40,15 @@ FetchTypeInfo scanJump(const struct lastPush &lp) {
     fi.jalTarget = static_cast<uint32_t>(lp.pc) + static_cast<uint32_t>(off);
     fi.valid = true;
   } else if (opcode == 0x67 && funct3 == 0) { // jalr
-    // Indirect call: rd is a link register (push ra), even for non-link rs1
-    // (function-pointer / PLT / vtable calls).
-    // Return: rs1 is a link register and rd is NOT (pop).
-    // The rd-link & rs1-link coroutine hint remains push-only here.
+    // User RAS contract: link rd pushes; link rs1 pops, independently.
+    // Both link operands (including rd == rs1) perform POP then PUSH.
     fi.isCall = rdLink;
-    fi.isRet = rs1Link && !rdLink;
+    fi.isRet = rs1Link;
     fi.valid = true;
   }
   return fi;
 }
 
-uint32_t instructionAt(const IMEM &imem, uint32_t pc) {
-  return static_cast<uint32_t>(imem.read_data(pc)) |
-         (static_cast<uint32_t>(imem.read_data(pc + 1)) << 8) |
-         (static_cast<uint32_t>(imem.read_data(pc + 2)) << 16) |
-         (static_cast<uint32_t>(imem.read_data(pc + 3)) << 24);
-}
 } // namespace
 
 CPU::CPU(Memory mem) : CPUstate(mem), IMEMModule(mem), DMEMModule(mem) {}
@@ -80,9 +73,21 @@ void CPU::comb() {
   IMEMModule.snapshotFrom(CPUstate.IMEMModule);
   memcpy(&flushArbiter, &CPUstate.flushArbiter, sizeof(flushArbiter));
   memcpy(&FetchUnitModule, &CPUstate.FetchUnitModule, sizeof(FetchUnitModule));
+  initialized = CPUstate.initialized;
+  finishPhase = CPUstate.finishPhase;
   DMEMModule.snapshotFrom(CPUstate.DMEMModule);
   DCacheModule.snapshotFrom(CPUstate.DCacheModule);
   squashDetect = CPUstate.flushArbiter.arbitResult();
+  isarbInput.squashDetect = squashDetect;
+  issuePacket = IssueArbiter::build(isarbInput);
+  fqInput.issueValid = issuePacket.valid;
+  const bool fqPop = !squashDetect.needSquash && !FQModule.isEmpty() &&
+                     DecodeUnitModule.canAccept(issuePacket.valid);
+  const bool fqReady = !squashDetect.needSquash && FQModule.canAccept(fqPop);
+  const bool popConsume = fqReady && ICacheModule.isReturnReady() &&
+                          !FetchUnitModule.isHaltFetched();
+  const bool haltSignal = FetchUnitModule.isHaltFetched() ||
+                          (popConsume && ICacheModule.returnRaw() == 0x0ff00513);
   // Build the accepted fetch before copying it into any consumer input.
   const LineReturn lineReturn = IMEMModule.getReturn();
   const auto refill = ICacheModule.selectRefill(lineReturn);
@@ -90,14 +95,15 @@ void CPU::comb() {
       lineReturn.valid && refill.valid && !squashDetect.needSquash;
   const uint32_t pc = FetchUnitModule.getPC();
   const bool icacheHit = ICacheModule.hit(pc);
-  const bool readBlocked = fillFire && icacheHit;
+  const bool refillHit = fillFire && ICache::refillHit(pc, lineReturn);
+  const bool readBlocked = fillFire && icacheHit && !refillHit;
+  const bool memCanAccept =
+      (!ICacheModule.isRequestFull() || popConsume) &&
+      (!IMEMModule.isRequestFull() || refillHit) && !readBlocked;
   fetchDecision = FetchDecision::build(
-      BPUModule, pc, squashDetect, FetchUnitModule.isHaltFetched(),
-      FQModule.isFull(), ICacheModule.isRequestFull() ||
-                             IMEMModule.isRequestFull() || readBlocked);
+      BPUModule, pc, squashDetect, haltSignal, fqReady,
+      memCanAccept && initialized);
   {
-    bool haltSignal =
-      !FQModule.isFull() && ICacheModule.isReturnReady() && ICacheModule.returnRaw() == 0x0ff00513;
     fetchUnitInput.squashDetect = squashDetect;
     fetchUnitInput.fetchDecision = fetchDecision;
     fetchUnitInput.haltSignal = haltSignal;
@@ -107,7 +113,7 @@ void CPU::comb() {
   // predicates, each side clears its own state (write-own-only)
   {
     FetchDecision imemFetch = fetchDecision;
-    if (icacheHit)
+    if (icacheHit || refillHit)
       imemFetch.valid = false; // hit: no IMEM line fetch needed
     else if (fetchDecision.valid)
       imemFetch.pc =
@@ -121,33 +127,19 @@ void CPU::comb() {
     icacheInput.lineReturn = lineReturn;
     icacheInput.lineReturn.valid = fillFire;
     icacheInput.refillSlot = refill.slot;
-    bool popConsume = ICacheModule.isReturnReady() &&
-                      !FetchUnitModule.isHaltFetched() && !FQModule.isFull();
     icacheInput.popConsume = popConsume;
   }
   fqInput.squashDetect = squashDetect;
-  fqInput.haltFetched = FetchUnitModule.isHaltFetched();
+  fqInput.returnAccepted = popConsume;
   bpuInput.fetchDecision = fetchDecision;
   cdbOfALU = aluCDB::build(ALUModule, squashDetect);
   cdbOfLQ = lqCDB::build(LQModule, squashDetect);
   cdbOfMul = mulCDB::build(MULModule, squashDetect);
   cdbOfDiv = divCDB::build(DIVModule, squashDetect);
-  // dual-CDB contention stats: count cycles where both buses have a grant,
-  // and which side a single-CDB arbiter would have preferred (older tag).
-  if (cdbOfALU.valid && cdbOfLQ.valid) {
-    ++statBoth;
-    if (ROB::isOlder(cdbOfLQ.robTag, cdbOfALU.robTag))
-      ++statLqWins;
-    else
-      ++statAluWins;
-  } else if (cdbOfALU.valid) {
-    ++statAluOnly;
-  } else if (cdbOfLQ.valid) {
-    ++statLqOnly;
-  }
   DispatchBus dispatchBus =
       DispatchArbiter::arbitrate(RSModule, ALUModule, AGUModule, BRUModule,
-                                 MULModule, DIVModule, PRFModule, squashDetect);
+                                 MULModule, DIVModule, PRFModule, squashDetect,
+                                 cdbOfMul, cdbOfDiv, true);
   aguInput.squashDetect = squashDetect;
   aluInput.squashDetect = squashDetect;
   aluInput.cdbOutput = cdbOfALU;
@@ -157,6 +149,7 @@ void CPU::comb() {
   mulInput.dispatch = dispatchBus.mul;
   divInput.squashDetect = squashDetect;
   divInput.cdbOutput = cdbOfDiv;
+  divInput.outReady = true; // Dedicated DIV result channel.
   divInput.dispatch = dispatchBus.div;
   aguInput.dispatch = dispatchBus.agu;
   bruInput.dispatch = dispatchBus.bru;
@@ -167,13 +160,8 @@ void CPU::comb() {
   auto memDispatch = MemArbiter::arbitrate(LQModule, SQModule, ROBModule,
                                            DCacheModule, squashDetect);
   dcacheInput.decision = memDispatch;
-  dcacheInput.probe = CPUstate.DCacheModule.sampleProbe(memDispatch);
-#ifdef _DEBUG
-  // host-only: assertion reference sampled from Q[n], outside every tick().
-  if (memDispatch.valid && memDispatch.request.op == Operation::Load)
-    dcacheInput.referenceValue = CPUstate.DMEMModule.load_n_bytes(
-        memDispatch.request.address, memDispatch.request.n_bytes, memDispatch.request.isSigned);
-#endif
+  dcacheInput.flushRequested = finishPhase == FinishPhase::WRITEBACK;
+  dcacheInput.setSnapshot = CPUstate.DCacheModule.sampleSet(memDispatch);
   // DMEM now only ever receives requests forwarded by the DCache: the DCache
   // emits its dual-channel pulse (registered in the live module at the end of
   // the previous tick, mirrored into the snapshot by snapshotFrom).
@@ -205,11 +193,12 @@ void CPU::comb() {
         (squashDetect.needSquash &&
          ROB::isOlder(aguRobTag, squashDetect.SquashTag))) {
       lqInput.storeAddrNotify = SQModule.planAddressForward(
-          memSlot(AGUModule.headMemIndex()), AGUModule.headValue());
+          memSlot(AGUModule.headMemIndex()), AGUModule.headValue(), aguRobTag);
     }
   }
   rsInput.squashDetect = squashDetect;
   robInput.squashDetect = squashDetect;
+  robInput.storeCompletion = SQModule.completionBitmap();
   robInput.cdbOfALU = cdbOfALU;
   robInput.cdbOfLQ = cdbOfLQ;
   robInput.cdbOfMul = cdbOfMul;
@@ -222,9 +211,6 @@ void CPU::comb() {
   ratInput.squashDetect = squashDetect;
   flarbInput.squashDetect = squashDetect;
   flarbInput.cdbOut = cdbOfALU;
-  isarbInput.squashDetect = squashDetect;
-  issuePacket = IssueArbiter::build(isarbInput);
-  fqInput.issueValid = issuePacket.valid;
   bruInput.squashDetect = squashDetect;
   bpuInput.squashDetect = squashDetect;
   bpuInput.cdbOut = cdbOfALU;
@@ -249,9 +235,52 @@ void CPU::comb() {
 
 }
 
+void CPU::clock() {
+  // CPU-level finish state samples the same old snapshot as every module.
+  auto nextPhase = finishPhase;
+  if (initialized) {
+    if (finishPhase == FinishPhase::RUN && ROBModule.isHaltCommitted() && SQModule.isEmpty())
+      nextPhase = FinishPhase::WAIT_IDLE;
+    else if (finishPhase == FinishPhase::WAIT_IDLE && DCacheModule.isIdle() &&
+             !DMEMModule.isReadBusy() && !DMEMModule.isWriteBusy() &&
+             !DCacheModule.hasLoadResponse() && !DMEMModule.isReplyReady())
+      nextPhase = FinishPhase::WRITEBACK;
+    else if (finishPhase == FinishPhase::WRITEBACK && DCacheModule.isFlushDone())
+      nextPhase = FinishPhase::DONE;
+  }
+  IMEMModule.tick(imemInput, CPUstate);
+  FetchUnitModule.tick(fetchUnitInput, CPUstate);
+  ICacheModule.tick(icacheInput, CPUstate);
+  FQModule.tick(fqInput, CPUstate);
+  LQModule.tick(lqInput, CPUstate);
+  SQModule.tick(sqInput, CPUstate);
+  ROBModule.tick(robInput, CPUstate);
+  PRFModule.tick(prfInput, CPUstate);
+  ALUModule.tick(aluInput, CPUstate);
+  MULModule.tick(mulInput, CPUstate);
+  DIVModule.tick(divInput, CPUstate);
+  AGUModule.tick(aguInput, CPUstate);
+  BRUModule.tick(bruInput, CPUstate);
+  BPUModule.tick(bpuInput, CPUstate);
+  DMEMModule.tick(dmemInput, CPUstate);
+  DCacheModule.tick(dcacheInput, CPUstate);
+  RSModule.tick(rsInput, CPUstate);
+  RATModule.tick(ratInput, CPUstate);
+  flushArbiter.tick(flarbInput, CPUstate);
+  DecodeUnitModule.tick(decodeInput, CPUstate);
+  CPUstate.initialized = true;
+  CPUstate.finishPhase = nextPhase;
+}
+
 void CPU::run() {
   bool finish = false;
   uint64_t clock = 0;
+  uint64_t initCycles = 0;
+  while (!CPUstate.initialized) {
+    comb();
+    this->clock();
+    ++initCycles;
+  }
   // host-only: core IPC freezes on the HALT-marker commit. The marker itself
   // is not an executed architectural instruction, while its commit cycle is
   // part of the measured interval.
@@ -259,68 +288,13 @@ void CPU::run() {
   uint64_t ipcRetired = 0;
   uint64_t ipcCycles = 0;
   bool ipcFrozen = false;
-  uint64_t mixAlu = 0, mixLoad = 0, mixStore = 0, mixBranch = 0;
-  uint64_t mixJal = 0, mixJalr = 0, mixMul = 0, mixDivRem = 0, mixOther = 0;
   while (!finish) {
     comb();
     const uint32_t headBefore = static_cast<uint32_t>(ROBModule.getHead());
     const bool haltBefore = ROBModule.isHaltCommitted();
-    const uint32_t headPCBefore =
-        ROBModule.isEmpty() ? 0
-                            : static_cast<uint32_t>(
-                                  ROBModule.getPC(headBefore & (ROB_CAP - 1)));
-    const uint32_t headInsnBefore = instructionAt(IMEMModule, headPCBefore);
-    if (debug::enabled(debug::TOPIC_CFTRACE)) {
-      if (fetchDecision.valid) {
-        const auto prediction = BPUModule.predict(fetchDecision.pc);
-      }
-      if (!BRUModule.isEmpty() &&
-          ROBModule.matchesTag(BRUModule.headRobTag()) &&
-          (!squashDetect.needSquash ||
-           ROB::isOlder(BRUModule.headRobTag(), squashDetect.SquashTag))) {
-        const auto tag = BRUModule.headRobTag();
-        const auto index = tag & (ROB_CAP - 1);
-        const auto pc = BRUModule.headPCFrom();
-        const auto actual = BRUModule.headPCResult();
-        const auto ckpt = ROBModule.getCkptId(index);
-        const auto predicted =
-            static_cast<uint32_t>(ROBModule.getPredictedPC(index));
-      }
-      if (cdbOfALU.valid && cdbOfALU.isControl &&
-          ROBModule.matchesTag(cdbOfALU.robTag) &&
-          (!squashDetect.needSquash ||
-           ROB::isOlder(cdbOfALU.robTag, squashDetect.SquashTag))) {
-        const auto tag = cdbOfALU.robTag;
-        const auto index = tag & (ROB_CAP - 1);
-        const auto pc = static_cast<uint32_t>(ROBModule.getPC(index));
-        const auto ckpt = ROBModule.getCkptId(index);
-        const auto predicted =
-            static_cast<uint32_t>(ROBModule.getPredictedPC(index));
-        const auto actual = static_cast<uint32_t>(cdbOfALU.value);
-        const uint32_t raw = instructionAt(IMEMModule, pc);
-      }
-    }
-    IMEMModule.tick(imemInput, CPUstate);
-    FetchUnitModule.tick(fetchUnitInput, CPUstate);
-    ICacheModule.tick(icacheInput, CPUstate);
-    FQModule.tick(fqInput, CPUstate);
-    LQModule.tick(lqInput, CPUstate);
-    SQModule.tick(sqInput, CPUstate);
-    ROBModule.tick(robInput, CPUstate);
-    PRFModule.tick(prfInput, CPUstate);
-    ALUModule.tick(aluInput, CPUstate);
-    MULModule.tick(mulInput, CPUstate);
-    DIVModule.tick(divInput, CPUstate);
-    AGUModule.tick(aguInput, CPUstate);
-    BRUModule.tick(bruInput, CPUstate);
-    BPUModule.tick(bpuInput, CPUstate);
-    DMEMModule.tick(dmemInput, CPUstate);
-    DCacheModule.tick(dcacheInput, CPUstate);
-    RSModule.tick(rsInput, CPUstate);
-    RATModule.tick(ratInput, CPUstate);
-    flushArbiter.tick(flarbInput, CPUstate);
-    DecodeUnitModule.tick(decodeInput, CPUstate);
+    this->clock();
     ++clock;
+    if (CPUstate.ROBModule.isTrapCommitted()) throw std::runtime_error("illegal instruction committed");
     const uint32_t headAfter =
         static_cast<uint32_t>(CPUstate.ROBModule.getHead());
     const bool haltAfter = CPUstate.ROBModule.isHaltCommitted();
@@ -329,39 +303,6 @@ void CPU::run() {
     assert(!haltCommitted || committed != 0);
     if (!ipcFrozen) {
       retired += committed - static_cast<uint32_t>(haltCommitted);
-      if (committed && !haltCommitted) {
-        const uint32_t opcode = headInsnBefore & 0x7F;
-        const uint32_t funct3 = (headInsnBefore >> 12) & 0x7;
-        const uint32_t funct7 = (headInsnBefore >> 25) & 0x7F;
-        if (opcode == 0x03)
-          ++mixLoad;
-        else if (opcode == 0x23)
-          ++mixStore;
-        else if (opcode == 0x63)
-          ++mixBranch;
-        else if (opcode == 0x6F)
-          ++mixJal;
-        else if (opcode == 0x67)
-          ++mixJalr;
-        else if (opcode == 0x33 && funct7 == 1 && funct3 < 4)
-          ++mixMul;
-        else if (opcode == 0x33 && funct7 == 1)
-          ++mixDivRem;
-        else if (opcode == 0x33 || opcode == 0x13 || opcode == 0x17 ||
-                 opcode == 0x37)
-          ++mixAlu;
-        else
-          ++mixOther;
-        if (debug::enabled(debug::TOPIC_CFTRACE) &&
-            (opcode == 0x63 || opcode == 0x6F || opcode == 0x67)) {
-          const auto index = headBefore & (ROB_CAP - 1);
-          debug::print(
-              "CF_COMMIT t=%llu pc=%08x instr=%08x tag=%u pred=%08x ckpt=%u\n",
-              clock, headPCBefore, headInsnBefore, headBefore,
-              static_cast<uint32_t>(ROBModule.getPredictedPC(index)),
-              ROBModule.getCkptId(index));
-        }
-      }
       if (haltCommitted) {
         ipcRetired = retired;
         ipcCycles = clock;
@@ -374,30 +315,17 @@ void CPU::run() {
     // writeback to finish (DCache idle, DMEM both ports idle). Without this,
     // a store committed right before halt could be truncated when the tail
     // fills span the halt window (SQ/park store never lands).
-    finish = ROBModule.isHaltCommitted() && FQModule.isEmpty() &&
-             DecodeUnitModule.isEmpty() && ROBModule.isEmpty() &&
-             SQModule.isEmpty() && !DCacheModule.isBusy() &&
-             !DMEMModule.isReadBusy() && !DMEMModule.isWriteBusy();
+    finish = CPUstate.finishPhase == FinishPhase::DONE;
   }
   if (debug::enabled(debug::TOPIC_CLOCK)) {
     debug::print("clock: %llu\n", clock);
+    debug::print("timing: init=%llu core=%llu drain=%llu total=%llu\n",
+                 initCycles, ipcCycles, clock - ipcCycles, clock);
     debug::print("ipc: %.6f retired=%llu cycles=%llu\n",
                  ipcCycles ? static_cast<double>(ipcRetired) /
                                  static_cast<double>(ipcCycles)
                            : 0.0,
                  ipcRetired, ipcCycles);
-  }
-  if (debug::enabled(debug::TOPIC_RAS)) {
-    debug::print("ras: cap=%u spec-max=%u arch-max=%u\n", RAS_CAP,
-                 CPUstate.BPUModule.getMaxSpecTopOfRAS(),
-                 CPUstate.BPUModule.getMaxArchTopOfRAS());
-  }
-  if (debug::enabled(debug::TOPIC_PROFILE)) {
-    debug::print("PROFILE retired=%llu alu=%llu load=%llu store=%llu "
-                 "branch=%llu jal=%llu "
-                 "jalr=%llu mul=%llu divrem=%llu other=%llu\n",
-                 ipcRetired, mixAlu, mixLoad, mixStore, mixBranch, mixJal,
-                 mixJalr, mixMul, mixDivRem, mixOther);
   }
   if (debug::enabled(debug::TOPIC_BRANCH)) {
     // host-only: everything below this block is an end-of-run report for the
@@ -427,8 +355,6 @@ void CPU::run() {
                  bp.getJalrTotal(),
                  pct(bp.getJalrCorrect(), bp.getJalrTotal()));
   }
-  if (debug::enabled(debug::TOPIC_BPMISS))
-    CPUstate.BPUModule.dumpBpMiss();
   // host-only: same end-of-run report as the branch block above.
   if (debug::enabled(debug::TOPIC_ICACHE)) {
     uint32_t h = CPUstate.ICacheModule.getHitCount();
@@ -442,13 +368,7 @@ void CPU::run() {
     debug::print("dcache: hits=%llu misses=%llu total=%llu hit-rate=%.2f%%\n",
                  dh, dm, dt,
                  dt ? 100.0 * static_cast<double>(dh) / static_cast<double>(dt)
-                    : 0.0);
-  }
-  if (debug::enabled(debug::TOPIC_CDB)) {
-    debug::print("cdb: both=%llu aluOnly=%llu lqOnly=%llu "
-                 "(lqWins=%llu aluWins=%llu) total=%llu\n",
-                 statBoth, statAluOnly, statLqOnly, statLqWins, statAluWins,
-                 clock);
+                     : 0.0);
   }
   const uint32_t halt_x10 = static_cast<uint32_t>(
       PRFModule.getValue(RATModule.readRAT(ROBModule.getHaltRd())));

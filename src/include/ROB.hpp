@@ -18,6 +18,7 @@ struct ROBEntry {
   uint32_t predictedPC = 0;
   int32_t pc = 0;
   bool halt = false;
+  bool exception = false;
   bool isRet = false;  // RISC-V RAS pop hint
   bool isCall = false; // RISC-V RAS push hint
   bool isIndirect = false; // JALR variant: target from reg, not static imm
@@ -35,10 +36,10 @@ struct ROBInput {
   mulCDB cdbOfMul;
   divCDB cdbOfDiv;
   const BRU &BRUModule;
-  const SQ &SQModule;
+  StoreCompletion storeCompletion;
   const IssuePacket &issuePacket;
-  ROBInput(const BRU &bru, const SQ &sq, const IssuePacket &pkt)
-      : BRUModule(bru), SQModule(sq), issuePacket(pkt) {}
+  ROBInput(const BRU &bru, const IssuePacket &pkt)
+      : BRUModule(bru), issuePacket(pkt) {}
 };
 class ROB {
 private:
@@ -46,11 +47,11 @@ private:
   uint8_t head = 0;
   uint8_t next_tag = 0;
   bool haltCommitted = false;
+  bool trapCommitted = false;
   int haltRd = -1;
   void updateNextTag(systemState &CPUstate) const;
   int push(ROBEntry entry, systemState &CPUstate) const;
   void pop(systemState &CPUstate) const;
-  void setROBCommitReady(RobTag tag, bool issued, systemState &CPUstate) const;
   void flush(RobTag squashTag, systemState &CPUstate) const;
 
 public:
@@ -62,6 +63,7 @@ public:
   bool willCommit(const SquashInfo &squash) const;
   bool storeWillCommit(const SquashInfo &squash) const;
   bool isHaltCommitted() const;
+  bool isTrapCommitted() const { return trapCommitted; }
   int getHaltRd() const;
   bool isHeadCommitReady() const;
   bool isHeadHalt() const;

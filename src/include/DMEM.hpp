@@ -21,14 +21,12 @@ class DMEM : public Memory {
   MemReply readOutputBuffer = {};
   WriteRequest writeExecute = {};
   void writeLine(uint32_t addr, const uint8_t* lineData, systemState &CPUstate) const;
-  void MemPull();
 
 public:
   DMEM() = default;
   DMEM(const Memory &mem) : Memory(mem) {}
   DMEM(const DMEM &) = default;
   DMEM &operator=(const DMEM &) = default;
-  int32_t load_n_bytes(uint32_t address, int n, bool isSigned) const;
   bool isReadBusy() const;
   bool isWriteBusy() const;
   bool isReplyReady() const;

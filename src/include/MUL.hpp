@@ -5,7 +5,6 @@
 #include <cstdint>
 struct systemState;
 struct PRF;
-struct MULTester;
 struct MULInput {
   SquashInfo squashDetect;
   const RSUnit &RSModule;
@@ -15,7 +14,6 @@ struct MULInput {
   MULInput(const RSUnit &rs, const PRF &prf) : RSModule(rs), PRFModule(prf) {}
 };
 class MUL {
-  friend struct MULTester;
 
 private:
   struct MultiplyCalculateResult {
@@ -50,14 +48,16 @@ private:
   bool slotValid[MUL_CAP] = {};
   void calculateBooth(uint32_t op1, uint32_t op2, RobTag robTag, Operation op, systemState &CPUstate) const;
   void calculateSC(const PartialProductResult &partial, systemState &CPUstate) const;
-  int calculateMulRes(const SCResult &sc, const mulCDB &cdb, bool keep, systemState &CPUstate) const;
-  void remove(uint8_t robTag, systemState &CPUstate) const;
-  void flush(uint8_t tag, int filled, RobTag partialTag, RobTag scTag, systemState &CPUstate) const;
+  void calculateMulRes(const SCResult &sc, systemState &CPUstate) const;
 
 public:
+  bool resultCanAccept(const mulCDB &grant, const SquashInfo &squash) const;
+  bool CSACanAccept(const mulCDB &grant, const SquashInfo &squash) const;
+  bool partialCanAccept(const mulCDB &grant, const SquashInfo &squash) const;
   bool isFull() const;
   bool isEmpty() const;
   uint32_t headValue() const;
   uint8_t headRobTag() const;
   void tick(const MULInput &, systemState &);
 };
+static_assert(MUL_CAP == 1);
