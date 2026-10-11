@@ -28,5 +28,6 @@ public:
   uint32_t headPCFrom() const;
   uint32_t headPCResult() const;
   uint8_t headRobTag() const;
+  bool headActualTaken() const;
   void tick(const BRUInput &, systemState &);
 };

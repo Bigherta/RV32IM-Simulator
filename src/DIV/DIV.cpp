@@ -97,8 +97,8 @@ void DIV::receive(uint32_t op1, uint32_t op2, RobTag tag, Operation op, systemSt
   CPUstate.DIVModule.unsignedDivisor = divisorNegative ? (~op2 + 1u) : op2;
   CPUstate.DIVModule.isResultNegative = (divisorNegative ^ dividendNegative) ? 1 : 0;
   CPUstate.DIVModule.prepareValid = true;
-} // Dispatch is admitted only when canAccept() sees all stage flags and
-  // resultValid low.
+} // Dispatch is admitted when the computing context is idle and the result
+  // slot is empty or reusable by this cycle's consume/cancel event.
 void DIV::prepare(systemState &CPUstate) const {
   // unsignedDividend holds |x| (P side); unsignedDivisor holds |d| (D side).
   const auto clzXValue = clz(unsignedDividend);
@@ -246,27 +246,36 @@ void DIV::flush(uint8_t tag, RobTag effectiveTag, systemState &CPUstate) const {
     CPUstate.DIVModule.resultValid = 0;
   }
 }
+bool DIV::canAccept(const divCDB &grant, const SquashInfo &squash,
+                    bool outReady) const {
+  const bool consumed = resultValid && grant.valid && grant.robTag == robTag;
+  const bool cancelled = resultValid && squash.needSquash &&
+      ROB::isOlder(squash.SquashTag, robTag);
+  return !prepareValid && !loopValid && !fullAdderValid &&
+      (!resultValid || consumed || (cancelled && outReady));
+}
 void DIV::tick(const DIVInput &input, systemState &CPUstate) {
-  if (input.cdbOutput.valid) {
-    CPUstate.DIVModule.resultValid = false;
-  } // consume the result by cdb
-  if (fullAdderValid) {
-    calculateResult(regS, regC, regA, regB, CPUstate);
-  }
-  if (loopValid) {
-    loop(regS, regC, regA, regB, CPUstate);
-  }
-  if (prepareValid) {
-    prepare(CPUstate);
-  }
-  if (input.dispatch.valid) {
+  const bool incoming = input.dispatch.valid &&
+      canAccept(input.cdbOutput, input.squashDetect, input.outReady) &&
+      (!input.squashDetect.needSquash ||
+       ROB::isOlder(input.dispatch.robTag, input.squashDetect.SquashTag));
+  if (incoming) {
     const auto &rs = input.RSModule.divideRS[input.dispatch.rsIndex];
     receive(
         static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
         static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
         input.dispatch.robTag, rs.op, CPUstate);
-  }
-  if (input.squashDetect.needSquash) {
-    flush(input.squashDetect.SquashTag, input.dispatch.valid ? input.dispatch.robTag : robTag, CPUstate);
+  } else if (input.squashDetect.needSquash &&
+             ROB::isOlder(input.squashDetect.SquashTag, robTag)) {
+    flush(input.squashDetect.SquashTag, robTag, CPUstate);
+  } else if (fullAdderValid) {
+    calculateResult(regS, regC, regA, regB, CPUstate);
+  } else if (loopValid) {
+    loop(regS, regC, regA, regB, CPUstate);
+  } else if (prepareValid) {
+    prepare(CPUstate);
+  } else if (resultValid && input.cdbOutput.valid &&
+             input.cdbOutput.robTag == robTag) {
+    CPUstate.DIVModule.resultValid = false;
   }
 }

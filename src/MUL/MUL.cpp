@@ -27,7 +27,6 @@ inline uint64_t signExtend32(uint32_t v) {
 
 void MUL::calculateBooth(uint32_t op1, uint32_t op2, RobTag robTag,
                          Operation op, systemState &CPUstate) const {
-  CPUstate.MULModule.partialRes.partialProductValid = true;
   CPUstate.MULModule.partialRes.op = op;
   CPUstate.MULModule.partialRes.robTag = robTag;
   for (int i = 0; i < 19; ++i)
@@ -81,7 +80,6 @@ void MUL::calculateBooth(uint32_t op1, uint32_t op2, RobTag robTag,
 }
 
 void MUL::calculateSC(const PartialProductResult &partial, systemState &CPUstate) const {
-  CPUstate.MULModule.scRes.carryAdderValid = true;
   CPUstate.MULModule.scRes.op = partial.op;
   CPUstate.MULModule.scRes.robTag = partial.robTag;
   const auto &P = partial.partialProduct; // 19 rows, all consumed
@@ -107,36 +105,23 @@ void MUL::calculateSC(const PartialProductResult &partial, systemState &CPUstate
   CPUstate.MULModule.scRes.C = f0.carry;
 }
 
-int MUL::calculateMulRes(const SCResult &sc, const mulCDB &cdb, bool keep, systemState &CPUstate) const {
+void MUL::calculateMulRes(const SCResult &sc, systemState &CPUstate) const {
   uint64_t res = sc.S + sc.C; // full 64-bit product (mod 2^64)
-  int best = -1;
-  for (int i = 0; i < MUL_CAP; ++i) {
-    if (!slotValid[i] || (cdb.valid && outputBuffer[i].robTag == cdb.robTag)) {
-      best = i;
-      break;
-    }
-  }
-  // Buffer-full invariant watchdog: MUL_CAP must exceed the in-flight stage
-  // count (3), since a full buffer here means dispatch was granted faster than
-  // the dedicated cdbOfMul bus drained it.
-  assert(best != -1 && "MUL slot overflow: MUL_CAP must exceed in-flight stages");
-  CPUstate.MULModule.outputBuffer[best].robTag = sc.robTag;
-  CPUstate.MULModule.slotValid[best] = keep;
+  CPUstate.MULModule.outputBuffer[0].robTag = sc.robTag;
   switch (sc.op) {
   case Operation::MUL: {
-    CPUstate.MULModule.outputBuffer[best].value = static_cast<uint32_t>(res);
+    CPUstate.MULModule.outputBuffer[0].value = static_cast<uint32_t>(res);
     break;
   }
   case Operation::MULH:
   case Operation::MULHSU:
   case Operation::MULHU: {
-    CPUstate.MULModule.outputBuffer[best].value = static_cast<uint32_t>(res >> 32);
+    CPUstate.MULModule.outputBuffer[0].value = static_cast<uint32_t>(res >> 32);
     break;
   }
   default:
     break;
   }
-  return best;
 }
 
 uint32_t MUL::headValue() const {
@@ -173,60 +158,55 @@ bool MUL::isEmpty() const {
   return true;
 }
 
-void MUL::remove(uint8_t robTag, systemState &CPUstate) const {
-  for (int i = 0; i < MUL_CAP; i++) {
-    if (slotValid[i] && outputBuffer[i].robTag == robTag) {
-      CPUstate.MULModule.slotValid[i] = false;
-      return;
-    }
-  }
+bool MUL::resultCanAccept(const mulCDB &grant, const SquashInfo &squash) const {
+  const bool live = slotValid[0] &&
+      (!squash.needSquash || ROB::isOlder(outputBuffer[0].robTag, squash.SquashTag));
+  const bool consumed = grant.valid && slotValid[0] &&
+      grant.robTag == outputBuffer[0].robTag;
+  return !live || consumed;
 }
 
-void MUL::flush(uint8_t tag, int filled, RobTag partialTag, RobTag scTag, systemState &CPUstate) const {
-  for (int i = 0; i < MUL_CAP; i++) {
-    if (i != filled && slotValid[i] && !ROB::isOlder(outputBuffer[i].robTag, tag))
-      CPUstate.MULModule.slotValid[i] = false;
-  }
-  if (ROB::isOlder(tag, partialTag)) {
-    CPUstate.MULModule.partialRes.partialProductValid = false;
-  }
-  if (ROB::isOlder(tag, scTag)) {
-    CPUstate.MULModule.scRes.carryAdderValid = false;
-  }
+bool MUL::CSACanAccept(const mulCDB &grant, const SquashInfo &squash) const {
+  const bool live = scRes.carryAdderValid &&
+      (!squash.needSquash || ROB::isOlder(scRes.robTag, squash.SquashTag));
+  return !live || resultCanAccept(grant, squash);
 }
+
+bool MUL::partialCanAccept(const mulCDB &grant, const SquashInfo &squash) const {
+  const bool live = partialRes.partialProductValid &&
+      (!squash.needSquash || ROB::isOlder(partialRes.robTag, squash.SquashTag));
+  return !live || CSACanAccept(grant, squash);
+}
+
 void MUL::tick(const MULInput &input, systemState &CPUstate) {
-  int filled = -1;
-  if (input.cdbOutput.valid) {
-    remove(input.cdbOutput.robTag, CPUstate);
-  }
+  const auto &squash = input.squashDetect;
+  const bool partialLive = partialRes.partialProductValid &&
+      (!squash.needSquash || ROB::isOlder(partialRes.robTag, squash.SquashTag));
+  const bool CSALive = scRes.carryAdderValid &&
+      (!squash.needSquash || ROB::isOlder(scRes.robTag, squash.SquashTag));
+  const bool incomingLive = input.dispatch.valid &&
+      (!squash.needSquash || ROB::isOlder(input.dispatch.robTag, squash.SquashTag));
 
-  if (scRes.carryAdderValid) {
-    const bool keep = !input.squashDetect.needSquash ||
-                      ROB::isOlder(scRes.robTag, input.squashDetect.SquashTag);
-    filled = calculateMulRes(scRes, input.cdbOutput, keep, CPUstate);
-    CPUstate.MULModule.scRes.carryAdderValid = false;
+  // All availability and payload reads are from this/Input. A closed stage
+  // writes nothing; its valid, data, operation and tag remain held together.
+  if (resultCanAccept(input.cdbOutput, squash)) {
+    if (CSALive)
+      calculateMulRes(scRes, CPUstate);
+    CPUstate.MULModule.slotValid[0] = CSALive;
   }
-
-  if (partialRes.partialProductValid) {
-    calculateSC(partialRes, CPUstate);
-    CPUstate.MULModule.partialRes.partialProductValid = false;
-  } else {
-    CPUstate.MULModule.scRes.carryAdderValid = false;
+  if (CSACanAccept(input.cdbOutput, squash)) {
+    if (partialLive)
+      calculateSC(partialRes, CPUstate);
+    CPUstate.MULModule.scRes.carryAdderValid = partialLive;
   }
-
-  if (input.dispatch.valid) {
-    const auto &rs = input.RSModule.multiplyRS[input.dispatch.rsIndex];
-    calculateBooth(
-        static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
-        static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
-        input.dispatch.robTag, rs.op, CPUstate);
-  } else {
-    CPUstate.MULModule.partialRes.partialProductValid = false;
-  }
-
-  if (input.squashDetect.needSquash) {
-    flush(input.squashDetect.SquashTag, filled,
-          input.dispatch.valid ? input.dispatch.robTag : partialRes.robTag,
-          partialRes.partialProductValid ? partialRes.robTag : scRes.robTag, CPUstate);
+  if (partialCanAccept(input.cdbOutput, squash)) {
+    if (incomingLive) {
+      const auto &rs = input.RSModule.multiplyRS[input.dispatch.rsIndex];
+      calculateBooth(
+          static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
+          static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
+          input.dispatch.robTag, rs.op, CPUstate);
+    }
+    CPUstate.MULModule.partialRes.partialProductValid = incomingLive;
   }
 }

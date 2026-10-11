@@ -4,7 +4,6 @@
 #include "../include/PRF.hpp"
 #include "../include/RAT.hpp"
 #include "../include/ROB.hpp"
-#include "../include/util.hpp"
 #include <cassert>
 #include <cstdint>
 
@@ -12,10 +11,25 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
                                        const AGU &agu, const BRU &bru,
                                        const MUL &mul, const DIV &div,
                                        const PRF &prf,
-                                       const SquashInfo &squash) {
+                                       const SquashInfo &squash,
+                                       const mulCDB &mulGrant,
+                                       const divCDB &divGrant,
+                                       bool divOutReady) {
   DispatchBus dispatch;
   // ALU channel: oldest operand-ready integerRS entry (I-extension ALU ops).
-  if (!alu.isFull()) {
+  // The ALU holds a single result slot that is released in the same cycle it is
+  // presented (or cancelled by flush if it cannot broadcast), so the
+  // buffer can take a new op every cycle and dispatch is never capacity-blocked.
+  // Stated explicitly rather than leaning on the (always-true) invariant that an
+  // occupied slot drains, so the gate still exists as hardware would have it.
+  const bool aluCanAccept =
+      !alu.isFull() ||
+      (!alu.isEmpty() &&
+        (!squash.needSquash ||
+         ROB::isOlder(alu.headRobTag(), squash.SquashTag))) ||
+      (!alu.isEmpty() && squash.needSquash &&
+       !ROB::isOlder(alu.headRobTag(), squash.SquashTag));
+  if (aluCanAccept) {
     bool foundAny = false;
     int best = 0;
     uint8_t bestTag = 0;
@@ -42,7 +56,7 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
   // MUL channel: oldest operand-ready multiplyRS entry. The dedicated
   // multiply RS decouples M-ops from the integer RS shared with ALU ops,
   // so a mul-heavy stream cannot starve I-extension ALU ops of RS slots.
-  if (!mul.isFull()) {
+  if (mul.partialCanAccept(mulGrant, squash)) {
     bool foundAny = false;
     int best = 0;
     uint8_t bestTag = 0;
@@ -67,9 +81,8 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
     }
   }
   // DIV channel: oldest operand-ready divideRS entry. The divider is a single
-  // iterative unit with no output buffer, so it additionally refuses new work
-  // while a finished result has not been broadcast yet (DIV::canAccept).
-  if (div.canAccept()) {
+  // iterative context; the result can be consumed and replaced in this cycle.
+  if (div.canAccept(divGrant, squash, divOutReady)) {
     bool foundAny = false;
     int best = 0;
     uint8_t bestTag = 0;
@@ -96,7 +109,14 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
 
   // AGU channel: one memory-op dispatch per cycle, oldest first; loads
   // (both sources ready) outrank store-address (single source ready).
-  if (!agu.isFull()) {
+  const bool aguCanAccept =
+      !agu.isFull() ||
+      (!agu.isEmpty() &&
+        (!squash.needSquash ||
+         ROB::isOlder(agu.headRobTag(), squash.SquashTag))) ||
+      (!agu.isEmpty() && squash.needSquash &&
+       !ROB::isOlder(agu.headRobTag(), squash.SquashTag));
+  if (aguCanAccept) {
     bool foundAny = false;
     int best = 0;
     uint8_t bestTag = 0;
@@ -176,7 +196,7 @@ MemDispatchDecision MemArbiter::arbitrate(const LQ &LQ, const SQ &SQ,
       MemRequest newRequest{};
       newRequest.address = SQ.getAddress(SQ.getHead());
       newRequest.value = SQ.getValue(SQ.getHead());
-      newRequest.n_bytes = SQ.getNBytes(SQ.getHead());
+      newRequest.nBytes = SQ.getNBytes(SQ.getHead());
       newRequest.op = Operation::Store;
       newRequest.robTag = storeTag;
       newRequest.memIndex = static_cast<uint8_t>(SQ.getHead() | MEM_STORE_BIT);
@@ -189,11 +209,11 @@ MemDispatchDecision MemArbiter::arbitrate(const LQ &LQ, const SQ &SQ,
     if (loadIndex != 0xFFFFFFFF && !dcache.isBusy()) {
       auto loadAddr = LQ.getAddress(loadIndex);
       auto loadTag = LQ.getRobTag(loadIndex);
-      if (SQ.canDispatchLoad(loadAddr, loadTag)) {
+      if (SQ.canSendLoadToCache(loadAddr, LQ.getNBytes(loadIndex), loadTag)) {
         MemRequest newRequest{};
         newRequest.address = LQ.getAddress(loadIndex);
         newRequest.isSigned = !LQ.getIsUnsigned(loadIndex);
-        newRequest.n_bytes = LQ.getNBytes(loadIndex);
+        newRequest.nBytes = LQ.getNBytes(loadIndex);
         newRequest.op = Operation::Load;
         newRequest.robTag = LQ.getRobTag(loadIndex);
         newRequest.memIndex = static_cast<uint8_t>(loadIndex);
@@ -262,9 +282,6 @@ IssuePacket IssueArbiter::issue_IntegerRS(const IssueArbiterInput &input,
   p.robEntry.oldPhy =
       inst.allocDest ? input.RATModule.readRAT(destination) : InvalidPhy;
   p.robEntry.newPhy = p.phy;
-  if (debug::enabled(debug::TOPIC_PRF) && inst.allocDest)
-    debug::print("PRF rename x%d <- P%d (old=P%d)\n", destination, p.phy,
-                 p.robEntry.oldPhy);
   if (isControl) {
     p.isControl = true;
     p.pc = inst.pc;
@@ -273,7 +290,7 @@ IssuePacket IssueArbiter::issue_IntegerRS(const IssueArbiterInput &input,
     const bool rdLink = inst.rd == 1 || inst.rd == 5;
     const bool rs1Link = inst.rs1 == 1 || inst.rs1 == 5;
     p.robEntry.isCall = rdLink;
-    p.robEntry.isRet = rs1Link && !rdLink;
+    p.robEntry.isRet = rs1Link; // independent pop; both flags may be true
   }
   p.integerRS.robTag = p.robTag;
   return p;
@@ -319,9 +336,6 @@ IssuePacket IssueArbiter::issue_Multiply(const IssueArbiterInput &input,
   p.robEntry.oldPhy =
       inst.allocDest ? input.RATModule.readRAT(destination) : InvalidPhy;
   p.robEntry.newPhy = p.phy;
-  if (debug::enabled(debug::TOPIC_PRF) && inst.allocDest)
-    debug::print("PRF rename x%d <- P%d (old=P%d)\n", destination, p.phy,
-                 p.robEntry.oldPhy);
   p.multiplyRS.robTag = p.robTag;
   return p;
 }
@@ -366,9 +380,6 @@ IssuePacket IssueArbiter::issue_Divide(const IssueArbiterInput &input,
   p.robEntry.oldPhy =
       inst.allocDest ? input.RATModule.readRAT(destination) : InvalidPhy;
   p.robEntry.newPhy = p.phy;
-  if (debug::enabled(debug::TOPIC_PRF) && inst.allocDest)
-    debug::print("PRF rename x%d <- P%d (old=P%d)\n", destination, p.phy,
-                 p.robEntry.oldPhy);
   p.divideRS.robTag = p.robTag;
   return p;
 }
@@ -413,9 +424,6 @@ IssuePacket IssueArbiter::issue_UandJ(const IssueArbiterInput &input,
   p.robEntry.oldPhy =
       inst.allocDest ? input.RATModule.readRAT(destination) : InvalidPhy;
   p.robEntry.newPhy = p.phy;
-  if (debug::enabled(debug::TOPIC_PRF) && inst.allocDest)
-    debug::print("PRF rename x%d <- P%d (old=P%d)\n", destination, p.phy,
-                 p.robEntry.oldPhy);
   if (isControl) {
     p.isControl = true;
     p.pc = inst.pc;
@@ -457,7 +465,7 @@ IssuePacket IssueArbiter::issue_B(const IssueArbiterInput &input,
 }
 
 IssuePacket IssueArbiter::issue_Load(const IssueArbiterInput &input,
-                                     const UopView &inst, int n_bytes,
+                                     const UopView &inst, int nBytes,
                                      bool isUnsigned) {
   IssuePacket p{};
   if (input.ROBModule.isFull() || input.LQModule.isFull()) {
@@ -474,7 +482,7 @@ IssuePacket IssueArbiter::issue_Load(const IssueArbiterInput &input,
   p.hasLoad = true;
   p.isLoad = true;
   p.loadSlot = loadSlot;
-  p.nBytes = n_bytes;
+  p.nBytes = nBytes;
   p.isUnsigned = isUnsigned;
   p.robTag = input.ROBModule.getNextTag();
   p.loadRS.memIndex = input.LQModule.getTail() & LQ_MASK;
@@ -498,15 +506,12 @@ IssuePacket IssueArbiter::issue_Load(const IssueArbiterInput &input,
       inst.allocDest ? input.RATModule.readRAT(destination) : InvalidPhy;
   p.robEntry.newPhy = p.phy;
   p.robEntry.ckptId = inst.ckptId;
-  if (debug::enabled(debug::TOPIC_PRF) && inst.allocDest)
-    debug::print("PRF rename x%d <- P%d (old=P%d)\n", destination, p.phy,
-                 p.robEntry.oldPhy);
   p.loadRS.robTag = p.robTag;
   return p;
 }
 
 IssuePacket IssueArbiter::issue_Store(const IssueArbiterInput &input,
-                                      const UopView &inst, int n_bytes) {
+                                      const UopView &inst, int nBytes) {
   IssuePacket p{};
   if (input.ROBModule.isFull() || input.SQModule.isFull()) {
     return p;
@@ -521,7 +526,7 @@ IssuePacket IssueArbiter::issue_Store(const IssueArbiterInput &input,
   p.isStore = true;
   p.storeAddrSlot = storeAddrSlot;
   p.storeValueSlot = storeValueSlot;
-  p.nBytes = n_bytes;
+  p.nBytes = nBytes;
   p.robTag = input.ROBModule.getNextTag();
   p.storeAddrRS.memIndex =
       static_cast<uint8_t>((input.SQModule.getTail() & SQ_MASK) | MEM_STORE_BIT);
@@ -664,7 +669,7 @@ Operation IssueArbiter::decodeOp(const UopView &inst) {
 
 IssuePacket IssueArbiter::build(const IssueArbiterInput &input) {
   IssuePacket issuePacket{};
-  if (input.squashDetect.needSquash || input.DecodeUnitModule.isEmpty())
+  if (input.squashDetect.needSquash || input.ROBModule.isTrapCommitted() || input.DecodeUnitModule.isEmpty())
     return issuePacket;
   UopView inst;
   inst.type = input.DecodeUnitModule.headType();
@@ -712,6 +717,8 @@ IssuePacket IssueArbiter::build(const IssueArbiterInput &input) {
         issuePacket.robTag = input.ROBModule.getNextTag();
         issuePacket.robEntry = ROBEntry(ROBType::REGISTER);
         issuePacket.robEntry.dest = inst.rd;
+        issuePacket.robEntry.pc = inst.pc;
+        issuePacket.robEntry.predictedPC = inst.predictedPC;
         issuePacket.robEntry.ckptId = inst.ckptId;
         issuePacket.robEntry.halt = true;
         issuePacket.robEntry.isCommitReady = true;
@@ -721,33 +728,33 @@ IssuePacket IssueArbiter::build(const IssueArbiterInput &input) {
     } else if (inst.opcode == 0b1100111) {
       issuePacket = issue_IntegerRS(input, inst, false, true, true);
     } else if (inst.opcode == 0b0000011) {
-      int n_bytes = 4;
+      int nBytes = 4;
       bool isUnsigned = false;
       switch (inst.funct3) {
       case 0b000:
-        n_bytes = 1;
+        nBytes = 1;
         isUnsigned = false;
         break;
       case 0b001:
-        n_bytes = 2;
+        nBytes = 2;
         isUnsigned = false;
         break;
       case 0b010:
-        n_bytes = 4;
+        nBytes = 4;
         isUnsigned = false;
         break;
       case 0b100:
-        n_bytes = 1;
+        nBytes = 1;
         isUnsigned = true;
         break;
       case 0b101:
-        n_bytes = 2;
+        nBytes = 2;
         isUnsigned = true;
         break;
       default:
         break;
       }
-      issuePacket = issue_Load(input, inst, n_bytes, isUnsigned);
+      issuePacket = issue_Load(input, inst, nBytes, isUnsigned);
     }
     break;
   }
@@ -756,21 +763,21 @@ IssuePacket IssueArbiter::build(const IssueArbiterInput &input) {
     break;
   }
   case RISC_V::S: {
-    int n_bytes = 4;
+    int nBytes = 4;
     switch (inst.funct3) {
     case 0b000:
-      n_bytes = 1;
+      nBytes = 1;
       break;
     case 0b001:
-      n_bytes = 2;
+      nBytes = 2;
       break;
     case 0b010:
-      n_bytes = 4;
+      nBytes = 4;
       break;
     default:
       break;
     }
-    issuePacket = issue_Store(input, inst, n_bytes);
+    issuePacket = issue_Store(input, inst, nBytes);
     break;
   }
   case RISC_V::B: {
@@ -791,14 +798,17 @@ IssuePacket IssueArbiter::build(const IssueArbiterInput &input) {
   }
   case RISC_V::RV_INVALID: {
     // The invalid row still consumes a ROB slot: never push when full.
-    if (!input.ROBModule.isFull())
+    if (!input.ROBModule.isFull()) {
       issuePacket.valid = true;
+      issuePacket.robTag = input.ROBModule.getNextTag();
+      issuePacket.robEntry.pc = inst.pc;
+      issuePacket.robEntry.predictedPC = inst.predictedPC;
+      issuePacket.robEntry.ckptId = inst.ckptId;
+      issuePacket.robEntry.isCommitReady = true;
+      issuePacket.robEntry.exception = true;
+    }
     break;
   }
   }
-  if (issuePacket.valid && debug::enabled(debug::TOPIC_EXEC))
-    debug::print("issue pc=%08x rob=%u int=%d br=%d halt=%d\n", inst.pc,
-                 issuePacket.robTag, issuePacket.hasInteger ? 1 : 0,
-                 issuePacket.hasBranch ? 1 : 0, issuePacket.isHalt ? 1 : 0);
   return issuePacket;
 }

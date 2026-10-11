@@ -1,11 +1,90 @@
 # 缓存与存储层次：L1I / L1D / 片上主存
 
-> **3B-1**只改变IQ/FQ转移；软件ICache→FQ、HALT及取指准入仍用原FQ满判断，留3B-2。
-> 周期golden保持，前端变化引起的I$分类统计已按两树一致实测更新。
+> **SQ→ROB接口（SPEC §67）**：完成位图由SQ组合输出，ROB只校验并置ready。
+> 已提交SQ发送、DCache准入与dirty写回保持；四构建18＋6结果/周期/统计一致。
+
+> **完整活动整核（SPEC §63/64）**：真实CPU 24镜像共同逻辑Memory下12667040拍
+> pre/post全等，最终128KiB独立byte核验。只读观察比较所有实际metadata/有效byte，
+> 未变才复用指纹；不按预测事件跳过数据，不改变Cache/外存时序。字节响应按不可变
+> 实际接受owner归一化，golden保持；AXI/技术映射另验，入口sync/README §56。
+
+> **全部dirty完成（SPEC §62）**：用户要求最终所有dirty落外存。D$新增扫描/等待
+> 实际写完状态，CPU顶层在SQ/旧Cache/外存空后发起，扫描set0..127，写接受不算
+> 完成，最后行也等ack；保持valid/data并清dirty。16程序9629/2872与全部128KiB
+> 独立字节核验通过，DONE保持16拍无重发，7负向有效；入口sync/README §54。
+
+> **真实恢复联合（SPEC §61）**：实际SRAM I$/IMEM、寄存器D$/DMEM与全CPU67程序
+> 9001/2872三端全等。年轻已接受Load逻辑取消、迟到返回排空，已提交SQ保持；
+> 42次Cache返回/新读同拍及11源码负向通过。最终dirty drain/计时属第19步，README §53。
+
+> **BPU闭环增补（SPEC §60）**：实际SRAM I$/IMEM提供正常指令镜像，BTB竞争26程序
+> 6690/1848三端全等；checkpoint预算仍ROB16/I$4/FQ4/IQ4=28。参数合同与明确非法
+> 拒绝通过，访存4803/764重新通过。第18全流水恢复继续，入口sync/README §52。
+
+> **当前CPU闭环（SPEC §59）**：用户JALR双link含同寄存器pop后push，真实取指/
+> 公共SRAM I$/IMEM/BPU/ROB/退休/恢复33程序13041拍1848字段三端严格同值。CID
+> 由实际取指接受分配，取消流水丢弃年轻身份，最多25活owner/配置预算28，111次
+> 回绕无覆盖。I$仍真实SRAM/data、寄存器tag；ISA保持、六IPC新691640，README §51。
+
+> **I$同步验收（SPEC §58）**：用户确定RTL data使用`rtl/common/rv32_sram.sv`公共
+> sram_fakeram（16×512bit/32bit写粒度），tag为16×22bit寄存器。实际本树I$/IMEM
+> 与模板/RTL/独立参考2324步160字段全等，四实际功能负向有效；真实前端2259/216
+> 全等。受阻/年轻同步读结果必须保存，写/禁用周期rdata不能作新读结果。README §50。
+
+> **最新Cache联合门禁（SPEC §57）**：Store ROB.ready统一为拍初SQ槽位图/epoch
+> 批量完成，实际RS→LSQ→D$/DMEM→共享PRF/ROB→退休4803步764字段正向严格全等，
+> 独立参考344字段含原始Store ready；取消§56屏蔽，入口sync/README §49。
+
+> **当前D$模块对拍（SPEC §55）**：RTL按用户决定改寄存器，正常READY/WAIT映射本树
+> 实际DCache＋DMEM；6378步14字段与模板/RTL/独立参考全等，覆盖命中一拍/连续接受、
+> 子字扩展、31并行脏缺失、全部128组及随机。软件仅新增只读探针友元，行为/golden
+> 保持。RTL额外背压/最终flush和真实恢复单独功能验证，完整三端CPU轨迹另验，README §47。
+
+> SQ已按软件同步RTL（SPEC §45）：ROB可先退休，原SQ缓冲至Cache/内存实际接受；
+> 裸core HALT等待SQ请求接受，外层Cache的已接受事务/脏行排空仍由外层负责。RTL14/14
+> 含裸core长背压/转发/恢复，完整三端Cache FSM不由该例证明；18＋6严格活动基线保持。
+
+> LQ提交回收统一后（SPEC §44）两软件18＋6结果/退休/周期/统计一致，新clock总和
+> 11,967,396/690,814；RTL13/13通过。改变LQ预算的实际测量已更新golden，Cache完整FSM
+> 时序仍依第14/15步验收。
+
+> 第12步主树LQ旧响应覆盖新分配已用初始化后置修复（SPEC §43），Cache路由保持。
+> 正确word返回边界、旧实际源码负向及18＋6回归通过；完整Cache/DMEM/该整核用例
+> 继续依第14/15步验收。§42保存旧错值与上游接口分析。
+
+> 第10步DIV吞吐定版后两软件18 ISA＋6 IPC严格结果/退休/周期/统计一致，新18 ISA clock
+> 总和11,967,406，六IPC690,826；RTL13/13通过。Cache完整FSM/端口时序依第14/16步验收（SPEC §40）。
+
+> 第9步三级弹性MUL及真实返回后端通过；两软件18 ISA＋6 IPC严格golden保持，18 ISA
+> clock总和12,246,204，六IPC另计690,826。Cache完整三端FSM/端口周期依第14/16步验收（SPEC §38）。
+
+> 第8步方向训练使用BRU真实actualTaken；控制/BPU后端链1518步四方一致，软件18+6
+> 总clock12,246,204、RTL13/13通过。缓存/外部返回周期仍以对应专项为准（SPEC §35）。
+
+> 第7步AGU n拍计算、n+1交付/拍末写LSQ地址、n+2地址ready可见；LSQ满不背压地址更新。
+> 两软件18+6总clock12,246,204保持，RTL集成13/13；Cache完整三端周期仍按第14步验收。
+> 地址整链1195步四方一致，错tag/槽及恢复后旧结果重放拒收；Cache请求接收/返回不在该地址链驱动域。
+
+> 第6步整数整链补正后两软件树18+6严格结果/周期/统计一致，总clock12,246,204；
+> Cache事务不在该整数链中，完整三端端口/FSM周期仍按缓存专门步骤验证。
+
+> 第5步恢复接收扩展后RTL11/11（含缓存和core）通过；RS更老项派发及LSU接收按
+> 存活窗口/年龄门控。活动软件基线以benchmarks表为准。
+
+> 第4步后端FIFO基础域验收后软件18+6严格周期仍为12,246,204；回填旁路及缓存
+> 活动基线见benchmarks。RTL10/10容量/集成回归同时通过。
+
+> **第3步3B-2**：软件ICache→FQ的接收与popConsume共用真实握手；FQ满但弹出可补入，
+> ICache四项请求满但本拍实际消费可补入，HALT仅在真实接收时停取。新活动周期与I$统计
+> 经两树一致实测复核；3B-1历史周期保持在benchmarks阶段记录中。
+
+> **同行回填供数补正**：只有实际接受的fillFire可给同拍新请求供数。新槽从512-bit
+> 总线选word，拍末写raw/身份/ready，不启动SRAM读、不重发IMEM请求；n+1起按序返回。
+> 回填仍只写一个SRAM端口，旧refillSlot独立更新；旁路供数计入hit。总clock12,246,204。
 
 > **2026-10-05 3A 容量同步**：D$8 KB、128×64 B、直接映射；I$1 KB 配置与命中边界保持。
 > 两软件树 18+6 例完整 x10/retired/clock/统计一致。主树 DCache 不在 tick 查询 CPUstate：
-> comb 仅采样目标组的 `DCacheProbe`，tick 生成写入意图；DMEM 读完成载荷同样在 comb 采样。
+> comb 仅采样目标组的 `DCacheSetSnapshot`，tick 生成写入意图；DMEM 读完成载荷同样在 comb 采样。
 > 下方 2026-10-01 验收数值为历史，当前结果见活动 benchmarks。
 
 > 存储层次为两层 + 片上主存：L1I（ICache）、L1D（DCache），下一级是各 128 KB
@@ -133,7 +212,7 @@ CPUstate，SRAM从旧datas读取、显式向目标datas写，不再增加模块�
 ### 3.2 两段式状态机（`Phase::READY / WAIT`）
 
 DCache 是 DMEM 的唯一客户（`MemArbiter` 准入的请求只发给 DCache）。处理器访问
-在 `READY` 拍组合求值（主树 `sampleProbe`，模板 `probe`）：
+在 `READY` 拍组合求值（主树 `sampleSet`，模板 `lookupLine`）：
 
 ```
 READY ── 命中 ───────────────────────────────► load: 1 拍自答 loadResp / store: 当场写行置脏
@@ -147,7 +226,7 @@ WAIT ── DMEM 回复就绪( ∧ 写口不忙) ──► 填行 → 服务 par
 
 - **命中自答**：`READY` 拍命中 load 直接填 `loadBuffer`（下拍组合 `loadResp`
   对 LQ 可见）；store 命中当场写行并置脏，不产生主存流量；
-- **缺失**：`PrRd/PrWr` 在 `cacheRequestBuffer` 里 **park 请求**（只含
+- **缺失**：周期更新在 `cacheRequestBuffer` 里 **park 请求**（包含
   地址/宽度/符号/方向），并 latch 本次准入总线上携带的身份
   （`robTag/memIndex` + 分配的 `targetWay`）——回填完成后据此组装真正的应答；
   同时置 `busy` 进入 `WAIT`。**busy 期间 `MemArbiter` 不再准入**（见

@@ -5,7 +5,6 @@
 #include "../include/LQ.hpp"
 #include "../include/ROB.hpp"
 #include "../include/common.hpp"
-#include "../include/util.hpp"
 #include <cstdint>
 
 aluCDB aluCDB::build(const ALU &alu, const SquashInfo &squash) {
@@ -29,9 +28,6 @@ mulCDB mulCDB::build(const MUL &mul, const SquashInfo &squash) {
       mulcdb.valid = true;
       mulcdb.value = static_cast<int32_t>(mul.headValue());
       mulcdb.robTag = tag;
-      if (debug::enabled(debug::TOPIC_EXEC))
-        debug::print("mul cdb broadcast rob=%u val=%08x\n", tag,
-                     (uint32_t)mulcdb.value);
     }
   }
   return mulcdb;

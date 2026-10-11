@@ -1,7 +1,116 @@
 # 后端子系统：发射 · 乱序执行 · 写回 · 提交 · squash 恢复
 
-> **3B-1已验收**：IQ满且Issue实际成功时，旧FQ队首可同拍补入；单发射和ALU时序保持。
-> 两树18+6周期与3A一致，统计已更新；FQ上游及取指lookahead留3B-2。
+> **CPU顶层状态（SPEC §66）**：初始化与结束阶段直接归CPU，不封装独立控制模块。
+> 主树读拍初快照/逐字段写systemState；模板顶层Register单写/所有work后提交。
+> 四构建18＋6 strict及全部保留统计不变，纪律20＋59＋CPU顶层检查通过。
+
+> **七池/完整整核（SPEC §63/64）**：实际IQ/Issue/旧操作数/最老派发/FU预算与捕获/
+> 四SV生产者目标独立核验，15程序3835/2872及四负向通过。24镜像三CPU无损逐拍
+> 全等；RV_INVALID新增真实tag/PC/CID、ready/exception，真提交才sticky trap，
+> 主树仍读this/Input逐字段写目标，21＋60通过，入口sync/README §55/56。
+
+> **结束/计时合同（SPEC §62）**：CPU顶层隔离boot；HALT仍特殊标记，不执行
+> ADDI/不计retired，提交拍计core/IPC。SQ/Cache在途和所有dirty写完后拍末DONE结束，
+> 无额外空终止拍。16程序9629/2872及7负向、18＋6两构建strict通过；core/退休保持，
+> total新11973998/693042。当时21＋60审计通过，当前顶层形式见§66。
+
+> **全流水恢复验收（SPEC §61）**：真实检测/请求/年龄仲裁/广播与全部后端67程序
+> 9001/2872严格三端一致，11源码负向有效。ROB幸存前缀、RAT重建、PRF FIFO回收、
+> 七RS池、MUL三阶段/DIV四阶段和四路WB年龄资格独立核验，WB依赖仍下拍派发。
+> 主树仅只读友元，20＋60审计通过；第18当前域完成，第19计时继续，README §53。
+
+> **BPU训练竞争验收（SPEC §60）**：实际jump CDB/BRU与前端早训练的BTB逐槽字段
+> 仲裁26程序6690/1848严格三端一致，七源码功能负向有效。RAS13041/1848、控制
+> 1518/2230、访存4803/764及20＋60审计重新通过；下一第18步多恢复请求/全流水联动。
+> 生产算法及活动ISA11967396/IPC691640保持，入口sync/README §52。
+
+> **当前用户pop-push改造（SPEC §59）**：Issue JALR保留独立call/pop元数据，双link
+> 含同寄存器先pop再push；ROB退休及重放同序。RAS内容从旧arch基线＋存活ROB恢复，
+> 一条指令只分配一个取指checkpoint。CPU run/夹具共用生产时钟序列，HALT pc/预测
+> 元数据补齐；33完整程序13041/1848三端严格同值，7实际功能负向有效。六IPC新
+> 691640/ISA11967396，严格门禁均检查活动表，纪律20＋60通过，README §51。
+
+> **当前前端接入（SPEC §58）**：实际取指/公共SRAM I$/IMEM/FQ/decoded IQ三端
+> 2259步216字段严格全等；真实RTL core接SRAM I$的Store/Load/BEQ/HALT程序通过。
+> 既有4803/764访存后端、控制1518及RTL16项回归保持，两软件Release/_DEBUG各
+> 18＋6/golden不变；本树只增加只读探针友元，纪律20＋60通过，入口README §50。
+
+> **Store批量完成（SPEC §57/67）**：SQ组合输出拍初slot/epoch位图，ROB验证旧活动Store
+> 身份后汇总ready写意图，拍末每槽单写，下一拍才允许退休。主树删除逐通知writer，
+> 纪律20＋60通过；两软件Release/_DEBUG各18＋6严格保持golden。实际Cache全链4803
+> 步764字段正向严格全等，完整负向/关联验收见sync/README §49，§56屏蔽为历史。
+
+> **当前Cache返回后端（SPEC §55）**：寄存器RTL D$映射软件正常READY/WAIT、命中
+> 一拍及独立DMEM读写，模块6378/14三端全等。LSU旧返回/新读同拍重填，保持旧身份
+> 解释、拍末LQ/下拍CDB以及不提前唤醒依赖。四路/生命周期/RTL14及真Cache4通过；
+> 软件仅加只读Cache探针，完整CPU三端联合轨迹另验，sync/README §47。
+
+> **最新转发现状（SPEC §46）**：真实四池Store/Load生产链1338步323字段两软件全等，
+> word转发发生拍、多Load广播及未知地址覆盖与RTL不同。正常DIVU延迟数据的SB→
+> LBU/LB/LW两软件完整CPU提交错误全32位，RTL相同指令流3/3正确；先修字节功能再定
+> 时序。当前只观察，生产/golden保持；具体例子见共同目录sync/STORE-FORWARD-DIFFERENCES.md。
+
+> **SQ合同已同步RTL（SPEC §45）**：Store地址/数据就绪可ROB退休，原SQ保留committed
+> 项至实际发送接受；允许同拍退休/发送，满时下拍复用。RTL独立FIFO及退休载荷，跨
+> ROB回绕/恢复保留，HALT等SQ接受排空。SQ872步340字段四方一致、RTL14/14及两软件
+> 18＋6严格通过，活动clock11,967,396/690,814保持。下面§42～44为此前阶段记录。
+
+> **LQ回收已三端定版（SPEC §44）**：CDB只标记广播，实际ROB提交同拍释放；满队列
+> 15写回/16提交释放/17可分配。LQ1432步816字段四方一致，旧提交/恢复并发及非队首
+> 写回保留通过；18＋6严格回归新clock11,967,396/690,814。SQ提交策略仍待定。
+
+> **第12步第一项已修复（SPEC §43）**：主树LQ新槽初始化移到响应/CDB后、flush前，
+> 同拍新分配最后写，正确值及实际旧顺序负向通过；两软件18＋6严格回归/golden通过。
+> LQ满队列腾位软件晚2拍和Store提交合同不同（§42），共同生命周期策略仍待定。
+
+> **第11步联合写回已验收（SPEC §41）**：四路实际ALU/Load/MUL/DIV共享PRF/ROB，3648步
+> 590字段四方一致，16种WB掩码全覆盖；step162四WB/提交/新issue、step163依赖。
+> 实际解析JALR x0的更老3路WB/年轻取消/迟到返回通过。当前word-load/专用恒接收CDB域
+> 无新生产差异，LSQ释放/满队列/Store/Cache完整生命周期依第12～15步验收。
+
+> **第10步DIV定版（2026-10-08，SPEC §40）**：三端消费同拍接收、严格年轻flush/边界保留；
+> 边界结果无CDB授权时保持，不能由raw outReady释放。模块55256步28字段及真实返回链
+> 5000步500字段四方一致。18 ISA新clock总和11,967,406，六IPC仍690,826，严格回归通过。
+
+> **第9步MUL定版（2026-10-08，SPEC §38）**：MUL_CAP=1，partial/CSA/result三级弹性；
+> partialCanAccept/CSACanAccept/resultCanAccept读取实际授权/flush，从下游递推，关闭级整体保持。
+> 模块2207步21字段全suite及真实返回链2302步508字段四方一致，n+3 CDB/n+4依赖派发。
+> 正式core专用MUL CDB恒授权，夹具合成背压/给定合法恢复；18 ISA clock总和12,246,204保持。
+
+> **第8步真实方向修正与控制全链（SPEC §35）**：BRU保存actualTaken，BPU读取真实结果位，
+> 控制恢复仍只比较nextPC。1518步/3036点、2230字段真实重命名/RS/执行/BPU/提交/恢复四方
+> 一致，PHT/BTB/GHR/checkpoint全状态比较；对齐非call/return域，用户排除misAlign异常。
+> 两软件18+6周期/统计一致，总clock12,246,204。此定版取代下方effective_taken历史草案。
+
+> **第8步现状对拍/目标草案（SPEC §34）**：2374步/4748点56字段，真实BRU、控制ALU、
+> PRF及恢复请求队列在固定ROB元数据域观察；对齐PC结果一致，n/n+1/n+2时序一致。
+> PC+4训练方向和未对齐恢复语义不同；BRU仍4槽，单槽化尚未实施，完整控制整链待验。
+
+> **第7步地址整链验收（SPEC §33）**：真实共享Load/StoreAddr RS、PRF、AGU、LQ/SQ及
+> ROB分配/恢复1195步/2390点200字段四方一致。LSQ地址接收匹配旧活动槽和完整tag，
+> Store地址广播带producerTag并同样鉴权。WB/StoreValue为上游输入，consumer提交/Cache另验。
+
+> **第6步整数算术整链验收（2026-10-07）**：真实RS→派发→ALU→CDB→PRF/ROB及RAT，
+> 2536步/5072点474字段三端与独立参考一致，WB由实际结果自生成。取消年轻ALU结果
+> 时准入遗漏已补正，授权或取消都可同拍腾位；主树push只读this/Input释放意图，不
+> 读CPUstate目标。18+6严格回归总clock12,246,204保持，详见sync/README.md第23节。
+
+> **第5步Integer RS基线**：真实RS/PRF/派发仲裁1131步/2262点，正常单赋值操作数
+> 域三端一致；flush已统一允许严格更老者派发，边界保留不派发、年轻清除。
+> Integer域返回0，真实RS/执行端flush接收及RTL11/11通过，详见sync/README.md第17节。
+
+> **第4步FIFO基础域验收**：主树、模板、RTL均从FIFO自由队列分配，squash按年龄
+> 回收年轻newPhy后追加同拍提交oldPhy。1293步/2586点、420字段含全部FIFO顺序
+> 和32个tag查询与独立oracle完全一致；RTL10/10，软件18+6严格周期保持12,246,204。
+
+> **第4步软件tag鉴权修正（2026-10-06）**：matchesTag同时验证模序号存活窗口
+> [head,next)及槽内完整tag，包含head、排除next，支持空/满/回绕，拒绝退休/squash旧槽。
+> 主树/模板在1145步/2290点、全部32个tag查询及迟到写回中符合独立oracle；18+6
+> 严格周期回归通过，总clock12,246,204；随后RTL分配顺序已按FIFO同步，见上方验收。
+
+> **第3步3B已验收**：IQ满且Issue实际成功时，旧FQ队首可同拍补入；FQ满时真实
+> 出队可接收ICache返回。单发射和ALU时序保持；两树18+6结果/周期/统计一致，
+> 同行回填旁路补正后活动总clock12,246,204。
 
 > **2026-10-05 容量同步 3A**：FQ/IQ4、LQ/SQ8 全容量 epoch 指针，D$8 KB；LSQ 尾快照
 > 保存完整 4-bit 序号，memIndex 仍取物理槽。ALU 保留派发拍运算、下一拍 CDB 的原时序。
@@ -135,6 +244,13 @@ ROB push / RS 占槽 / LQ/SQ push（访存指令）/ IQ pop。每周期**至多�
 - **保留站不缓存值**：就绪判定 `isOperandReady` 与取值 `getOperandValue` 直接
   查询 PRF（或返回立即数）。依赖唤醒的延迟表现为：结果经 CDB 写入 PRF 的下一
   拍，依赖它的保留站自然就绪——**总线数量不再是依赖链长度的上限**；
+- **释放只写有效位**（2026-10-06 两树统一）：派发授权或 squash 取消时只写 `free`，
+  `src1/src2/op/robTag` 保留旧值，与 RTL `rv32_rs.sv` 的释放路径一致。前提是两条
+  不变式同时成立——读侧一律以 `free` 为唯一有效性位（`DispatchArbiter` 六条通道、
+  执行单元取载荷、storeValue 就绪释放扫描、squash 扫描全部门控），且分配覆盖槽的
+  全部 payload 字段。**不要把清空当安全网**：`InvalidPhy == 0` 且
+  `isOperandReady(tag == InvalidPhy)` 为真，清零后的释放槽是"永远就绪的常量"，
+  漏掉门控时会被静默选中，比留旧值更危险；
 - 提交时释放 `oldPhy` 回自由表（squash 时按 ROB 窗口重放，把未提交的分配重新推回环尾）。
 
 ---
@@ -143,29 +259,38 @@ ROB push / RS 占槽 / LQ/SQ push（访存指令）/ IQ pop。每周期**至多�
 
 ### 4.1 派发（Dispatch）
 
+容量状态 `isFull()` 与本拍接收能力分开命名：模板 ALU 派发口为正向
+`aluCanAccept`，实现为 `!ALU.isFull() || drained || cancelled`，保留同拍结果消费
+或取消后的槽位复用。AGU同样采用正向`aguCanAccept`：LSQ在issue已预留条目，旧结果
+每拍交付或取消，单槽可同拍重填；主树remove→flush→push，模板每Register单写。
+授权及所选槽位/tag 均由该正向信号门控；其它直接表示输出缓冲
+实际占用满的 `Full` 接口仍保留容量语义。此命名/极性统一不改变派发时序。
+
 `DispatchArbiter` 每个周期给每个执行单元**独立**选一个就绪候选
 （容量/接收门控 + 就绪 + 过 squash 门），五通道互不阻塞：ALU / MUL / DIV / AGU / BRU
 各一个派发载荷。访存指令的地址就绪由 AGU 执行，store 数据就绪由
 StoreValue RS 提供（见 [访存](memory.md) §2）。
 
-**DIV 通道的背压**（`StaticArbiter.cpp` 的 DIV 分支）：先问 `div.canAccept()`，
+**DIV 通道的背压**（`StaticArbiter.cpp` 的 DIV 分支）：主树以实际divGrant/flush/outReady
+调用`div.canAccept(...)`；模板无参方法读同源Input Wires。
 再在 `divideRS` 里扫**最老**的就绪条目，选出后置 `dispatch.div.{rsIndex,robTag,rsType=Divide,valid}`；
 命中 squash 窗口则撤销。因为除法器是**单实例迭代单元**，`canAccept()` 为假时整条
-DIV 通道停发；MUL 则只检查自己的输出缓冲是否已满（见 §4.3）。
+DIV 通道停发；MUL使用三级弹性`partialCanAccept`准入（见 §4.3），主树仲裁传实际mulGrant，
+模板正向`mulCanAccept`接同一谓词，不再以输出占用`isFull()`决定派发。
 
 ### 4.2 执行单元总表
 
 | 单元 | 输入候选 | 结果保持 | 行为 |
 |------|----------|----------|------|
-| `ALU` | Integer RS 4 | 4 槽输出缓冲 | 算术/逻辑/移位；**JALR** 目标计算（`isControl` 载荷，经 aluCDB 供 FlushArbiter/BPU 消费） |
-| `MUL` | Multiply RS 2 | 3 级流水 + 4 槽输出缓冲 | RV32M 乘法族：radix-4 **Booth** 19 行部分积 → **3:2 CSA 压缩树**（17 cell）→ 最终全宽加法 [[5]](#back-ref-5)[[6]](#back-ref-6)[[7]](#back-ref-7)。**详见 §4.3** |
+| `ALU` | Integer RS 4 | 单槽，同拍消费/取消后重填 | 算术/逻辑/移位；**JALR** 目标计算（`isControl` 载荷，经 aluCDB 供 FlushArbiter/BPU 消费） |
+| `MUL` | Multiply RS 2 | 3 级弹性流水，第三级单槽结果 | RV32M 乘法族：radix-4 **Booth** 19 行部分积 → **3:2 CSA 压缩树**（17 cell）→ 最终全宽加法 [[5]](#back-ref-5)[[6]](#back-ref-6)[[7]](#back-ref-7)。**详见 §4.3** |
 | `DIV` | Divide RS 1 | 单个 `resultValid` 结果寄存器 | RV32M 除法族（`div/divu/rem/remu`）：**SRT radix-4** 数字递推，carry-save 冗余表示 + 常数法 QDS + on-the-fly 商转换 [[9]](#back-ref-9)[[10]](#back-ref-10)[[12]](#back-ref-12)[[13]](#back-ref-13)；**单实例、非流水**（三阶段 valid 归约拒绝新指令）。**详见 §4.4** |
-| `AGU` | Load RS 4 + StoreAddr RS 4 | 4 槽输出缓冲 | load/store 地址 = base+offset；最老有效结果为 store 时组合广播地址事件 |
+| `AGU` | Load RS 4 + StoreAddr RS 4 | 单槽，同拍交付/取消后重填 | n拍32-bit地址计算/保存，n+1交付LSQ，n+2地址ready可见；store结果广播地址事件 |
 | `BRU` | Branch RS 4 | 4 槽输出缓冲 | 条件分支：最老有效 `BranchResult{pcFrom, pcResult, robTag}` 供误预测检测 |
 
 派发不是 FIFO：每个通道扫描相应 RS，按 `robTag` 选择**最老的就绪项**；AGU
-在 Load 与 StoreAddr 两池之间统一比较年龄。ALU/MUL/AGU/BRU 的 4 槽输出缓冲
-同样按 `robTag` 选最老有效结果，而不是按插入槽位或固定队首；DIV 只有一个结果
+在 Load 与 StoreAddr 两池之间统一比较年龄。BRU的4槽输出缓冲
+按 `robTag` 选最老有效结果；ALU/AGU/MUL各一个结果槽，无多槽输出仲裁；DIV只有一个结果
 寄存器。四路结果总线据此保证“每源每周期至多一个结果”。
 
 ### 4.3 MUL 实现：radix-4 Booth + CSA pseudo-Wallace Tree
@@ -180,13 +305,13 @@ Wallace-style CSA 树 [[7]](#back-ref-7)[[8]](#back-ref-8)，本文的 19→2 �
 ```
 第 1 级  calculateBooth(dispatch)      → 19 行部分积
 第 2 级  calculateSC(partialRes)       → (S, C)
-第 3 级  calculateMulRes(scRes)        → outputBuffer[slot]（结果 + robTag）
+第 3 级  calculateMulRes(scRes)        → outputBuffer[0]（单槽结果 + robTag）
 ```
 
 周期更新只读各级的旧状态并同时前推。主树在 `tick()` 内逆序调用
 `calculateMulRes` → `calculateSC` → `calculateBooth`；模板树在 `work()` 中读取
-`Register` 旧值达到同样效果。空级会清 valid，避免气泡被误当作结果。
-`flush(tag)` 同时清 `partialRes/scRes` 的 valid 与 `outputBuffer` 中不早于 tag 的槽位。
+`Register` 旧值达到同样效果。只推进准入开放的级；上游无live工作时清valid，关闭级不写，
+valid/data/tag/op一起保持。flush将各级不严格更老的工作视为空，支持取消同拍更老重填。
 
 **(a) 部分积的 19 行**（`PartialProductResult::partialProduct[19]`，全部 64 bit 全宽）：
 
@@ -215,16 +340,23 @@ c0–c2 / d0–d1 / e0 / f0），末级输出 `scRes.S / scRes.C`。
 - `MUL` → `(int32_t)res`（低 32 位）；
 - `MULH / MULHSU / MULHU` → `(int32_t)(res >> 32)`（高 32 位）。
 
-结果写入任一空闲 `outputBuffer` 槽（`slotValid[]` 标位），输出选择逻辑按
-**最老** robTag 取唯一的 mulCDB 写回候选；槽位本身没有 FIFO 次序。
+结果写入单槽`outputBuffer[0]`，`slotValid[0]`标位；该槽提供唯一mulCDB候选。
+无背压时n拍partial、n+1 CSA、n+2结果、n+3 CDB/拍末PRF和ROB更新，n+4依赖最早派发。
 
-**(d) 为什么 MUL 不需要背压门控**：`MUL_CAP=4` $>$ 在飞指令数（3 级流水 $\le3$），
-且 `cdbOfMul` 每拍排空最老结果（被 squash 清掉的结果除外），故槽位永远够用 ——
-派发通道只需 `!mul.isFull()` 这一道门（`StaticArbiter.cpp` 的 MUL 分支），
-MUL 侧**不提供 `canAccept()`**。`calculateMulRes` 里那个
-`assert(best != -1 && "MUL slot overflow: MUL_CAP must exceed in-flight stages")`
-就是这条不变量的运行时守护：缓冲满了即代表派发跑得比总线排空快。
-**任何可能破坏该不变量的改动（缩 `MUL_CAP`、给流水加级），都必须先保留这条断言。**
+**(d) 三级弹性准入**（SPEC §38，替代历史4槽预算）：
+
+```text
+stageLive = valid && (!flush || tag严格更老)
+resultCanAccept = !resultLive || 实际匹配tag的CDB授权
+CSACanAccept = !CSALive || resultCanAccept
+partialCanAccept = !partialLive || CSACanAccept
+```
+
+结果消费或取消允许同拍接收旧CSA，CSA/partial同理；全流水占用且出侧受阻时反压输入，
+各级整体保持。主树三个const方法接`(const mulCDB &grant, const SquashInfo &squash)`，
+模板无参方法读Input Wires。主树tick及helper只读this/Input、逐字段写目标；模板单写Register。
+正式core专用CDB恒授权，但准入必须读取实际授权，不能在仲裁器重新假设恒真。
+模块2207步/21字段及真实返回链2302步/508字段四方一致；背压、受阻恢复及旧溢出负向已验。
 
 ### 4.4 DIV 实现：SRT radix-4
 
@@ -546,17 +678,17 @@ $$\boxed{A' = 4A + q\ (\text{数字串拼接}),\qquad B' = A'-1\ (\text{悲观�
 | 多条除法之间 | 可交错或复制上下文 | 需要保存每条指令私有的余数、`dSlice` 与迭代状态；本项目未实现 |
 | 除法 vs 乘法 | 乘法天然可流水 | 乘法是单向 DAG，除法是反馈环 |
 
-- `canAccept(){return !(prepareValid || loopValid || fullAdderValid) && !resultValid;}`——三个阶段任一在算、或结果还没广播出去，都得拒；独立 `busy` 状态已由三阶段 valid 的 OR 精确替代；
-- 一般路径从派发到 divCDB 的延迟为 $3+k$；满宽 $k=17$ → **20 周期**。
+- 准入=`!busy && (!resultValid || actualConsume || (youngerCancelled && outReady))`；busy是
+  三阶段valid的OR。结果实际消费可同拍接新工作，计算中仍独占；边界结果不消费/不取消时保持。
+- 一般路径接受n拍，n+L+2拍末结果、n+L+3 divCDB，L=k−1=ceil(align/2)，拍差3..19。
+  满宽k=17/L=16，在n+19写回；若含接受拍共20采样拍，不能误写成n+20。
   其中 `prepare` 产生 $q_1$，`loop()` 只运行 $k-1$ 次；$align=0$ 的一般路径因此
   是 **0 次 `loop()`**，但不是 0-cycle；
 - RISC-V 特判路径在 `receive()` 直接锁存 `resultValid`，绕过 `prepare/loop/calculateResult`，
   即 **0 次 SRT 迭代**；结果仍须跨周期变为可见并经 divCDB 广播，也不是组合零延迟；
-- 对照 MUL：乘法器是流水线 + 4 槽输出缓冲，派发只需 `!isFull()` 一道门，
-  **MUL 侧无 `canAccept()`**（§4.3(d)）；DIV 则必须反过来用三阶段 valid 归约与 `resultValid`
-  双门控——这是两者在派发准入上的差异，也是 `DispatchArbiter` 里 MUL 走 `isFull()`、
-  DIV 走 `canAccept()` 的原因；
-- 无输出缓冲（不像 MUL 有 `outputBuffer[MUL_CAP]`），结果靠 `resultValid` 单发。
+- 对照MUL：乘法器以`partialCanAccept`传播三级弹性准入，可重叠多条工作；DIV仍是单上下文
+  迭代接口，但结果消费可同拍接收下一条（§4.3(d)）。
+- 结果靠`resultValid`单发；MUL的单槽结果则允许消费/取消同拍从旧CSA重填。
 
 SRT 可把 QDS 与 CSA 切级、展开多拍或交错多条指令；是否值得取决于综合关键路径、面积和
 目标负载的动态除法占比。本项目选择最小面积的单上下文迭代实现，不把该取舍泛化为通用结论。
@@ -806,11 +938,11 @@ MUL、DIV 各驱动一根，**源之间无跨单元仲裁**，每周期至多四
   （CDB 侧只改表）；
 - 条件分支/间接跳转的结果载荷挂在 ALU 总线上（`isControl`）——FlushArbiter 在
   该总线上检测 JALR 目标误预测；
-- **mulCDB 恒每拍可发**（MUL 有 4 槽输出缓冲，取最老 robTag）；
+- **mulCDB 对合格结果恒授权**（MUL单槽结果，消费/取消可同拍从旧CSA重填）；
   **divCDB 受 `resultValid` 门控**（DIV 无输出缓冲，单发），被消费后
-  周期更新清 `resultValid`；完成计算则在另一状态分支置位结果，单发不丢；
-- `VERBOSE=cdb` 输出争用统计（both / 仅单侧 / 若单总线谁胜出），用于量化
-  多总线 vs 单总线的收益边界。
+  周期更新清 `resultValid`；同拍接收由receive分支单写新valid，一般路径进入PREP、快速路径
+  保存新结果。边界flush保留，只有严格年轻工作取消；
+- 四路结果通道独立授权；历史CDB争用画像已清理，生产只保留活动表指标。
 
 > 设计注记：同一指令只可能由一个执行源完成，"同周期两总线写同一物理寄存器"
 > 在源头上即被排除；保留站查 PRF 就绪的模型使总线数量不构成依赖链瓶颈。
@@ -855,8 +987,8 @@ squash 回卷 `next`，提交推进 `head`，两者可同拍发生：若 ROB 头
 | `PRF` | ROB 窗口重放：从 `robNextTag(SquashTag)` 扫到 ROB 尾，把窗口内各条的 `robNewPhy` push 回自由环（未提交的分配即被回收）；squash 拍**不** pop |
 | `BPU` | 按 `ckptId` 恢复 8-bit GHR；RAS 从旧 `archRAS` 提交基线重放存活 ROB 的 call/ret，无 per-checkpoint RAS/AlignQueue 恢复（见 [frontend.md](frontend.md) §4.3） |
 | `FQ/IQ/RS/LQ/SQ` | 各按 ROB 条目记录的尾快照回卷（RS 释放槽位、LQ/SQ 按 `getTailSnapshot` 截断） |
-| `MUL` | `flush(tag)`：清 `partialRes/scRes` 的 valid + 清 `outputBuffer` 中不早于 tag 的槽位 |
-| `DIV` | `flush(tag)`：**整机清零**（`resultValid`/`regS`/`regC`/`regA`/`regB`/`dSlice`/`loopTimes`/`prepareValid`/`loopValid`/`fullAdderValid` 全归零）——单实例无缓冲，被 squash 即在算的那条已经作废 |
+| `MUL` | 三级弹性更新将不严格更老的partial/CSA/result取消；更老级保持或推进，可同拍更老重填 |
+| `DIV` | 只在旧工作严格年轻时取消并清阶段/结果状态；边界和更老工作保留。软件flush helper清计算上下文，合法更老新接收优先于旧取消 |
 | `FetchUnit` | 清 `haltFetched`（若被回卷）并从 `SquashPC` 重启取指 |
 
 RAT 不使用 `ckptId` 快照。提交时，ROB 头的 `newPhy` 写入 `archRAT`；squash 时，
@@ -880,12 +1012,12 @@ destination mapping 包含在重放范围内；squash 拍的 issue 已由 IssueA
 | ROB / PRF / RAT | 16 / 64 / 32 |
 | 保留站 | Integer 4 · Multiply 2 · **Divide 1** · Load 4 · StoreAddr 4 · StoreValue 4 · Branch 4 |
 | 发射 | 每周期至多 1 条（IQ 头，单口 rename） |
-| 执行/写回 | ALU·AGU·BRU·MUL 各 4 槽；DIV 单实例（三阶段 valid 归约背压）；派发与多槽输出均按 ROB 年龄选最老就绪/有效项 |
+| 执行/写回 | ALU/AGU各单槽同拍重填，MUL三级弹性/单槽结果，BRU4槽；DIV单实例（三阶段valid归约背压）；派发与多槽输出按ROB年龄选最老就绪/有效项 |
 | 结果总线 | 4 根（aluCDB / lqCDB / mulCDB / **divCDB**），无跨单元仲裁 |
-| MUL | Booth radix-4 + 3:2 CSA 压缩树（19 行 → 17 cell → S+C），3 级流水；`mul/mulh/mulhu/mulhsu`；派发门控 = `isFull()`（4 槽 > 在飞 3，无需背压） |
+| MUL | Booth radix-4 + 3:2 CSA（19行→17 cell→S+C），三级弹性/单槽结果；四类乘法；派发门控=partialCanAccept，n+3 CDB/n+4依赖 |
 | DIV | SRT radix-4，$bitsD{=}5,\ estBits{=}9$，共享 ulp 常数法 QDS，on-the-fly 商转换；**单实例非流水** |
 | DIV 位宽 | $B_d=32/33$，$SW=33/34$，$PW=35/36$（寄存器持 $P=4W$）；`MASK` 硬下界 $=PW$ |
-| DIV 延迟 | $3+k$（满宽 17 拍 → **20 周期**）；迭代环路全长进位传播 0 次 |
+| DIV 延迟 | 一般n+L+3 CDB（L=ceil(align/2)，拍差3..19）；快速n+1 CDB；消费同拍接收，迭代环路全长进位传播0次 |
 | DIV 特判 | $d{=}0$ / `INT_MIN÷-1` / $x<d$ / $x{=}d$ 均为 0 次 SRT 迭代；结果仍经寄存器与 divCDB 广播 |
 | FlushArbiter | 4 项请求队列；检测 BRU 误测 / CDB JALR 误测；最老优先 |
 | 停机 | halt 提交后继续 drain，直至 FQ/IQ/ROB/SQ 空、DCache 空闲、DMEM 双口空闲；出口 = `x10 & 0xFF` |

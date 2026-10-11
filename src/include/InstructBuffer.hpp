@@ -14,7 +14,7 @@ struct FQInput {
   SquashInfo squashDetect;
   const ICache &ICacheModule;
   const DecodeUnit &DecodeUnitModule;
-  bool haltFetched;
+  bool returnAccepted = false; // Same handshake as ICache.popConsume.
   bool issueValid = false; // Actual IQ dequeue, evaluated from the old IQ head.
   FQInput(const ICache &icache, const DecodeUnit &du)
       : ICacheModule(icache), DecodeUnitModule(du) {}
@@ -39,6 +39,9 @@ public:
   InstructBuffer() { std::memset(this, 0, sizeof(*this)); }
   bool isFull() const;
   bool isEmpty() const;
+  bool canAccept(bool willPop) const {
+    return !isFull() || (willPop && !isEmpty());
+  }
   uint32_t headRaw() const;
   int headpc() const;
   int32_t headPredictedPC() const;

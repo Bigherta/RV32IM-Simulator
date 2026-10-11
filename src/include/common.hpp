@@ -55,9 +55,13 @@ constexpr int FQ_SEQ_MASK = (FQ_CAP << 1) - 1;
 constexpr int IQ_SEQ_MASK = (IQ_CAP << 1) - 1;
 constexpr int REGISTER_CAP = 32;
 constexpr int FLUSHARBITER_CAP = 4;
-constexpr int ALU_CAP = 4;
-constexpr int MUL_CAP = 4;
-constexpr int AGU_CAP = 4;
+// ALU result buffer: ONE slot.  It is a transparent stage -- a slot occupied
+// this cycle is released in the same cycle it is presented (the dedicated
+// aluCDB drains it, or the squash flush kills it) -- so the buffer can both
+// drain a result and accept a new op per cycle while holding a single slot.
+constexpr int ALU_CAP = 1;
+constexpr int MUL_CAP = 1; // Final register of the three-stage elastic MUL.
+constexpr int AGU_CAP = 1;
 constexpr int BRU_CAP = 4;
 constexpr int BTB_CAP = 64;
 constexpr int BHT_CAP = 1 << 8;
@@ -277,6 +281,7 @@ struct BranchResult {
   uint32_t pcFrom;
   uint32_t pcResult;
   uint8_t robTag;
+  bool actualTaken;
 };
 
 // Arbiter->DCache
@@ -285,7 +290,7 @@ struct MemRequest {
   int32_t value;
   uint32_t address;
   bool isSigned;
-  int n_bytes;
+  int nBytes;
   uint8_t robTag;
   uint8_t memIndex;
 };
@@ -403,7 +408,7 @@ struct FetchDecision {
   uint8_t ckptId = 0;
   static FetchDecision build(const BPU &bp, uint32_t pc,
                              const SquashInfo &squash, bool haltFetched,
-                             bool fqFull, bool imemReqFull);
+                             bool fqCanAccept, bool memCanAccept);
 };
 struct LoadResponse {
   bool valid = false;

@@ -27,7 +27,7 @@ trap 'rm -f "$STDOUT_TMP" "$STDERR_TMP" "$DOC_TMP"' EXIT
   printf '# RV32IM IPC Benchmarks\n\n'
   printf '> Corpus: `data/testcases_ipc/`; ISA: RV32IM. `clock` is the end-to-end cycle count, while IPC uses the simulator core interval frozen when HALT commits.\n'
   printf '> Geomean IPC = geometric mean of per-case IPC (`retired / ipc-cycles`) over the table below.\n'
-  printf '> `RESULT_FULL=1` prints full 32-bit x10. `VERBOSE=cftrace,profile` adds host-only control-flow fetch/execute/commit records and a commit-filtered dynamic mix on stderr.\n\n'
+  printf '> `RESULT_FULL=1` prints full 32-bit x10. `VERBOSE=clock` prints the active cycle, retired and IPC metrics on stderr.\n\n'
   printf '| case | x10 | clock | retired | ipc-cycles | IPC |\n'
   printf '| --- | ---: | ---: | ---: | ---: | ---: |\n'
 } > "$DOC_TMP"

@@ -144,9 +144,10 @@ g++ -std=c++20 -O2 -Isrc/include src/main/main.cpp src/CPU/CPU.cpp \
 VERBOSE=branch,clock ./code < data/testcases/gcd.data   # 统计走 stderr
 ```
 
-`VERBOSE`（stderr，逗号分隔）：`issue` `exec` `wb` `commit` `lsq` `mem` `clock`
-`branch` `prf` `mdp` `bpmiss` `icache` `cdb`，或 `all`。`clock` 输出总时钟、IPC 时钟、
-退休指令数与 IPC；`branch` 输出分支正确率；`icache` / `cdb` / `bpmiss` 输出概要画像。
+`VERBOSE`（stderr，逗号分隔）：`clock`、`branch`、`icache`、`dcache`，或 `all`。
+`clock` 输出总时钟、核心/排空周期、退休指令数与 IPC；`branch` 输出整体与分型预测
+准确率；`icache` / `dcache` 都输出两级 Cache 的命中/缺失与命中率。
+生产代码仅保留活动 benchmark 所需统计，逐指令轨迹、每PC定位表和额外画像已清理。
 
 ## 4. 验证与性能
 
@@ -210,10 +211,14 @@ BP_BIN=/path/to/code ./test_IPC.sh   # 指定二进制
   收紧至 56 bit/项；间接目标缓存（BHT+Target Cache）在活动语料上无可观测收益，已按面积/效率权衡
   删除。完整模板 BPU Register 状态由 TAGE 基线的 24,357 bit 降至 7,542 bit（-69.04%），该变换
   不改时序（当时 18 例总 clock 为 12,237,892）。
-- **保守 load 准入（2026-09-21）**：退役 MDP 投机（删除 load-violation 检测与 squash 通路），
+- **Cache字节依赖修复（2026-10-09）**：两软件接口现为
+  `SQ::canSendLoadToCache(addr, nBytes, loadTag)`；未转发Load遇更老未提交Store未知地址
+  或任意字节重叠均阻塞，同word不重叠可放行。四个迟到数据偏移反例及排空对照通过，
+  两构建18ISA＋6IPC严格回归保持当前golden；详见公共SPEC §52及sync/README §44。
+- **保守 load 准入（2026-09-21，历史）**：退役 MDP 投机（删除 load-violation 检测与 squash 通路），
   `SQ::canDispatchLoad` 要求更老未提交 store 地址均已知且无同址冲突才允许 cache 准入。仅
   `magic` 时序变化（573122→574512），总 clock **12,239,282**，IPC **0.553640**，分支正确率 **93.8356%**。
-- **取舍复核**：`VERBOSE=icache` / `cdb` 的命中率与总线争用画像长期保留，供缓存几何、总线拆分、预测器容量等决策参考。
+- **取舍复核**：`VERBOSE=icache` 的命中率保留；历史总线争用画像已随生产诊断代码清理。
 
 ## 6. 参考资料
 

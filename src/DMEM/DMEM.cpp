@@ -12,20 +12,6 @@ void DMEM::snapshotFrom(const DMEM &other) {
   readOutputBuffer = other.readOutputBuffer;
 }
 
-int32_t DMEM::load_n_bytes(uint32_t address, int n, bool isSigned) const {
-  uint32_t result = 0;
-  for (int i = 0; i < 4; ++i) {
-    if (i < n) {
-      result |= static_cast<uint32_t>(read_data(address + i)) << (i << 3);
-    }
-  }
-  if (isSigned && n == 1 && (result & 0x80u))
-    result |= 0xFFFFFF00u;
-  else if (isSigned && n == 2 && (result & 0x8000u))
-    result |= 0xFFFF0000u;
-  return static_cast<int32_t>(result);
-}
-
 void DMEM::writeLine(uint32_t addr, const uint8_t *lineData, systemState &CPUstate) const {
   for (int i = 0; i < DCACHE_BLOCK_CAP; i++) {
     const uint32_t address = addr + i;
@@ -33,8 +19,6 @@ void DMEM::writeLine(uint32_t addr, const uint8_t *lineData, systemState &CPUsta
       CPUstate.DMEMModule.mem[address] = lineData[i];
   }
 }
-
-void DMEM::MemPull() { readBufferValid = false; }
 
 bool DMEM::isReadBusy() const { return readBusy; }
 

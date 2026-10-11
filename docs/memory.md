@@ -1,6 +1,98 @@
 # 访存子系统：加载/存储队列 · 转发 · 保守准入
 
-> 3B-1只优化IQ/FQ转移，LSQ满时准入、释放与转发规则保持；两树全量周期一致。
+> **CPU顶层结束协议（SPEC §66）**：SQ接受排空/旧访存结束/全dirty实际写回的
+> 资格由CPU拍初状态判断，拍末更新finishPhase；不封装控制模块。活动周期保持。
+
+> **第12/13收口与完整镜像（SPEC §63/64）**：LSQ模块严格及Store扩展22组重新
+> 通过；15真实CPU覆盖满LQ/SQ、SV实际交付、地址/数据先后与跨Cache字节/恢复，
+> 四源码负向有效。24镜像三端无损逐拍/退休/最终128KiB全等，生产周期表保持；
+> 课程AXI/其他异常范围继续，入口sync/README §55/56。
+
+> **HALT外存完成（SPEC §62）**：HALT提交冻结core但SQ已提交项继续发送；SQ空、
+> Cache/DMEM旧事务结束后全dirty写回，实际写完才DONE。16程序9629/2872及最终
+> 128KiB独立字节核验/7负向通过；core保持，total增加drain。SQ新增完整head seq
+> 只读查询便于epoch观察，访存4803/764回归保持。入口sync/README §54。
+
+> **全流水恢复（SPEC §61）**：67真实CPU程序9001/2872三端全等，11源码负向；
+> LSQ与所有FU/前端同链核验，已提交SQ保留、取消Load迟到返回/复用通过。RTL
+> 分配旁路补P0非生产者资格，软件算法保持；后端4803/764严格回归通过，README §53。
+
+> **最新关联门禁（SPEC §60）**：BTB真实26程序6690/1848与参数边界通过；访存
+> 后端4803/764＋六实际源码负向、RTL16项重新通过。第17当前BPU域完成，下一
+> 第18多恢复请求/所有FU及LSQ全流水恢复，入口sync/README §52。
+
+> **checkpoint身份闭环（SPEC §59）**：完整CPU取指使用实际IMEM和SRAM I$，33程序
+> 13041/1848严格同值，CID单次取指单次分配、111次回绕/取消后重用及RAS内容恢复
+> 通过。真实producer事件与活ROB关联，模板窗口口径已统一；既有4803/764访存
+> 后端/RTL16项保持。用户新RAS策略六IPC691640，ISA11967396，README §51。
+
+> **指令行边界（SPEC §58）**：实际IMEM16槽、20拍倒计时、顺序返回与逻辑squash
+> 清队列已用于真实SRAM RTL I$三端验收2324/160及完整前端2259/216。每个旧miss
+> 登记行请求，接受回填才消费行；恢复清逻辑身份，物理运输旧响应由总线适配器
+> 消费/丢弃。软件功能/golden保持，后端4803/764严格回归通过，入口README §50。
+
+> **Store完成位图（SPEC §57/67）**：SQ把所有拍初活动、地址/数据齐且未提交项按ROB槽
+> 组合译码ready/epoch位图，CPU comb采样；ROB核对旧有效Store/epoch及恢复年龄后批量置ready。已提交
+> 缓冲Store不参与，不用本拍新地址/数据旁路，退休最早下一拍。764字段严格对拍入口
+> 见sync/README §49；正常SQ退休/发送仍独立，末尾全dirty排空按结束协议验收。
+
+> **当前返回接口（SPEC §55）**：寄存器RTL D$正常请求/实际DMEM6378/14三端全等。
+> RTL LSU现在先消费旧响应，再捕获同拍下一读，与软件连续Cache请求行为一致；旧
+> tag/宽度/符号解释和迟到丢弃保持，旧气泡实际负向有效。软件行为未改，完整三端
+> CPU＋Cache至退休联合轨迹另验，入口sync/README §47。
+
+> **最新Cache准入修复（SPEC §52）**：两软件接口统一为
+> `SQ::canSendLoadToCache(addr, nBytes, loadTag)`，传实际Load字节数，转发失败后阻塞
+> 地址未知或任意字节重叠的更老未提交Store。同word但不重叠可放行，完整/部分覆盖
+> 两个方向都检查。DIVU延迟数据后的SW→偏移LHU/LBU、SH→偏移LBU、SB→覆盖它的LW
+> 四例及排空对照通过，实际旧地址相等条件重编负向有效。两软件Release/_DEBUG各
+> 19个完整CPU镜像及18ISA＋6IPC通过，golden保持；入口sync/README §44。
+
+> **转发尚未共同等价（SPEC §46）**：1338步323字段真实来源链两软件全等，但word
+> 转发拍/广播带宽/未知地址覆盖及字节范围与RTL不同。SQ.replyToLoadRequest和LQ
+> notify直接写完整Store源值，SB后LBU/LB/LW忽略字节覆盖/扩展/合并，在正常DIVU
+> 七指令完整软件CPU提交错值；相同RTL core正确，80 NOP排空控制正确。先修该功能，
+> 再定时序；本轮生产/golden保持，差异文档sync/STORE-FORWARD-DIFFERENCES.md。
+
+> **当前共同SQ合同（SPEC §45）**：同一SQ缓冲已退休Store至下游实际接受，ROB退休
+> 不等ready；SQ独立FIFO顺序保证回绕/恢复保留及最新Store选择，允许同拍退休/发送。
+> LQ1432步816字段、SQ872步340字段四方一致，整体严格模式通过；RTL14/14包含真实
+> Store来源/四word Load/回绕/分支恢复/HALT，完整三端来源和Cache/字节交互另验。
+> 18＋6严格软件活动clock11,967,396/690,814保持；下面§42～44为历史阶段记录。
+
+> 当前LQ统一ROB实际提交同拍回收（SPEC §44），CDB只标记已广播；旧态willCommit/
+> 队首tag直接pop，更老提交与恢复并发也回收。LQ1432步816字段四方一致，满时下一拍
+> 分配；SQ提交/发送耦合仍待定。新ISA/六IPC clock11,967,396/690,814。
+
+> **第12步第一项修复（SPEC §43）**：主树pushLoad在响应/CDB后初始化新槽，旧响应写入
+> 不能覆盖本拍新分配。LQ1365步816字段正确数据参考三端通过，临时旧顺序仍复现错值。
+> 本拍仍只读this/Input，flush最后；LQ释放/Store提交合同差异（§42）待定版。
+
+> 第10步DIV专用结果通道实际消费可同拍接收新工作，strict-younger取消/边界保持已统一；
+> 真实返回链5000步500字段一致。18 ISA新clock总和11,967,406；Load/访存生命周期依第12～15步验收。
+
+> 第9步MUL_CAP=1，三级弹性准入读取实际mulCDB/flush；真实乘法返回链2302步508字段
+> 四方一致，n+3写PRF/ROB、n+4依赖派发。Load返回及访存生命周期依第12～15步验证（SPEC §38）。
+
+> 第8步actualTaken运输/训练修正及对齐控制后端全链已验收；访存接口边界保持，AGU链
+> 1195步回归及两软件18+6严格周期通过，总clock12,246,204。misAlign异常按用户要求排除。
+
+> 第7步AGU已统一单槽同拍交付重填：n拍计算/保存，n+1交付/拍末写地址ready，n+2可见。
+> LQ/SQ槽在issue预留，满只停新分配，不阻止AGU写已有条目；取消旧结果后可重填更老项。
+> 3182步模块及1195步/2390点200字段真实地址整链四方一致；LQ/SQ.matchesAddress匹配
+> 活动槽和完整tag，SQ.planAddressForward(memSlot,address,producerTag)同样过滤错身份广播。
+> WB/StoreValue为上游输入；提交释放及Cache返回按第12～15步验收，详见SPEC §33。
+
+> 第6步普通整数结果路径与真实PRF/ROB已闭环验收，ALU CDB由实际结果产生；
+> load/store返回与跨Cache/LSQ身份使用仍属于访存专门范围，软件18+6严格周期保持。
+
+> 第5步flush接收统一：RTL AGU/StoreValue可交付严格更老项，LSU在恢复周期接收
+> 存活更老地址/数据，边界/年轻地址拒绝；普通分配与地址同槽更新优先级经定向测试保持。
+
+> 第4步PRF分配统一为FIFO，返回值的物理目标身份仍由存活ROB完整tag认证；四路
+> 写回与普通重命名/恢复域三端对拍通过，LSQ专门的生命周期验收按访存步骤进行。
+
+> 第3步3B完成前端满时替换，LSQ满时准入、释放与转发规则保持；两树全量周期一致。
 
 > **2026-10-05**：LQ/SQ 各 8 项全部可用，4-bit epoch 指针；恢复尾快照保存完整序号，
 > memIndex/getHead 仍是物理槽，getTail 返回序号。D$8 KB/64 B。主树所有 tick 只写 CPUstate，
@@ -84,24 +176,25 @@ FETCHING ────────── store 转发 ─────────
   `READY`；后到的 DCache 应答只在该槽**周期初已是 `FETCHING`**、`robTag/memIndex`
   匹配且本拍有效状态仍为 `FETCHING` 时接受。周期初状态阻止 squash 后复用同一槽位
   与 tag 的新 load 接收旧应答，本拍有效状态则保证更新鲜的 store 转发值优先；
-- AGU 首次解析 load 地址时，SQ 只在“最年轻的更老同址 store 数据已就绪，且它与
-  load 之间没有地址未知 store”时立即转发；
+- AGU 首次解析 load 地址时，SQ 按同word候选查询，最年轻候选须数据就绪且完整覆盖
+  Load，并比最后一个未知地址来源年轻才立即转发；返回值按字节偏移移动并截取/扩展；
 - store 离开 ROB 后可能因 DCache busy 继续留在 SQ，因此提交状态由 ROB commit
   显式置位，不再用 retained `robTag` 与当前 ROB head 推断。转发的新旧关系按 SQ
   从 head 到 tail 的队列位置确定；只有未提交、仍在 ROB 活跃窗内的 store 才做
   RobTag 年龄比较；
-- **地址未知的更老 store 会阻塞 cache 请求**。`SQ::canDispatchLoad` 对更老的未提交
-  store 同时检查地址未知和已知同址两种情况；只有当所有更老 store 地址已知且没有
-  同址冲突时，load 才能进入 cache。这样 load 不会投机越过未解析 store。
+- **未知地址或字节重叠的更老 store 会阻塞 cache 请求**。
+  `SQ::canSendLoadToCache(addr, nBytes, loadTag)` 检查更老未提交Store的完整字节范围，
+  任意重叠都阻塞尚未转发的Load，不能仅检查同起点或Store完整覆盖Load。
+  同word内不重叠的已知Store不阻塞。已提交SQ队首仍由请求仲裁优先发送、Cache busy门控。
 
 ## 4. 保守准入与恢复边界
 
 保守准入使内存顺序违例在正常路径上不可发生：一个 load 进入 cache 时，所有更老
-未提交 store 的地址都已经解析，且没有已知同址 store。更老 store 后续不会再改变
+未提交 store 的地址都已经解析，且没有字节范围重叠的 store。更老 store 后续不会再改变
 地址，因此不会出现已执行 load 被更老 store 追溯覆盖的情况。
 
-`SQ::replyToLoadRequest` 与 `SQ::canDispatchLoad` 共同完成准入安全性：地址解析当拍
-优先尝试 store→load 转发；没有可转发值时，`canDispatchLoad` 再决定是否允许 cache
+`SQ::replyToLoadRequest` 与 `SQ::canSendLoadToCache` 共同完成准入安全性：地址解析当拍
+优先尝试 store→load 转发；没有可转发值时，`canSendLoadToCache` 再决定是否允许 cache
 请求。`LQ` 的 include-self 尾快照仍保留给统一的 ROB/分支 squash 边界，不代表 load
 仍会触发 squash。
 
@@ -128,6 +221,10 @@ LQ 从 head 起按程序序扫描，选择**最老的 `READY` 且尚未广播**�
 物理 LQ head 本身已经就绪，因此语义是 oldest-ready，而不是 FIFO head-only。
 lqCDB 每周期最多广播一个 `{value, robTag, memIndex}` 到 PRF 与 ROB；它可与
 ALU/MUL/DIV 三路结果同周期并行。
+
+CDB消费只标记已广播，不释放LQ。当前释放使用拍初ROB.willCommit及队首tag匹配，
+在实际Load提交同拍pop；严格更老提交与恢复并发亦释放。满时按旧full停收，下一拍
+复用空位，三端实测15写回/16提交释放/17新分配（SPEC §44）。
 
 ## 7. 关键规格
 

@@ -3,7 +3,7 @@
 #include "../include/common.hpp"
 #include <cstdint>
 void ALU::push(uint32_t op1, uint32_t op2, Operation op, RobTag robTag,
-               bool isControl, bool keep, systemState &CPUstate) const {
+               bool isControl, bool keep, const ALUInput &input, systemState &CPUstate) const {
   // Operands and the result are uint32 bit vectors (RTL semantics).
   // Signedness is selected by the instruction: only SLT/SLTI and SRA
   // interpret the operand as int32_t; every other op is pure bit-vector
@@ -59,12 +59,19 @@ void ALU::push(uint32_t op1, uint32_t op2, Operation op, RobTag robTag,
   result.value = value;
   result.robTag = robTag;
   result.isControl = isControl;
-  for (int i = 0; i < ALU_CAP; i++)
-    if (!slotValid[i]) {
+  // Derive post-release availability from this/Input, never from the write
+  // target. This keeps SAME-cycle drain/cancel-and-refill without next reads.
+  for (int i = 0; i < ALU_CAP; i++) {
+    const bool removed = slotValid[i] && input.cdbOutput.valid &&
+                         outputBuffer[i].robTag == input.cdbOutput.robTag;
+    const bool flushed = slotValid[i] && input.squashDetect.needSquash &&
+        !ROB::isOlder(outputBuffer[i].robTag, input.squashDetect.SquashTag);
+    if (!slotValid[i] || removed || flushed) {
       CPUstate.ALUModule.outputBuffer[i] = result;
       CPUstate.ALUModule.slotValid[i] = keep;
       return;
     }
+  } // reuse the removed or flushed slot
 }
 
 uint32_t ALU::headValue() const {
@@ -130,15 +137,6 @@ void ALU::flush(uint8_t tag, systemState &CPUstate) const {
   }
 }
 void ALU::tick(const ALUInput &input, systemState &CPUstate) {
-  if (input.dispatch.valid) {
-    auto &rs = input.RSModule.integerRS[input.dispatch.rsIndex];
-    const bool keep = !input.squashDetect.needSquash ||
-                      ROB::isOlder(input.dispatch.robTag, input.squashDetect.SquashTag);
-    push(
-        static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
-        static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
-        rs.op, input.dispatch.robTag, isControlOp(rs.op), keep, CPUstate);
-  }
   // ALU writeBack: consume this unit's own grant on the CDB result.
   if (input.cdbOutput.valid) {
     remove(input.cdbOutput.robTag, CPUstate);
@@ -146,5 +144,14 @@ void ALU::tick(const ALUInput &input, systemState &CPUstate) {
   // clear the wrong ALU outputBuffer
   if (input.squashDetect.needSquash) {
     flush(input.squashDetect.SquashTag, CPUstate);
+  }
+  if (input.dispatch.valid) {
+    auto &rs = input.RSModule.integerRS[input.dispatch.rsIndex];
+    const bool keep = !input.squashDetect.needSquash ||
+                      ROB::isOlder(input.dispatch.robTag, input.squashDetect.SquashTag);
+    push(
+        static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
+        static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
+        rs.op, input.dispatch.robTag, isControlOp(rs.op), keep, input, CPUstate);
   }
 }

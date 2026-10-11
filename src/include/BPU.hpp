@@ -73,13 +73,6 @@ private:
   uint64_t jalCorrect = 0;
   uint64_t jalrTotal = 0;
   uint64_t jalrCorrect = 0;
-  // Debug-only per-PC misprediction counters (direct-mapped by pc[11:2]).
-  // Synthesis strips these along with the VERBOSE topic.
-  uint64_t missCnt[BTB_CAP] = {};
-  uint32_t missPC[BTB_CAP] = {}; // sample PC per slot (last writer wins)
-  uint8_t maxSpecTopOfRAS = 0;
-  uint8_t maxArchTopOfRAS = 0;
-  void noteMiss(uint32_t pc, bool extra, systemState &CPUstate) const;
 
   void update(uint32_t pc, bool taken, uint32_t target, uint8_t ghr, systemState &CPUstate) const;
   void updateJump(uint32_t pc, uint32_t target, bool isRet, systemState &CPUstate) const;
@@ -93,9 +86,6 @@ public:
   uint64_t getJalCorrect() const { return jalCorrect; }
   uint64_t getJalrTotal() const { return jalrTotal; }
   uint64_t getJalrCorrect() const { return jalrCorrect; }
-  uint8_t getMaxSpecTopOfRAS() const { return maxSpecTopOfRAS; }
-  uint8_t getMaxArchTopOfRAS() const { return maxArchTopOfRAS; }
-  void dumpBpMiss() const;
   PredictInfo predict(uint32_t pc) const;
 
   uint8_t snapshotCheckPoint() const;

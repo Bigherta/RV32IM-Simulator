@@ -1,5 +1,6 @@
 #include "../include/InstructBuffer.hpp"
 #include "../include/CPU.hpp"
+#include <cassert>
 #include <cstdint>
 #include <stdexcept>
 
@@ -61,14 +62,13 @@ void InstructBuffer::tick(const FQInput &input, systemState &CPUstate) {
     clear(CPUstate);
     return;
   }
-  if (input.ICacheModule.isReturnReady()) {
-    if (!input.haltFetched && !isFull()) {
-      uint32_t raw = input.ICacheModule.returnRaw();
-      uint32_t pc = input.ICacheModule.returnPC();
-      uint32_t predPC = input.ICacheModule.returnPredictPC();
-      CPUstate.FQModule.pushCache = {true, raw, pc};
-      push(raw, pc, predPC, input.ICacheModule.returnCkptId(), CPUstate);
-    }
+  if (input.returnAccepted) {
+    assert(input.ICacheModule.isReturnReady());
+    uint32_t raw = input.ICacheModule.returnRaw();
+    uint32_t pc = input.ICacheModule.returnPC();
+    uint32_t predPC = input.ICacheModule.returnPredictPC();
+    CPUstate.FQModule.pushCache = {true, raw, pc};
+    push(raw, pc, predPC, input.ICacheModule.returnCkptId(), CPUstate);
   }
   if (!isEmpty() && input.DecodeUnitModule.canAccept(input.issueValid))
     pop(CPUstate);

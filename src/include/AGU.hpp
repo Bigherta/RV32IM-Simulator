@@ -1,8 +1,8 @@
 #pragma once
 #ifndef AGU_HPP
 #define AGU_HPP
-#include "common.hpp"
 #include "RS.hpp"
+#include "common.hpp"
 struct systemState;
 struct PRF;
 struct AGUInput {
@@ -10,23 +10,23 @@ struct AGUInput {
   const RSUnit &RSModule;
   const PRF &PRFModule;
   DispatchAGUInfo dispatch;
-  AGUInput(const RSUnit &rs, const PRF &prf)
-      : RSModule(rs), PRFModule(prf) {}
+  AGUInput(const RSUnit &rs, const PRF &prf) : RSModule(rs), PRFModule(prf) {}
 };
 class AGU {
 private:
   AddressCalculateResult outputBuffer[AGU_CAP];
   bool slotValid[AGU_CAP] = {};
   void push(uint32_t op1, uint32_t op2, RobTag robTag, uint8_t memIndex,
-            bool keep, systemState &CPUstate) const;
+            bool keep, const AGUInput &input, systemState &CPUstate) const;
   void remove(uint8_t robTag, systemState &CPUstate) const;
   void flush(uint8_t tag, systemState &CPUstate) const;
+
 public:
   bool isFull() const;
   bool isEmpty() const;
   uint32_t headValue() const;
   uint8_t headRobTag() const;
   uint8_t headMemIndex() const;
-  void tick(const AGUInput&, systemState&);
+  void tick(const AGUInput &, systemState &);
 };
 #endif // AGU_HPP
