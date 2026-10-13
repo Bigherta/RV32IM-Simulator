@@ -161,6 +161,7 @@ void CPU::comb() {
   dcacheInput.squashDetect = squashDetect;
   dcacheInput.InputDCacheDataSRAMInput = {};
   dcacheInput.InputDCacheMetadataSRAMInput = {};
+  dcacheInput.fillBeat = false;
   dcacheInput.fillFire = false;
   dmemInput.request = {};
   dmemInput.replyConsumed = false;
@@ -245,44 +246,81 @@ void CPU::comb() {
     icacheDataInput.writeData[i] = icacheInput.lineReturn.data[i];
     icacheDataInput.writeMask[i] = true;
   }
-  const bool dcacheFill = DCacheModule.canFill(DMEMModule);
+  const bool dcacheFillActive = DCacheModule.canFill(DMEMModule);
+  const bool dcacheFillLast =
+      dcacheFillActive && DCacheModule.fillIsLast();
   const bool storeWrite =
       DCacheModule.isReturnReady() && DCacheModule.isHeadRequestStore();
-  auto &dataInput = dcacheInput.InputDCacheDataSRAMInput;
+  auto &dataInputs = dcacheInput.InputDCacheDataSRAMInput;
   auto &metaInput = dcacheInput.InputDCacheMetadataSRAMInput;
-  // Single-port SRAM arbitration. New requests may still queue while a head
-  // writes or waits; they do not query the SRAM until they become the head.
-  if (dcacheFill || storeWrite) {
+  // Banked data SRAMs: lookup reads all banks in parallel, a refill beat
+  // writes two adjacent word banks, and a hit Store writes the banks its bytes
+  // touch. Metadata is only written when a line completes. New requests may
+  // still queue while a head writes or waits; they do not query the SRAM
+  // until they become the head.
+  if (dcacheFillActive || storeWrite) {
     const auto &request = DCacheModule.returnRequest();
     const uint32_t addr = request.address;
     const bool store = request.op == Operation::Store;
-    dataInput.enable = true;
-    dataInput.writeEnable = true;
-    dataInput.addr = (addr >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
-    metaInput.enable = true;
-    metaInput.writeEnable = true;
-    metaInput.addr = dataInput.addr;
-    metaInput.writeMask[0] = true;
-    metaInput.writeData[0] = (addr >> DCACHE_TAG_SHIFT) | DCACHE_META_VALID |
-                             (store ? DCACHE_META_DIRTY : 0u);
-    if (dcacheFill) {
-      for (int i = 0; i < DCACHE_BLOCK_CAP; ++i) {
-        dataInput.writeData[i] = DMEMModule.reply().lineData[i];
-        dataInput.writeMask[i] = true;
-      }
-    }
-    if (store) {
-      for (int i = 0; i < 4; ++i) {
-        if (i < request.nBytes && addr + i < MEM_SIZE) {
-          const auto lane = (addr & DCACHE_OFFSET_MASK) + i;
-          dataInput.writeData[lane] =
-              (static_cast<uint32_t>(request.value) >> (i << 3)) & 0xffu;
-          dataInput.writeMask[lane] = true;
+    const uint32_t set = (addr >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
+    if (dcacheFillActive) {
+      // One 64-bit beat per cycle from the held DMEM line. A Store miss
+      // merges its bytes when their word beat arrives.
+      const uint32_t firstBank = DCacheModule.fillWordIndex();
+      for (int word = 0; word < DCACHE_FILL_WORDS_PER_BEAT; ++word) {
+        const uint32_t bank = firstBank + word;
+        auto &beat = dataInputs[bank];
+        beat.enable = true;
+        beat.writeEnable = true;
+        beat.addr = set;
+        for (int lane = 0; lane < RV32_WORD_BYTES; ++lane) {
+          beat.writeData[lane] =
+              DMEMModule.reply().lineData[(bank << RV32_WORD_BYTE_BITS) + lane];
+          beat.writeMask[lane] = true;
+        }
+        if (store) {
+          for (int i = 0; i < 4; ++i) {
+            if (i < request.nBytes && addr + i < MEM_SIZE) {
+              const uint32_t global = (addr & DCACHE_OFFSET_MASK) + i;
+              if ((global >> 2) == bank) {
+                beat.writeData[global & 3] =
+                    (static_cast<uint32_t>(request.value) >> (i << 3)) & 0xffu;
+              }
+            }
+          }
         }
       }
-    } else if (dcacheFill && !DCacheModule.isHeadCancelled() &&
-               (!squashDetect.needSquash ||
-                ROB::isOlder(request.robTag, squashDetect.SquashTag))) {
+      if (dcacheFillLast) {
+        metaInput.enable = true;
+        metaInput.writeEnable = true;
+        metaInput.addr = set;
+        metaInput.writeMask[0] = true;
+        metaInput.writeData[0] = (addr >> DCACHE_TAG_SHIFT) |
+                                 (store ? DCACHE_META_DIRTY : 0u);
+      }
+    } else {
+      // Hit Store: at most two adjacent banks in one cycle.
+      for (int i = 0; i < 4; ++i) {
+        if (i < request.nBytes && addr + i < MEM_SIZE) {
+          const uint32_t global = (addr & DCACHE_OFFSET_MASK) + i;
+          auto &bankInput = dataInputs[global >> 2];
+          bankInput.enable = true;
+          bankInput.writeEnable = true;
+          bankInput.addr = set;
+          bankInput.writeData[global & 3] =
+              (static_cast<uint32_t>(request.value) >> (i << 3)) & 0xffu;
+          bankInput.writeMask[global & 3] = true;
+        }
+      }
+      metaInput.enable = true;
+      metaInput.writeEnable = true;
+      metaInput.addr = set;
+      metaInput.writeMask[0] = true;
+      metaInput.writeData[0] = (addr >> DCACHE_TAG_SHIFT) | DCACHE_META_DIRTY;
+    }
+    if (!store && dcacheFillLast && !DCacheModule.isHeadCancelled() &&
+        (!squashDetect.needSquash ||
+         ROB::isOlder(request.robTag, squashDetect.SquashTag))) {
       uint32_t raw = 0;
       for (int i = 0; i < 4; ++i) {
         if (i < request.nBytes)
@@ -292,14 +330,17 @@ void CPU::comb() {
       lqInput.loadResp = {true, request.memIndex, request.robTag,
                          static_cast<int32_t>(raw)};
     }
-    dcacheInput.popConsume = true;
-    dcacheInput.fillFire = dcacheFill;
-    dmemInput.replyConsumed = dcacheFill;
+    dcacheInput.popConsume = storeWrite || dcacheFillLast;
+    dcacheInput.fillBeat = dcacheFillActive;
+    dcacheInput.fillFire = dcacheFillLast;
+    dmemInput.replyConsumed = dcacheFillLast;
   } else if (DCacheModule.needsLookup()) {
     const auto set = (DCacheModule.headAddr() >> DCACHE_OFFSET_BITS) &
                      DCACHE_INDEX_MASK;
-    dataInput.enable = true;
-    dataInput.addr = set;
+    for (int b = 0; b < DCACHE_WORDS_PER_LINE; ++b) {
+      dataInputs[b].enable = true;
+      dataInputs[b].addr = set;
+    }
     metaInput.enable = true;
     metaInput.addr = set;
   }
