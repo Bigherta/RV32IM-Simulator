@@ -24,8 +24,6 @@
 #include "common.hpp"
 #include <cstring>
 
-enum class FinishPhase : uint8_t { RUN, WAIT_IDLE, WRITEBACK, DONE };
-
 struct systemState {
   RSUnit RSModule;
   RAT RATModule;
@@ -48,7 +46,6 @@ struct systemState {
   FlushArbiter flushArbiter;
   FetchUnit FetchUnitModule;
   bool initialized = false;
-  FinishPhase finishPhase = FinishPhase::RUN;
 
   systemState() = default;
   systemState(Memory mem) : DMEMModule(mem), IMEMModule(mem) {}
@@ -79,7 +76,6 @@ private:
   FlushArbiter flushArbiter;
   FetchUnit FetchUnitModule;
   bool initialized = false;
-  FinishPhase finishPhase = FinishPhase::RUN;
   aluCDB cdbOfALU;
   lqCDB cdbOfLQ;
   mulCDB cdbOfMul; // MUL 专用结果总线（cdbOfALU/cdbOfLQ/cdbOfMul

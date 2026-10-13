@@ -6,7 +6,8 @@
 struct systemState;
 
 struct DMEMInput {
-  DMEMRequest request;
+  DMEMRequest request{};
+  bool replyConsumed = false;
   std::array<uint8_t, DCACHE_BLOCK_CAP> completedReadLine{};
   DMEMInput() = default;
 };
@@ -18,11 +19,12 @@ class DMEM : public Memory {
   bool writeBusy = false;
 
   ReadRequest readExecute = {};
-  MemReply readOutputBuffer = {};
   WriteRequest writeExecute = {};
-  void writeLine(uint32_t addr, const uint8_t* lineData, systemState &CPUstate) const;
+  void writeLine(uint32_t addr, const uint8_t *lineData,
+                 systemState &CPUstate) const;
 
 public:
+  MemReply readOutputBuffer = {};
   DMEM() = default;
   DMEM(const Memory &mem) : Memory(mem) {}
   DMEM(const DMEM &) = default;
@@ -32,7 +34,7 @@ public:
   bool isReplyReady() const;
   // Read-only access to the completed request (readOutputBuffer). Used by the
   // DCache to relay the response; no execution-logic changes.
-  const MemReply& reply() const { return readOutputBuffer; }
+  const MemReply &reply() const { return readOutputBuffer; }
   void tick(const DMEMInput &, systemState &);
   void snapshotFrom(const DMEM &other);
   std::array<uint8_t, DCACHE_BLOCK_CAP> sampleReadCompletion() const;

@@ -74,9 +74,9 @@ void CPU::comb() {
   memcpy(&flushArbiter, &CPUstate.flushArbiter, sizeof(flushArbiter));
   memcpy(&FetchUnitModule, &CPUstate.FetchUnitModule, sizeof(FetchUnitModule));
   initialized = CPUstate.initialized;
-  finishPhase = CPUstate.finishPhase;
   DMEMModule.snapshotFrom(CPUstate.DMEMModule);
-  DCacheModule.snapshotFrom(CPUstate.DCacheModule);
+  // The SRAM-backed lookup reads this old snapshot, like ICache.
+  memcpy(&DCacheModule, &CPUstate.DCacheModule, sizeof(DCacheModule));
   squashDetect = CPUstate.flushArbiter.arbitResult();
   isarbInput.squashDetect = squashDetect;
   issuePacket = IssueArbiter::build(isarbInput);
@@ -86,8 +86,9 @@ void CPU::comb() {
   const bool fqReady = !squashDetect.needSquash && FQModule.canAccept(fqPop);
   const bool popConsume = fqReady && ICacheModule.isReturnReady() &&
                           !FetchUnitModule.isHaltFetched();
-  const bool haltSignal = FetchUnitModule.isHaltFetched() ||
-                          (popConsume && ICacheModule.returnRaw() == 0x0ff00513);
+  const bool haltSignal =
+      FetchUnitModule.isHaltFetched() ||
+      (popConsume && ICacheModule.returnRaw() == 0x0ff00513);
   // Build the accepted fetch before copying it into any consumer input.
   const LineReturn lineReturn = IMEMModule.getReturn();
   const auto refill = ICacheModule.selectRefill(lineReturn);
@@ -97,12 +98,11 @@ void CPU::comb() {
   const bool icacheHit = ICacheModule.hit(pc);
   const bool refillHit = fillFire && ICache::refillHit(pc, lineReturn);
   const bool readBlocked = fillFire && icacheHit && !refillHit;
-  const bool memCanAccept =
-      (!ICacheModule.isRequestFull() || popConsume) &&
-      (!IMEMModule.isRequestFull() || refillHit) && !readBlocked;
-  fetchDecision = FetchDecision::build(
-      BPUModule, pc, squashDetect, haltSignal, fqReady,
-      memCanAccept && initialized);
+  const bool memCanAccept = (!ICacheModule.isRequestFull() || popConsume) &&
+                            (!IMEMModule.isRequestFull() || refillHit) &&
+                            !readBlocked;
+  fetchDecision = FetchDecision::build(BPUModule, pc, squashDetect, haltSignal,
+                                       fqReady, memCanAccept && initialized);
   {
     fetchUnitInput.squashDetect = squashDetect;
     fetchUnitInput.fetchDecision = fetchDecision;
@@ -116,9 +116,8 @@ void CPU::comb() {
     if (icacheHit || refillHit)
       imemFetch.valid = false; // hit: no IMEM line fetch needed
     else if (fetchDecision.valid)
-      imemFetch.pc =
-          fetchDecision.pc &
-          ~ICACHE_OFFSET_MASK; // line-aligned block addr for IMEM
+      imemFetch.pc = fetchDecision.pc &
+                     ~ICACHE_OFFSET_MASK; // line-aligned block addr for IMEM
     imemInput.squashDetect = squashDetect;
     imemInput.fetchDecision = imemFetch;
     imemInput.lineConsumed = fillFire;
@@ -136,10 +135,9 @@ void CPU::comb() {
   cdbOfLQ = lqCDB::build(LQModule, squashDetect);
   cdbOfMul = mulCDB::build(MULModule, squashDetect);
   cdbOfDiv = divCDB::build(DIVModule, squashDetect);
-  DispatchBus dispatchBus =
-      DispatchArbiter::arbitrate(RSModule, ALUModule, AGUModule, BRUModule,
-                                 MULModule, DIVModule, PRFModule, squashDetect,
-                                 cdbOfMul, cdbOfDiv, true);
+  DispatchBus dispatchBus = DispatchArbiter::arbitrate(
+      RSModule, ALUModule, AGUModule, BRUModule, MULModule, DIVModule,
+      PRFModule, squashDetect, cdbOfMul, cdbOfDiv, true);
   aguInput.squashDetect = squashDetect;
   aluInput.squashDetect = squashDetect;
   aluInput.cdbOutput = cdbOfALU;
@@ -160,12 +158,12 @@ void CPU::comb() {
   auto memDispatch = MemArbiter::arbitrate(LQModule, SQModule, ROBModule,
                                            DCacheModule, squashDetect);
   dcacheInput.decision = memDispatch;
-  dcacheInput.flushRequested = finishPhase == FinishPhase::WRITEBACK;
-  dcacheInput.setSnapshot = CPUstate.DCacheModule.sampleSet(memDispatch);
-  // DMEM now only ever receives requests forwarded by the DCache: the DCache
-  // emits its dual-channel pulse (registered in the live module at the end of
-  // the previous tick, mirrored into the snapshot by snapshotFrom).
-  dmemInput.request = DCacheModule.forwardRequest();
+  dcacheInput.squashDetect = squashDetect;
+  dcacheInput.InputDCacheDataSRAMInput = {};
+  dcacheInput.InputDCacheMetadataSRAMInput = {};
+  dcacheInput.fillFire = false;
+  dmemInput.request = {};
+  dmemInput.replyConsumed = false;
   dmemInput.completedReadLine = CPUstate.DMEMModule.sampleReadCompletion();
   lqInput.decision = memDispatch;
   sqInput.decision = memDispatch;
@@ -216,9 +214,24 @@ void CPU::comb() {
   bpuInput.cdbOut = cdbOfALU;
   bpuInput.fetchInfo = scanJump(FQModule.getLastPush());
   lqInput.cdbOutput = cdbOfLQ;
-  // All load responses now come from the DCache (it is DMEM's sole client;
-  // DMEM never receives Operation::Load anymore).
-  lqInput.loadResp = DCacheModule.loadResp(squashDetect);
+  // LQ already reserves the identity on memDispatch and accepts a response
+  // pulse without a separate ready port. Discard cancelled Load responses,
+  // but still release their completed DCache requests. Store hits are not
+  // completion events: only an actual Store write may release those entries.
+  lqInput.loadResp = {};
+  dcacheInput.popConsume = false;
+  if (DCacheModule.isReturnReady()) {
+    const auto &request = DCacheModule.returnRequest();
+    if (request.op == Operation::Load) {
+      dcacheInput.popConsume = true;
+      if (!DCacheModule.isHeadCancelled() &&
+          (!squashDetect.needSquash ||
+           ROB::isOlder(request.robTag, squashDetect.SquashTag))) {
+        lqInput.loadResp = {true, request.memIndex, request.robTag,
+                            static_cast<int32_t>(DCacheModule.returnRaw())};
+      }
+    }
+  }
 
   // SRAM combination logic
   icacheDataInput.enable = icacheInput.lineReturn.valid || fetchDecision.valid;
@@ -232,22 +245,81 @@ void CPU::comb() {
     icacheDataInput.writeData[i] = icacheInput.lineReturn.data[i];
     icacheDataInput.writeMask[i] = true;
   }
-
+  const bool dcacheFill = DCacheModule.canFill(DMEMModule);
+  const bool storeWrite =
+      DCacheModule.isReturnReady() && DCacheModule.isHeadRequestStore();
+  auto &dataInput = dcacheInput.InputDCacheDataSRAMInput;
+  auto &metaInput = dcacheInput.InputDCacheMetadataSRAMInput;
+  // Single-port SRAM arbitration. New requests may still queue while a head
+  // writes or waits; they do not query the SRAM until they become the head.
+  if (dcacheFill || storeWrite) {
+    const auto &request = DCacheModule.returnRequest();
+    const uint32_t addr = request.address;
+    const bool store = request.op == Operation::Store;
+    dataInput.enable = true;
+    dataInput.writeEnable = true;
+    dataInput.addr = (addr >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
+    metaInput.enable = true;
+    metaInput.writeEnable = true;
+    metaInput.addr = dataInput.addr;
+    metaInput.writeMask[0] = true;
+    metaInput.writeData[0] = (addr >> DCACHE_TAG_SHIFT) | DCACHE_META_VALID |
+                             (store ? DCACHE_META_DIRTY : 0u);
+    if (dcacheFill) {
+      for (int i = 0; i < DCACHE_BLOCK_CAP; ++i) {
+        dataInput.writeData[i] = DMEMModule.reply().lineData[i];
+        dataInput.writeMask[i] = true;
+      }
+    }
+    if (store) {
+      for (int i = 0; i < 4; ++i) {
+        if (i < request.nBytes && addr + i < MEM_SIZE) {
+          const auto lane = (addr & DCACHE_OFFSET_MASK) + i;
+          dataInput.writeData[lane] =
+              (static_cast<uint32_t>(request.value) >> (i << 3)) & 0xffu;
+          dataInput.writeMask[lane] = true;
+        }
+      }
+    } else if (dcacheFill && !DCacheModule.isHeadCancelled() &&
+               (!squashDetect.needSquash ||
+                ROB::isOlder(request.robTag, squashDetect.SquashTag))) {
+      uint32_t raw = 0;
+      for (int i = 0; i < 4; ++i) {
+        if (i < request.nBytes)
+          raw |= uint32_t(DMEMModule.reply().lineData[(addr & DCACHE_OFFSET_MASK) + i])
+                 << (i << 3);
+      }
+      lqInput.loadResp = {true, request.memIndex, request.robTag,
+                         static_cast<int32_t>(raw)};
+    }
+    dcacheInput.popConsume = true;
+    dcacheInput.fillFire = dcacheFill;
+    dmemInput.replyConsumed = dcacheFill;
+  } else if (DCacheModule.needsLookup()) {
+    const auto set = (DCacheModule.headAddr() >> DCACHE_OFFSET_BITS) &
+                     DCACHE_INDEX_MASK;
+    dataInput.enable = true;
+    dataInput.addr = set;
+    metaInput.enable = true;
+    metaInput.addr = set;
+  }
+  if (DCacheModule.needsMemoryRead() && !DMEMModule.isReadBusy() &&
+      !DMEMModule.isReplyReady()) {
+    dmemInput.request.readValid = true;
+    dmemInput.request.read.address = DCacheModule.headAddr() & ~DCACHE_OFFSET_MASK;
+    dmemInput.request.read.remainCycle = MEM_LATENCY;
+  }
+  if (DCacheModule.needsMemoryWrite() && !DMEMModule.isWriteBusy()) {
+    dmemInput.request.writeValid = true;
+    dmemInput.request.write.address = DCacheModule.victimAddr();
+    dmemInput.request.write.remainCycle = MEM_LATENCY;
+    for (int i = 0; i < DCACHE_BLOCK_CAP; ++i)
+      dmemInput.request.write.lineData[i] = DCacheModule.victimByte(i);
+  }
+  dcacheInput.memoryRequest = dmemInput.request;
 }
 
 void CPU::clock() {
-  // CPU-level finish state samples the same old snapshot as every module.
-  auto nextPhase = finishPhase;
-  if (initialized) {
-    if (finishPhase == FinishPhase::RUN && ROBModule.isHaltCommitted() && SQModule.isEmpty())
-      nextPhase = FinishPhase::WAIT_IDLE;
-    else if (finishPhase == FinishPhase::WAIT_IDLE && DCacheModule.isIdle() &&
-             !DMEMModule.isReadBusy() && !DMEMModule.isWriteBusy() &&
-             !DCacheModule.hasLoadResponse() && !DMEMModule.isReplyReady())
-      nextPhase = FinishPhase::WRITEBACK;
-    else if (finishPhase == FinishPhase::WRITEBACK && DCacheModule.isFlushDone())
-      nextPhase = FinishPhase::DONE;
-  }
   IMEMModule.tick(imemInput, CPUstate);
   FetchUnitModule.tick(fetchUnitInput, CPUstate);
   ICacheModule.tick(icacheInput, CPUstate);
@@ -269,7 +341,6 @@ void CPU::clock() {
   flushArbiter.tick(flarbInput, CPUstate);
   DecodeUnitModule.tick(decodeInput, CPUstate);
   CPUstate.initialized = true;
-  CPUstate.finishPhase = nextPhase;
 }
 
 void CPU::run() {
@@ -294,7 +365,8 @@ void CPU::run() {
     const bool haltBefore = ROBModule.isHaltCommitted();
     this->clock();
     ++clock;
-    if (CPUstate.ROBModule.isTrapCommitted()) throw std::runtime_error("illegal instruction committed");
+    if (CPUstate.ROBModule.isTrapCommitted())
+      throw std::runtime_error("illegal instruction committed");
     const uint32_t headAfter =
         static_cast<uint32_t>(CPUstate.ROBModule.getHead());
     const bool haltAfter = CPUstate.ROBModule.isHaltCommitted();
@@ -309,13 +381,8 @@ void CPU::run() {
         ipcFrozen = true;
       }
     }
-    // Halt drain: once halt has committed and the pipeline is empty, the
-    // machine must still wait for every committed store to leave the SQ and
-    // reach the DCache (SQ empty), and for any in-flight cache refill /
-    // writeback to finish (DCache idle, DMEM both ports idle). Without this,
-    // a store committed right before halt could be truncated when the tail
-    // fills span the halt window (SQ/park store never lands).
-    finish = CPUstate.finishPhase == FinishPhase::DONE;
+    // User contract: stop at HALT commit, without SQ/cache/DMEM drain.
+    finish = haltAfter;
   }
   if (debug::enabled(debug::TOPIC_CLOCK)) {
     debug::print("clock: %llu\n", clock);
@@ -368,10 +435,11 @@ void CPU::run() {
     debug::print("dcache: hits=%llu misses=%llu total=%llu hit-rate=%.2f%%\n",
                  dh, dm, dt,
                  dt ? 100.0 * static_cast<double>(dh) / static_cast<double>(dt)
-                     : 0.0);
+                    : 0.0);
   }
   const uint32_t halt_x10 = static_cast<uint32_t>(
-      PRFModule.getValue(RATModule.readRAT(ROBModule.getHaltRd())));
+      CPUstate.PRFModule.getValue(
+          CPUstate.RATModule.readRAT(CPUstate.ROBModule.getHaltRd())));
   const bool print_full_x10 = std::getenv("RESULT_FULL") != nullptr;
   std::cout << std::dec << (print_full_x10 ? halt_x10 : (halt_x10 & 0xFF))
             << std::endl;

@@ -10,12 +10,12 @@ template <uint32_t N> consteval int log2Pow2() {
 }
 
 using RobTag = uint8_t;
-constexpr int INTEGERRS_CAP = 4;
-constexpr int MULTIPLYRS_CAP = 2;
+constexpr int INTEGERRS_CAP = 2;
+constexpr int MULTIPLYRS_CAP = 1;
 constexpr int DIVIDERS_CAP = 1;
-constexpr int STORERS_CAP = 4;
-constexpr int LOADRS_CAP = 4;
-constexpr int BRANCHRS_CAP = 4;
+constexpr int STORERS_CAP = 2;
+constexpr int LOADRS_CAP = 2;
+constexpr int BRANCHRS_CAP = 2;
 constexpr int LQ_CAP = 8;
 constexpr int SQ_CAP = 8;
 constexpr int LQ_MASK = LQ_CAP - 1;
@@ -49,8 +49,8 @@ inline constexpr uint8_t robNextTag(RobTag tag) {
 static_assert(ROB_CAP >= 2, "ROB needs at least two slots for age ordering");
 static_assert(ROB_TAG_WIDTH <= 8,
               "RobTag is uint8_t: packed tag must fit in 8 bits");
-constexpr int FQ_CAP = 4;
-constexpr int IQ_CAP = 4;
+constexpr int FQ_CAP = 2;
+constexpr int IQ_CAP = 2;
 constexpr int FQ_SEQ_MASK = (FQ_CAP << 1) - 1;
 constexpr int IQ_SEQ_MASK = (IQ_CAP << 1) - 1;
 constexpr int REGISTER_CAP = 32;
@@ -77,7 +77,7 @@ static_assert((1 << GHR_WIDTH) >= BHT_CAP &&
                   (1 << GHR_WIDTH) >= SELECTOR_CAP,
               "GHR must cover the direction-table index width");
 constexpr uint16_t HISTORY_MASK = (1u << GHR_WIDTH) - 1;
-constexpr int RAS_CAP = 32;
+constexpr int RAS_CAP = 16;
 static_assert(RAS_CAP > 0 && RAS_CAP <= 0xFF,
               "RAS top is an 8-bit non-wrapping depth");
 constexpr uint8_t PRF_CAP = ROB_CAP + REGISTER_CAP;
@@ -157,8 +157,10 @@ constexpr int RV32_WORD_BITS = RV32_WORD_BYTES << 3;
 constexpr int RV32_WORD_BYTE_BITS =
     std::bit_width(static_cast<uint32_t>(RV32_WORD_BYTES - 1));
 
-// ICache geometry: direct-mapped, so each set is one SRAM row.
-constexpr int ICACHE_BLOCK_CAP = 64; // 64 B per line
+// Cache geometry. Both caches are direct-mapped: each set is one SRAM row.
+// Capacity is derived from line size and set count to keep the address split
+// consistent with the configured storage.
+constexpr int ICACHE_BLOCK_CAP = 64; // bytes per line
 constexpr int NUM_OF_ICACHE_SETS = 16;
 static_assert(ICACHE_BLOCK_CAP >= RV32_WORD_BYTES &&
                   std::has_single_bit(static_cast<uint32_t>(ICACHE_BLOCK_CAP)),
@@ -172,6 +174,7 @@ constexpr uint32_t ICACHE_OFFSET_MASK = ICACHE_BLOCK_CAP - 1u;
 constexpr int ICACHE_INDEX_BITS =
     std::bit_width(static_cast<uint32_t>(NUM_OF_ICACHE_SETS - 1));
 constexpr uint32_t ICACHE_INDEX_MASK = NUM_OF_ICACHE_SETS - 1u;
+constexpr int ICACHE_CAPACITY_BYTES = ICACHE_BLOCK_CAP << ICACHE_INDEX_BITS;
 constexpr int ICACHE_TAG_SHIFT = ICACHE_OFFSET_BITS + ICACHE_INDEX_BITS;
 constexpr int ICACHE_TAG_WIDTH = RV32_WORD_BITS - ICACHE_TAG_SHIFT;
 constexpr int ICACHE_LINE_BITS = ICACHE_BLOCK_CAP << 3;
@@ -181,6 +184,35 @@ constexpr int ICACHE_WORD_BITS = ICACHE_WORDS_PER_LINE > 1
     ? std::bit_width(static_cast<uint32_t>(ICACHE_WORDS_PER_LINE - 1)) : 1;
 static_assert(ICACHE_TAG_WIDTH > 0 && ICACHE_TAG_WIDTH <= RV32_WORD_BITS,
               "ICache address split must leave a valid tag width");
+
+constexpr int DCACHE_BLOCK_CAP = 64; // bytes per line
+constexpr int NUM_OF_DCACHE_SETS = 128;
+static_assert(DCACHE_BLOCK_CAP >= RV32_WORD_BYTES &&
+                  std::has_single_bit(static_cast<uint32_t>(DCACHE_BLOCK_CAP)),
+              "DCache line size must be a power of two holding an RV32 word");
+static_assert(NUM_OF_DCACHE_SETS > 0 &&
+                  std::has_single_bit(static_cast<uint32_t>(NUM_OF_DCACHE_SETS)),
+              "DCache set count must be a positive power of two");
+constexpr int DCACHE_OFFSET_BITS =
+    std::bit_width(static_cast<uint32_t>(DCACHE_BLOCK_CAP - 1));
+constexpr uint32_t DCACHE_OFFSET_MASK = DCACHE_BLOCK_CAP - 1u;
+constexpr int DCACHE_INDEX_BITS =
+    std::bit_width(static_cast<uint32_t>(NUM_OF_DCACHE_SETS - 1));
+constexpr uint32_t DCACHE_INDEX_MASK = NUM_OF_DCACHE_SETS - 1u;
+constexpr int DCACHE_CAPACITY_BYTES = DCACHE_BLOCK_CAP << DCACHE_INDEX_BITS;
+constexpr int DCACHE_TAG_SHIFT = DCACHE_OFFSET_BITS + DCACHE_INDEX_BITS;
+constexpr int DCACHE_TAG_WIDTH = RV32_WORD_BITS - DCACHE_TAG_SHIFT;
+constexpr int DCACHE_LINE_BITS = DCACHE_BLOCK_CAP << 3;
+static_assert(DCACHE_TAG_WIDTH > 0 && DCACHE_TAG_WIDTH <= RV32_WORD_BITS,
+              "DCache address split must leave a valid tag width");
+// Metadata SRAM word: low tag bits, followed by valid and dirty.
+constexpr int DCACHE_META_BITS = DCACHE_TAG_WIDTH + 2;
+static_assert(DCACHE_META_BITS <= RV32_WORD_BITS,
+              "DCache metadata must fit one SRAM lane");
+constexpr uint32_t DCACHE_META_VALID = 1u << DCACHE_TAG_WIDTH;
+constexpr uint32_t DCACHE_META_DIRTY = 1u << (DCACHE_TAG_WIDTH + 1);
+constexpr uint32_t DCACHE_META_TAG_MASK = DCACHE_META_VALID - 1u;
+
 constexpr int REQUEST_CAP = 4;
 constexpr int CKPT_LIVE_MAX =
     ROB_CAP + REQUEST_CAP + FQ_CAP + IQ_CAP;
@@ -190,35 +222,7 @@ static_assert(CKPT_CAP >= CKPT_LIVE_MAX,
               "checkpoint IDs must cover ROB + ICache + FQ + IQ");
 static_assert(CKPT_CAP <= (1 << 6),
               "checkpoint IDs must fit the retained 6-bit carrier");
-constexpr int NUM_OF_DCACHE_WAYS = 1;
 constexpr int MEM_LATENCY = 20;
-// DCache geometry. The set count retains its compile-time stress override;
-// all address fields and masks are derived from the basic configuration.
-#ifndef NUM_OF_DCACHE_SETS
-#define NUM_OF_DCACHE_SETS 128
-#endif
-constexpr int DCACHE_BLOCK_CAP = 64;
-static_assert(DCACHE_BLOCK_CAP >= RV32_WORD_BYTES &&
-                  std::has_single_bit(static_cast<uint32_t>(DCACHE_BLOCK_CAP)),
-              "DCache line size must be a power of two holding an RV32 word");
-static_assert(NUM_OF_DCACHE_SETS > 0 &&
-                  std::has_single_bit(static_cast<uint32_t>(NUM_OF_DCACHE_SETS)),
-              "DCache set count must be a positive power of two");
-static_assert(NUM_OF_DCACHE_WAYS == 1 || NUM_OF_DCACHE_WAYS == 4,
-              "DCache supports direct mapping or four-way tree-PLRU");
-constexpr int DCACHE_OFFSET_BITS =
-    std::bit_width(static_cast<uint32_t>(DCACHE_BLOCK_CAP - 1));
-constexpr uint32_t DCACHE_OFFSET_MASK = DCACHE_BLOCK_CAP - 1u;
-constexpr int DCACHE_INDEX_BITS =
-    std::bit_width(static_cast<uint32_t>(NUM_OF_DCACHE_SETS - 1));
-constexpr uint32_t DCACHE_INDEX_MASK = NUM_OF_DCACHE_SETS - 1u;
-constexpr int DCACHE_TAG_SHIFT = DCACHE_OFFSET_BITS + DCACHE_INDEX_BITS;
-constexpr int DCACHE_TAG_WIDTH = RV32_WORD_BITS - DCACHE_TAG_SHIFT;
-constexpr int DCACHE_WAY_BITS =
-    std::bit_width(static_cast<uint32_t>(NUM_OF_DCACHE_WAYS - 1));
-constexpr int DCACHE_PLRU_BITS = NUM_OF_DCACHE_WAYS - 1;
-static_assert(DCACHE_TAG_WIDTH > 0 && DCACHE_TAG_WIDTH <= RV32_WORD_BITS,
-              "DCache address split must leave a valid tag width");
 
 enum class ValueState {
   NOTREADY,

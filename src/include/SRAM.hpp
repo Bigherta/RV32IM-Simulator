@@ -7,7 +7,7 @@
 
 // sram_fakeram 的主树模型：单端口同步读写，addr 为字索引。
 // tick() 只在宿主时序阶段调用一次；读结果在该时钟沿后可用。
-// 写粒度受 32 位 lane 限制；禁用/写操作不会产生新的有效读结果。
+// 写粒度受 32 位 lane 限制；无使能/写操作不会产生新的有效读结果。
 
 template <std::size_t DEPTH, std::size_t WIDTH, std::size_t WRITE_GRANULARITY = WIDTH>
 class SRAM {

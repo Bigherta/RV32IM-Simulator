@@ -36,19 +36,20 @@ std::array<uint8_t, DCACHE_BLOCK_CAP> DMEM::sampleReadCompletion() const {
 }
 
 void DMEM::tick(const DMEMInput &input, systemState &CPUstate) {
-  // claim the pre-computed mem request (read = comb phase decided it)
-    // read
-    if (input.request.readValid  && !isReadBusy()) {
-      CPUstate.DMEMModule.readExecute = input.request.read;
-      CPUstate.DMEMModule.readBusy = true;
-    }
-    // write
-    if (input.request.writeValid && !isWriteBusy()) {
-      CPUstate.DMEMModule.writeExecute = input.request.write;
-      CPUstate.DMEMModule.writeBusy = true;
-    }
-  // output stage: consume the previous cycle's reply
-  if (isReplyReady()) {
+  // Independent ports accept at most one request each from the old state.
+  // Latency belongs to DMEM, not an unchecked caller-provided countdown.
+  if (input.request.readValid && !isReadBusy() && !isReplyReady()) {
+    CPUstate.DMEMModule.readExecute = input.request.read;
+    CPUstate.DMEMModule.readExecute.remainCycle = MEM_LATENCY;
+    CPUstate.DMEMModule.readBusy = true;
+  }
+  if (input.request.writeValid && !isWriteBusy()) {
+    CPUstate.DMEMModule.writeExecute = input.request.write;
+    CPUstate.DMEMModule.writeExecute.remainCycle = MEM_LATENCY;
+    CPUstate.DMEMModule.writeBusy = true;
+  }
+  // Hold the reply while DCache waits for a writeback or SRAM write port.
+  if (isReplyReady() && input.replyConsumed) {
     CPUstate.DMEMModule.readBufferValid = false;
   }
   // execution stage: this=snapshot reads own registers (hardware FSM),
