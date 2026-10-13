@@ -1,9 +1,9 @@
 # RV32IM Out-of-Order Processor Simulator
 
-> **2026-10-13双树D$同步完成**：128×512bit data SRAM＋128×21bit metadata SRAM，
-> RequestBuffer保留，队首串行处理，脏行替换支持外存读写并行。HALT提交立即停机，
-> 不排空。两软件Release/`_DEBUG`各18 ISA＋6 IPC结果/周期/退休数及保留统计全等，
-> 严格匹配活动表（clock合计12,987,988/759,991）。RTL尚未同步本次D$与停机时序。
+> **2026-10-13双树D$8拍回填/valid寄存器**：16个128×32bit data SRAM＋128×20bit tag/dirty SRAM，
+> valid独立为128项寄存器数组，查询沿采样；每拍写两个相邻bank，末拍更新tag/dirty和valid并完成请求。DMEM整行协议和20拍延迟不变；
+> RequestBuffer、并行脏逐出及HALT立即停机保持。两软件Release/`_DEBUG`各18 ISA＋6 IPC
+> 当前四构建结果/周期/退休数及共有统计全等，活动clock合计13,041,323/844,639。RTL结构已同步；本次24镜像三端整核回归重新运行中，golden表不变。
 
 周期级（cycle-accurate）RISC-V **乱序执行处理器仿真器**。以 C++20 对 Tomasulo 风格微架构
 （重命名 / 物理寄存器堆 / 重排序缓冲 / 保留站）逐周期建模，并按**可综合硬件纪律**书写：

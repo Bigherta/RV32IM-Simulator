@@ -23,8 +23,10 @@ void DCache::pushRequest(const MemRequest &request,
 uint32_t DCache::readRaw() const {
   uint32_t raw = 0;
   for (int i = 0; i < 4; ++i) {
-    if (i < readBytes)
-      raw |= datas.readLane(readLaneIndex + i) << (i << 3);
+    if (i < readBytes) {
+      const uint32_t lane = readLaneIndex + i;
+      raw |= datas[lane >> 2].readLane(lane & 3) << (i << 3);
+    }
   }
   return raw;
 }
@@ -32,19 +34,31 @@ uint32_t DCache::readRaw() const {
 void DCache::tick(const DCacheInput &input, systemState &CPUstate) {
   static_assert(REQUEST_CAP > 0 && REQUEST_CAP <= 128 &&
                 (REQUEST_CAP & (REQUEST_CAP - 1)) == 0);
+  static_assert(DCACHE_WORDS_PER_LINE > 0 &&
+                DCACHE_WORDS_PER_LINE <= DCACHE_BLOCK_CAP);
   // All eligibility comes from old state/Input; never read the write target.
+  // A refill beat writes a pair of banks; only the last beat completes.
+  if (input.fillBeat)
+    assert(canFill(input.DMEMModule));
+  if (input.fillFire)
+    assert(input.fillBeat && fillIsLast() && canFill(input.DMEMModule));
   const bool readConsumed = input.popConsume && headReadReady();
   if (input.popConsume) {
     assert(isReturnReady() || (input.fillFire && canFill(input.DMEMModule)));
     pop(CPUstate);
     CPUstate.DCacheModule.memoryReadSent = false;
     CPUstate.DCacheModule.memoryWriteSent = false;
+    CPUstate.DCacheModule.fillWord = 0;
   } else {
     if (input.memoryRequest.readValid && !input.DMEMModule.isReadBusy() &&
         !input.DMEMModule.isReplyReady())
       CPUstate.DCacheModule.memoryReadSent = true;
     if (input.memoryRequest.writeValid && !input.DMEMModule.isWriteBusy())
       CPUstate.DCacheModule.memoryWriteSent = true;
+    if (input.fillBeat) {
+      assert(!fillIsLast());
+      CPUstate.DCacheModule.fillWord = fillWord + DCACHE_FILL_WORDS_PER_BEAT;
+    }
   }
   // A read's metadata/data are used only in its return cycle. Miss payload is
   // saved before any later SRAM access, including writes with undefined output.
@@ -58,32 +72,58 @@ void DCache::tick(const DCacheInput &input, systemState &CPUstate) {
     if (!readConsumed) {
       const auto meta = metadata.readLane(0);
       CPUstate.DCacheModule.RequestBuffer[readIndex].tag =
-          meta & DCACHE_META_TAG_MASK;
+          readLineValid ? (meta & DCACHE_META_TAG_MASK) : 0u;
       CPUstate.DCacheModule.RequestBuffer[readIndex].lineValid =
-          (meta & DCACHE_META_VALID) != 0;
+          readLineValid;
       CPUstate.DCacheModule.RequestBuffer[readIndex].lineDirty =
-          (meta & DCACHE_META_DIRTY) != 0;
+          readLineValid && (meta & DCACHE_META_DIRTY) != 0;
       if (hit) {
         CPUstate.DCacheModule.RequestBuffer[readIndex].raw = readRaw();
         CPUstate.DCacheModule.RequestBuffer[readIndex].valid = true;
       } else {
         CPUstate.DCacheModule.RequestBuffer[readIndex].needReadMemory = true;
         for (int i = 0; i < DCACHE_BLOCK_CAP; ++i)
-          CPUstate.DCacheModule.victimLine[i] = datas.readLane(i);
+          CPUstate.DCacheModule.victimLine[i] =
+              datas[i >> 2].readLane(i & 3);
       }
     }
   }
 
-  const auto &dataInput = input.InputDCacheDataSRAMInput;
+  const auto &dataInputs = input.InputDCacheDataSRAMInput;
   const auto &metaInput = input.InputDCacheMetadataSRAMInput;
-  const bool readFire = dataInput.enable && !dataInput.writeEnable &&
-                        metaInput.enable && !metaInput.writeEnable;
+  if (input.fillFire) {
+    const auto set = (headAddr() >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
+    CPUstate.DCacheModule.validBits[set] = true;
+  }
+  if (input.fillBeat) {
+    assert((fillWord & (DCACHE_FILL_WORDS_PER_BEAT - 1)) == 0);
+    assert(fillWord + DCACHE_FILL_WORDS_PER_BEAT <= DCACHE_WORDS_PER_LINE);
+    for (int b = 0; b < DCACHE_WORDS_PER_LINE; ++b) {
+      const bool selected = b >= fillWord &&
+                            b < fillWord + DCACHE_FILL_WORDS_PER_BEAT;
+      assert(dataInputs[b].enable == selected);
+      assert(!selected || dataInputs[b].writeEnable);
+      for (int lane = 0; lane < RV32_WORD_BYTES; ++lane)
+        assert(!selected || dataInputs[b].writeMask[lane]);
+    }
+    assert(metaInput.enable == input.fillFire);
+    assert(!input.fillFire || (metaInput.writeEnable && input.popConsume));
+  }
+  bool allBanksRead = metaInput.enable && !metaInput.writeEnable;
+  for (int b = 0; b < DCACHE_WORDS_PER_LINE; ++b)
+    allBanksRead = allBanksRead && dataInputs[b].enable &&
+                   !dataInputs[b].writeEnable;
+  const bool readFire = allBanksRead;
   if (readFire) {
     assert(needsLookup());
+    assert(!input.fillBeat);
     const auto &req = RequestBuffer[head].request;
     const auto set = (req.address >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
-    assert(dataInput.addr == set && metaInput.addr == set);
+    assert(metaInput.addr == set);
+    for (int b = 0; b < DCACHE_WORDS_PER_LINE; ++b)
+      assert(dataInputs[b].addr == set);
     CPUstate.DCacheModule.readIndex = head;
+    CPUstate.DCacheModule.readLineValid = validBits[set];
     CPUstate.DCacheModule.readLaneIndex = req.address & DCACHE_OFFSET_MASK;
     CPUstate.DCacheModule.readBytes = req.nBytes;
   }
@@ -111,7 +151,8 @@ void DCache::tick(const DCacheInput &input, systemState &CPUstate) {
     pushRequest(req, CPUstate);
   }
 
-  datas.tick(input.InputDCacheDataSRAMInput, CPUstate.DCacheModule.datas);
+  for (int b = 0; b < DCACHE_WORDS_PER_LINE; ++b)
+    datas[b].tick(dataInputs[b], CPUstate.DCacheModule.datas[b]);
   metadata.tick(metaInput, CPUstate.DCacheModule.metadata);
   CPUstate.DCacheModule.readValid = readFire;
   CPUstate.DCacheModule.count = count +
