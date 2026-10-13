@@ -1,5 +1,10 @@
 # RV32IM Out-of-Order Processor Simulator
 
+> **2026-10-13双树D$同步完成**：128×512bit data SRAM＋128×21bit metadata SRAM，
+> RequestBuffer保留，队首串行处理，脏行替换支持外存读写并行。HALT提交立即停机，
+> 不排空。两软件Release/`_DEBUG`各18 ISA＋6 IPC结果/周期/退休数及保留统计全等，
+> 严格匹配活动表（clock合计12,987,988/759,991）。RTL尚未同步本次D$与停机时序。
+
 周期级（cycle-accurate）RISC-V **乱序执行处理器仿真器**。以 C++20 对 Tomasulo 风格微架构
 （重命名 / 物理寄存器堆 / 重排序缓冲 / 保留站）逐周期建模，并按**可综合硬件纪律**书写：
 跨模块信息走“周期初快照 + 组合总线”，20个时序模块的tick只写CPUstate目标，查询
@@ -28,7 +33,7 @@
  FetchDecision ───► │ FetchUnit(PC/halt) → ICache → IMEM     │
   (Tournament+BTB+RAS │      │  1KB SRAM      20 周期主存回填   │
    预测 + 预译码)    │      ▼                                  │
-                     │ FetchQueue(FQ,4) ───► DecodeUnit → IQ(4)│
+                      │ FetchQueue(FQ,2) ───► DecodeUnit → IQ(2)│
                      └───────────────────┬────────────────────┘
                                          ▼
                ┌────────────── 重命名 / 发射 Issue ──────────────┐
@@ -38,9 +43,9 @@
                               ▼
    ┌───────────────────────────────────────────────────────────┐
    │ 保留站 RS ──派发──► 执行单元 ──► 结果总线（每单元各一根）    │
-   │   Integer 4 ──► ALU；Multiply 2 ──► MUL；Divide 1 ──► DIV   │
-   │   Load 4 / StoreAddr 4 ──► AGU；Branch 4 ──► BRU           │
-   │   StoreValue 4 ──► SQ；LQ / SQ ──► DCache ──► DMEM(双口)   │
+    │   Integer 2 ──► ALU；Multiply 1 ──► MUL；Divide 1 ──► DIV   │
+    │   Load 2 / StoreAddr 2 ──► AGU；Branch 2 ──► BRU           │
+    │   StoreValue 2 ──► SQ；LQ / SQ ──► DCache ──► DMEM(双口)   │
    └──────────────────────────────┬────────────────────────────┘
                                   ▼
               ROB 按序提交；误预测 ──► FlushArbiter
@@ -74,8 +79,8 @@ PRF/BPU 取边界 checkpoint，队列整体清空）。
 
 | 子系统 | 功能 | 关键规格 | 详设 |
 |---|---|---|---|
-| 前端 | 分支预测 → 取指 → 预译码 → 译码 | 1 KB 单端口同步 SRAM ICache；FQ 4 / IQ 4；Tournament + BTB64 + RAS32 | [`frontend.md`](docs/frontend.md) |
-| 后端 | 发射 rename → 乱序执行 → 写回 → 按序提交 | ROB 16 / PRF 48 / RAT 32；RS 七个物理池共 23 槽；四路独立结果总线；MUL Booth 三级流水、DIV SRT 单实例背压 | [`backend.md`](docs/backend.md) |
+| 前端 | 分支预测 → 取指 → 预译码 → 译码 | 1 KB 单端口同步 SRAM ICache；FQ 2 / IQ 2；Tournament + BTB64 + RAS16 | [`frontend.md`](docs/frontend.md) |
+| 后端 | 发射 rename → 乱序执行 → 写回 → 按序提交 | ROB 16 / PRF 48 / RAT 32；RS 七个物理池共 12 槽；四路独立结果总线；MUL Booth 三级流水、DIV SRT 单实例背压 | [`backend.md`](docs/backend.md) |
 | 访存 | LQ/SQ、store→load 转发、保守访存准入 | LQ 8 / SQ 8；每周期 1 个请求（store 优先）；store 提交点落缓存 | [`memory.md`](docs/memory.md) |
 | 缓存 | L1I / L1D / 片上主存 | L1I 1 KB 直映 SRAM；L1D 8 KB、64 B 行、直映写回+写分配；主存 20 周期 | [`cache.md`](docs/cache.md) |
 
@@ -157,7 +162,7 @@ VERBOSE=branch,clock ./code < data/testcases/gcd.data   # 统计走 stderr
 也在该文档，本 README 不再重复。重排一致性与旧单元直驱脚手架已退役；现行闭环 =
 ① 两树分别对 golden 校验 x10+cycles → ② 双树结果逐位一致。
 
-2026-10-01 两树缓存几何参数化已完成，采用 **16 KB、64 B 行、直接映射 DCache**；
+2026-10-01 两树缓存几何参数化已完成（当时采用 **16 KB、64 B 行、直接映射 DCache**；此为历史容量阶段）；
 主树、模板 Release 与模板 `_DEBUG` x10 与活动 cycles 均为 18/18，总 clock **12,209,929**，
 相对原 64 KB 四路 D$ **−0.150397%**，满足相差 ≤1% 的门槛。独立六例几何 IPC
 **0.720539**。阶段进度见
@@ -226,9 +231,15 @@ BP_BIN=/path/to/code ./test_IPC.sh   # 指定二进制
 - `reference/riscv-spec-20191213.pdf` — RISC-V 官方规范（RV32I/M 精确定义）
 - `reference/RISC-V-Reader-Chinese-v2p1.pdf` — 《RISC-V 读者》中文版
 - `reference/CAAQA5.pdf` — 计算机组成与设计：硬件/软件接口
-## 公共容量同步 3A（2026-10-05）
+## 当前紧凑容量配置（2026-10-11）
 
-当前主树与模板树均采用FQ/IQ4、LQ/SQ8全容量epoch指针，D$8 KiB/64 B/直接映射，
-保留软件七池RS和原ALU时序。主树tick中CPUstate仅为写目标；大数组查询在comb采样。
-18个RV32IM与6个IPC用例的完整结果、周期和统计逐项一致；活动基线见docs/benchmarks.md。
-满时同拍替换3B尚未实施。公共同步规范与验证入口在父目录CPU-SYNC-SPEC.md及sync/。
+主树、模板树及 RTL 已同步采用 ROB16 / PRF48 / FQ2 / IQ2 / LQ8 / SQ8，七池 RS
+（Integer/Multiply/Divide/Branch/Load/StoreAddr/StoreValue）=2/1/1/2/2/2/2，共12槽，
+RAS16；Cache 几何保持 I$1 KiB、D$8 KiB。Release 与 `_DEBUG` 两树18 ISA＋6 IPC严格回归通过，
+18 ISA总clock为 **12,783,988**，六IPC总clock为 **726,880**、几何平均 **0.612677678542**。
+容量消融、逐例统计和软件状态代理见
+[`docs/benchmarks.md`](docs/benchmarks.md)、[`docs/ipc_benchmarks.md`](docs/ipc_benchmarks.md)
+及 [`RISC-V-CPU-2026/README.md`](../RISC-V-CPU-2026/README.md)。RTL容量回归及真实 core/DCache
+链4/4通过。新容量 RTL 综合估计：CPU-only `opt` 面积18,781.985 μm²、51.11 MHz；
+核心+缓存 `diagnose` 面积67,707.609 μm²、31.13 MHz（目标周期2 ns下未达标）。评估范围、
+层次明细和STA路径见 [`RISC-V-CPU-2026/README.md`](../RISC-V-CPU-2026/README.md)。

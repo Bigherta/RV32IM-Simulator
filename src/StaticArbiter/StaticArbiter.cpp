@@ -187,7 +187,7 @@ MemDispatchDecision MemArbiter::arbitrate(const LQ &LQ, const SQ &SQ,
                                           const ROB &rob, const DCache &dcache,
                                           const SquashInfo &squash) {
   MemDispatchDecision memDecision{};
-  if (!dcache.isBusy() && !SQ.isEmpty()) {
+  if (!dcache.isRequestFull() && !SQ.isEmpty()) {
     auto storeTag = SQ.headRobTag();
     bool committed = SQ.isCommitted(SQ.getHead());
     bool atHeadReady =
@@ -206,7 +206,7 @@ MemDispatchDecision MemArbiter::arbitrate(const LQ &LQ, const SQ &SQ,
   }
   if (!memDecision.valid) {
     auto loadIndex = LQ.LoadDetect();
-    if (loadIndex != 0xFFFFFFFF && !dcache.isBusy()) {
+    if (loadIndex != 0xFFFFFFFF && !dcache.isRequestFull()) {
       auto loadAddr = LQ.getAddress(loadIndex);
       auto loadTag = LQ.getRobTag(loadIndex);
       if (SQ.canSendLoadToCache(loadAddr, LQ.getNBytes(loadIndex), loadTag)) {

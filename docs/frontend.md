@@ -1,5 +1,9 @@
 # 前端子系统：取指 · 预译码 · 译码 · 分支预测
 
+> **当前双树HALT边界（2026-10-13）**：取指停取及boot保持，HALT提交后立即结束，
+> 不等待SQ/Cache/DMEM；clock与core相同、drain=0。D$改为data/metadata同步SRAM，
+> 两软件两构建各18＋6与当前周期表严格一致。RTL未同步，下面全dirty/排空/三端等价记录为历史。
+
 > **CPU顶层初始化（SPEC §66）**：initialized直接归CPU，保留boot隔离与原取指
 > 门控；不增加独立控制模块。四构建18＋6周期/统计保持。
 
@@ -115,7 +119,7 @@
                  ┌──────────────── 前端 ─────────────────────────┐
   FetchDecision ─►│ FetchUnit(PC/halt) → ICache* → IMEM*         │
   （BPU 预测）     │        ▼                                    │
-                   │ InstructBuffer(FQ, 4槽/4可用) → IQ(4槽/4可用)│
+                    │ InstructBuffer(FQ, 2槽/2可用) → IQ(2槽/2可用)│
                    └──────────────┬──────────────────────────────┘
                                   ▼（进入后端发射）
 ```
@@ -123,8 +127,8 @@
 | 模块 | 职责 | 备注 |
 |------|------|------|
 | `FetchUnit` | PC 寄存器与 halt 闩锁（`programCounter` / `haltFetched`） | 每周期一个 `FetchDecision` 有效即推进 PC |
-| `InstructBuffer`（FQ） | 4 个物理槽、4 条有效指令；epoch 环形指针，条目为 `{raw, pc, predictedPC, ckptId}` | 预译码为 RAS/BTB 提供精确跳转类型 |
-| `Decoder` / `DecodeUnit` | 指令译码 + epoch 队列 IQ（4 个物理槽、4 条有效 Uop） | `Uop` 携带执行与恢复元数据 |
+| `InstructBuffer`（FQ） | 2 个物理槽、2 条有效指令；epoch 环形指针，条目为 `{raw, pc, predictedPC, ckptId}` | 预译码为 RAS/BTB 提供精确跳转类型 |
+| `Decoder` / `DecodeUnit` | 指令译码 + epoch 队列 IQ（2 个物理槽、2 条有效 Uop） | `Uop` 携带执行与恢复元数据 |
 | `BPU` | 方向预测（Tournament）+ 目标预测（BTB/RAS/SARAS） | 见 §4 |
 
 ---
@@ -248,7 +252,7 @@ selector 选出的结果记为 `directionTaken`。最终条件分支方向还受
 | 部件 | 配置 | 说明 |
 |------|------|------|
 | BTB | 64 条目 | 经典 Branch Target Buffer 的项目实现 [[5]](#front-ref-5)；语义项为 `{PC[31:8], target[31:2], state}`，`state` 编码 invalid/conditional/unconditional/return（后两者必 taken）；命中且无条件 ⇒ 必 taken |
-| RAS | 32 条目返回地址；`specRAS` 与 `archRAS` 各一份 | call 压入返回地址、return 弹栈并预测目标 [[7]](#front-ref-7)；恢复从提交基线重放存活 ROB，处理投机错位 [[8]](#front-ref-8) |
+| RAS | 16 条目返回地址；`specRAS` 与 `archRAS` 各一份 | call 压入返回地址、return 弹栈并预测目标 [[7]](#front-ref-7)；恢复从提交基线重放存活 ROB，处理投机错位 [[8]](#front-ref-8) |
 
 当前源码不使用 `times` 去重或 SARAS 日志；旧方案的面积与实验数据保存在 benchmark 历史记录中。
 
@@ -266,7 +270,7 @@ selector 选出的结果记为 `directionTaken`。最终条件分支方向还受
   携带 `shift/shiftValue`）；BRU训练condSeen使后续历史成员资格不依赖BTB驻留，
   解析本身不追加actual方向到live GHR，恢复采用拍初取指GHR快照。
 - **checkpoint**：每次获准取指消耗一个 `ckptId`。活动池 `CKPT_CAP=32`，大于
-  `CKPT_LIVE_MAX = ROB16 + ICache request4 + FQ4 + IQ4 = 28`，由 `static_assert`
+  `CKPT_LIVE_MAX = ROB16 + ICache request4 + FQ2 + IQ2 = 24`，由 `static_assert`
   守配置预算，§59真实流水检查活owner不被覆盖；逻辑 ID 与模板载体为 5 bit
   （`CKPT_ID_WIDTH`）。
   当前 BPU checkpoint 仅保存 **8-bit GHR**。RAS 从旧 `archRAS` 提交基线恢复，按 ROB
@@ -299,10 +303,10 @@ selector 选出的结果记为 `directionTaken`。最终条件分支方向还受
 |----|------|
 | 取指带宽 | 每周期至多 1 条；请求队列与 FQ 有空间、无 squash/未闩锁 halt，且命中读获得 SRAM 端口 |
 | 两树 ICache | 1 KB · 16×64 B · 单端口同步 SRAM · 4 项请求队列；队首命中最早 n+1 拍进入 FQ |
-| FQ / IQ | 各4项，3-bit epoch；IQ满时actualIssue可替换，FQ满时真实出队可补入 |
+| FQ / IQ | 各2项，epoch指针；IQ满时actualIssue可替换，FQ满时真实出队可补入 |
 | 方向预测 | Tournament：localPHT 256×2b · globalPHT 256×2b · selector 256×2b · GHR 8b |
-| 目标预测与身份状态 | BTB 64 · specRAS/archRAS 各 32 · condSeen 512b |
-| checkpoint | ckptId 池 32（存活上界 28；逻辑与模板运输载体均 5 bit） |
+| 目标预测与身份状态 | BTB 64 · specRAS/archRAS 各 16 · condSeen 512b |
+| checkpoint | ckptId 池 32（存活上界 24；逻辑与模板运输载体均 5 bit） |
 | 预译码 | FQ 尾 jal/jalr 静态分类（call/ret/indirect + 静态 jal 目标） |
 | halt | 队首 = `0x0ff00513` 且实际交付 FQ ⇒ latch haltFetched 并当拍停取 |
 

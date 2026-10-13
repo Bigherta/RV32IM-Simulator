@@ -1,6 +1,6 @@
 #pragma once
+#include "SRAM.hpp"
 #include "DMEM.hpp"
-#include "ROB.hpp"
 #include "common.hpp"
 #include <array>
 #include <cstdint>
@@ -9,85 +9,136 @@
 struct systemState;
 struct DCachePark {
   MemRequest request; // op/addr/value/nBytes/isSigned/robTag/memIndex
-  bool valid = false;
-  uint8_t targetWay = 0; // AllocateLine 结果
-};
-struct Cacheline {
-  bool valid = false;
-  bool dirty = false;
-  uint8_t datas[DCACHE_BLOCK_CAP];
-  uint32_t tag = 0;
-};
-struct CacheSet {
-  std::array<Cacheline, NUM_OF_DCACHE_WAYS> lines;
-  uint8_t plru = 0; // tree-PLRU: b2=root, b1=left, b0=right; 0=left,1=right
-};
-struct DCacheSetSnapshot {
-  CacheSet oldSet{};
-  uint32_t setIndex = 0;
-  uint8_t way = 0;
-  bool hit = false;
+  uint32_t raw = 0; // Little-endian bytes, without Load sign extension.
+  uint32_t tag = 0; // Queried victim tag, not the incoming request tag.
+  bool lineValid = false;
+  bool lineDirty = false;
+  bool needReadMemory = false;
+  bool cancelled = false; // Accepted speculative Load cancelled by recovery.
+  bool valid = false; // SRAM hit data ready; queue occupancy is head/count.
 };
 struct DCacheInput {
-  bool flushRequested = false; // Whole-cache writeback, after CPU transactions drain.
-  MemDispatchDecision decision;
-  DCacheSetSnapshot setSnapshot; // Sampled by comb(), never from the write target in tick().
-  // Snapshot reference to the downstream memory: the DCache observes DMEM's
-  // completion through the comb-refreshed snapshot. DMEM::tick only ever
-  // writes its own CPUstate members.
+  MemDispatchDecision decision{};
+  bool popConsume = false; // Load returned, Store written, or refill served.
+  bool fillFire = false;
+  DMEMRequest memoryRequest{}; // Same accepted read/write events as DMEMInput.
+  SquashInfo squashDetect{};
+  // Enqueue and lookup are independent. Only the old head reads the SRAMs.
+  SRAM<NUM_OF_DCACHE_SETS, DCACHE_LINE_BITS, 8>::Input
+      InputDCacheDataSRAMInput{};
+  SRAM<NUM_OF_DCACHE_SETS, DCACHE_META_BITS>::Input
+      InputDCacheMetadataSRAMInput{};
   const DMEM &DMEMModule;
   DCacheInput(const DMEM &dmem) : DMEMModule(dmem) {}
 };
 
-// Parameterized data cache / direct mapping or tree-PLRU / write-back + write-allocate /
-// dual-port DMEM. Geometry is defined in common.hpp.
-// Hard constraints:
-//  * isBusy() == "a request is in flight" -- arbiter never issues while busy.
-//  * When !isBusy() the DCache must UNCONDITIONALLY accept the decision: the
-//    store was already popped from the SQ in this cycle.
-//  * The whole line array NEVER lives in the comb snapshot; comb samples only
-//    the selected old set for tick() through sampleSet().
+// Direct-mapped, write-back/write-allocate cache. Requests queue independently
+// of the single-port SRAMs; only the head is serviced. One miss can use both
+// DMEM ports. No HALT scan or drain is implemented here.
 class DCache {
 private:
-  enum class Phase : uint8_t { READY, WAIT, FLUSH_SCAN, FLUSH_WAIT };
-  bool busy = false;
-  Phase phase = Phase::READY;
-  std::array<CacheSet, NUM_OF_DCACHE_SETS> cacheSets;
-  DCachePark cacheRequestBuffer;
-  LoadResponse loadBuffer;
-  DMEMRequest request;
+  SRAM<NUM_OF_DCACHE_SETS, DCACHE_LINE_BITS, 8> datas;
+  SRAM<NUM_OF_DCACHE_SETS, DCACHE_META_BITS> metadata;
+  DCachePark RequestBuffer[REQUEST_CAP];
+  uint8_t head = 0;
+  uint8_t count = 0;
+  uint8_t readIndex = 0;
+  uint8_t readLaneIndex = 0;
+  uint8_t readBytes = 0;
+  bool readValid = false;
+  bool memoryReadSent = false;
+  bool memoryWriteSent = false;
+  std::array<uint8_t, DCACHE_BLOCK_CAP> victimLine{};
   uint64_t hitCount = 0;
   uint64_t missCount = 0;
-  uint32_t flushSet = 0;
-  uint8_t flushWay = 0;
-  bool flushDone = false;
-  bool flushWriteStarted = false;
+  void pop(systemState &CPUstate) const;
+  void pushRequest(const MemRequest &request, systemState &CPUstate) const;
+  uint32_t readRaw() const;
 
 public:
   // Deterministic initial state, including data in invalid lines. This class
   // is trivially copyable, as required by the snapshot model.
   DCache() { std::memset(this, 0, sizeof(*this)); }
-  bool isBusy() const { return busy; }
-  bool isIdle() const { return phase == Phase::READY && !request.readValid && !request.writeValid; }
-  bool isFlushDone() const { return flushDone; }
-  bool hasLoadResponse() const { return loadBuffer.valid; }
-  const DMEMRequest &forwardRequest() const { return request; }
-  // D$ access statistics: one count per accepted mem decision (load or store,
-  // hit == line present, miss == refill started). Debug/report only.
+  bool isEmpty() const { return count == 0; }
+  bool isRequestFull() const { return count == REQUEST_CAP; }
+  bool canAccept(bool popConsume) const {
+    return !isRequestFull() || (popConsume && !isEmpty());
+  }
+  bool needsLookup() const {
+    return !isEmpty() && !readValid && !RequestBuffer[head].valid &&
+           !RequestBuffer[head].needReadMemory;
+  }
+  // Both result storage and head bypass use the same old-row hit predicate.
+  bool readHit() const {
+    return readValid && (metadata.readLane(0) & DCACHE_META_VALID) != 0 &&
+           (RequestBuffer[readIndex].request.address >> DCACHE_TAG_SHIFT) ==
+               (metadata.readLane(0) & DCACHE_META_TAG_MASK);
+  }
+  // SRAM hit data belongs only to its saved occupied, not-yet-ready slot.
+  bool headReadReady() const {
+    return count > 0 && !RequestBuffer[head].valid && readValid &&
+           readIndex == head && readHit();
+  }
+  bool isHeadRequestStore() const {
+    return !isEmpty() && RequestBuffer[head].request.op == Operation::Store;
+  }
+  bool isHeadCancelled() const {
+    return !isEmpty() && RequestBuffer[head].cancelled;
+  }
+  uint32_t headValue() const {
+    return RequestBuffer[head].request.value;
+  }
+  uint32_t headAddr() const {
+    return RequestBuffer[head].request.address;
+  }
+  uint8_t headBytes() const {
+    return RequestBuffer[head].request.nBytes;
+  }
+  bool headReadMemory() const {
+    return !isEmpty() && RequestBuffer[head].needReadMemory;
+  }
+  bool headDirty() const {
+    return !isEmpty() && RequestBuffer[head].lineValid &&
+           RequestBuffer[head].lineDirty;
+  }
+  bool needsMemoryRead() const {
+    return headReadMemory() && !memoryReadSent;
+  }
+  bool needsMemoryWrite() const {
+    return headReadMemory() && headDirty() && !memoryWriteSent;
+  }
+  bool canFill(const DMEM &dmem) const {
+    return headReadMemory() && memoryReadSent && dmem.isReplyReady() &&
+           (!headDirty() || (memoryWriteSent && !dmem.isWriteBusy()));
+  }
+  uint32_t victimAddr() const {
+    const auto set = (headAddr() >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
+    return ((RequestBuffer[head].tag << DCACHE_INDEX_BITS) | set)
+           << DCACHE_OFFSET_BITS;
+  }
+  uint8_t victimByte(int i) const {
+    return victimLine[i];
+  }
+  bool isReturnReady() const {
+    return count > 0 && (RequestBuffer[head].valid || headReadReady());
+  }
+  const MemRequest &returnRequest() const { return RequestBuffer[head].request; }
+  uint32_t returnRaw() const {
+    return headReadReady() ? readRaw() : RequestBuffer[head].raw;
+  }
+  uint32_t returnTag() const {
+    return headReadReady() ? (metadata.readLane(0) & DCACHE_META_TAG_MASK)
+                           : RequestBuffer[head].tag;
+  }
+  bool returnLineValid() const {
+    return headReadReady() ? (metadata.readLane(0) & DCACHE_META_VALID) != 0
+                           : RequestBuffer[head].lineValid;
+  }
+  bool returnLineDirty() const {
+    return headReadReady() ? (metadata.readLane(0) & DCACHE_META_DIRTY) != 0
+                           : RequestBuffer[head].lineDirty;
+  }
   uint64_t getHitCount() const { return hitCount; }
   uint64_t getMissCount() const { return missCount; }
-  LoadResponse loadResp(const SquashInfo &squash) const {
-    LoadResponse resp{};
-    if (loadBuffer.valid &&
-        (!squash.needSquash ||
-         ROB::isOlder(loadBuffer.robTag, squash.SquashTag))) {
-      resp = loadBuffer;
-    }
-    return resp;
-  }
-  uint8_t AllocateLine(int set_idx)
-      const; // distribute the line without modifying anything
   void tick(const DCacheInput &, systemState &);
-  void snapshotFrom(const DCache &other);
-  DCacheSetSnapshot sampleSet(const MemDispatchDecision &) const;
 };

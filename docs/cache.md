@@ -1,5 +1,13 @@
 # 缓存与存储层次：L1I / L1D / 片上主存
 
+> **当前双树D$（2026-10-13）**：data为128×512bit/8bit写粒度SRAM，metadata为
+> 128×21bit SRAM（低19位tag、bit19 valid、bit20 dirty），常量统一在common.hpp/common.h。
+> 请求独立入队，只查询旧队首；回填/Store写优先，命中Load可用旧SRAM结果旁路。
+> 脏行整行及旧tag先保存再写回，读写分别记已发送，DMEM回复保持至实际回填消费。
+> D$不依赖写/禁用周期的SRAM旧输出；通用SRAM.hpp输出失效检查尚未另行改造。
+> HALT提交立即结束，不排空；两软件两构建各18＋6严格全等。下面排空/最终外存/
+> 三端等价记录为历史，RTL尚未同步。
+
 > **SQ→ROB接口（SPEC §67）**：完成位图由SQ组合输出，ROB只校验并置ready。
 > 已提交SQ发送、DCache准入与dirty写回保持；四构建18＋6结果/周期/统计一致。
 
@@ -89,8 +97,8 @@
 
 > 存储层次为两层 + 片上主存：L1I（ICache）、L1D（DCache），下一级是各 128 KB
 > 的指令/数据主存（IMEM / DMEM）。**主存端口延迟固定 20 周期**；两树 ICache
-> 使用单端口同步 SRAM，队首命中最早 n+1 拍旁路交付 FQ；DCache 命中 load 在接受请求后的
-> 下一拍应答，store 命中当拍改行。
+> 使用单端口同步 SRAM，队首命中最早 n+1 拍旁路交付 FQ；DCache入队与查询分开，
+> 无更老请求时n拍入队、n+1拍查询、n+2拍命中Load应答或Store写入。
 > 两个缓存的缺失回填与脏逐出写回统一走 20 周期端口。访存队列如何驱动它们见
 > [访存子系统](memory.md)。
 > [← 返回 README](../README.md)
@@ -98,7 +106,7 @@
 > 实现词汇：主树用周期初快照与 `tick()`，模板树用 `Wire`、`Register` 与
 > `work()/sync()`；下文描述持久状态、组合命中和周期边界，不依赖其中任一写法。
 >
-> **当前版本（2026-10-01）**：两树 1 KB SRAM ICache 的队首 n+1 旁路已对齐；主树、模板 Release 与
+> **历史版本（2026-10-01）**：两树 1 KB SRAM ICache 的队首 n+1 旁路已对齐；主树、模板 Release 与
 > 模板 `_DEBUG` 均为 18/18 x10+cycles 对活动 golden。迁移前路径在下表作历史对照。当前测试结果见
 > [benchmarks.md](benchmarks.md)，SRAM 化进展见 [process.md](process.md)。
 > 同日完成等价参数化后采用 **16 KB / 64 B / 直接映射 DCache**；活动总 clock
@@ -112,7 +120,7 @@
 |------|-----------|------|------|
 | **L1I** · 两树 ICache | 1 KB，16 行 × 64 B，**直接映射**、单端口同步 SRAM | 队首且无背压时最早 n+1 拍旁路进入 FQ；否则落槽保存 | IMEM 整行回填，**20 周期** |
 | **L1I** · 模板迁移前路径（历史对照） | 8 KB，512 行 × 16 B，直接映射、Register 数据阵列 | 命中组合取字、本拍登记请求；最早下一拍进入 FQ | IMEM 16 B 行回填，20 周期 |
-| **L1D** · DCache | 8 KB，128 组 × 1 路 × 64 B，**直接映射** | load **1 拍自答**；store 当场落行 | 主存回填 **20 周期**；脏 victim 并行写回 **20 周期** |
+| **L1D** · DCache | 8 KB，128 组 × 64 B，直接映射，data/metadata同步SRAM | 入队后旧队首查询，查询下一拍Load应答/Store写入 | 主存回填 **20 周期**；脏 victim 并行写回 **20 周期** |
 | **IMEM / DMEM** | 各 128 KB 字节寻址 | — | — |
 
 主存延迟由两树共同的 `MEM_LATENCY = 20` 定义：取指请求、DCache 回填读和
@@ -123,7 +131,7 @@
 
 两树以 `common.hpp` / `common.h` 中的基础配置为源：I$ 为
 `NUM_OF_ICACHE_SETS`、`ICACHE_BLOCK_CAP`；D$ 为 `NUM_OF_DCACHE_SETS`、
-`NUM_OF_DCACHE_WAYS`、`DCACHE_BLOCK_CAP`。当前分别为 16 组/64 B 行和
+`DCACHE_BLOCK_CAP`。当前分别为 16 组/64 B 行和
 128 组/1 路/64 B 行。组数与行长必须为二次幂。
 
 - `*_OFFSET_BITS` / `*_OFFSET_MASK` 从行长派生；`*_INDEX_BITS` / `*_INDEX_MASK`
@@ -133,10 +141,9 @@
   tag = `addr >> *_TAG_SHIFT`。D$ 写回用 victim 自身的 tag 与组号重建行首。
 - I$ 的 `ICACHE_WORDS_PER_LINE`、word 索引掩码、lane 索引位宽和 SRAM 行位宽均从
   行长派生；`LineReturn` / IMEM / CPU 接线共享同一 word 数。D$ 读写载荷长度统一为
-  `DCACHE_BLOCK_CAP`，模板 tag/way/PLRU 载体使用派生位宽。
-- 相联度支持 1 路直接映射或 4 路 tree-PLRU。当前固定选 way 0；模板零位 way/PLRU
-  状态为空特化，没有替换状态寄存器。四路配置仍使用原 tree-PLRU 拓扑。
-  主树组数压力测试可用 `-DNUM_OF_DCACHE_SETS=64`，索引位宽自动随之变化。
+  `DCACHE_BLOCK_CAP`；metadata位宽为tag位宽加valid/dirty两位。
+- D$当前只实现直接映射，不保留way/PLRU状态；请求队列索引/count及byte lane位宽
+  由容量和行长派生。可选配置不代表已经完成完整CPU周期验收。
 
 参数化是同配置表示变换：验收要求 x10、retired、cycles 与缓存/分支统计逐项等价。
 
@@ -204,44 +211,28 @@ CPUstate，SRAM从旧datas读取、显式向目标datas写，不再增加模块�
 
 ### 3.1 组织与替换
 
-- 8 KB = 128 组 × 1 路 × 64 B；行 `{valid, dirty, tag, datas[DCACHE_BLOCK_CAP]}`；
-- **直接映射**：每组唯一行，命中和缺失选路均为 0；脏行在覆盖前并行发出写回与新行回填；
-- 几何由 `NUM_OF_DCACHE_SETS` / `NUM_OF_DCACHE_WAYS` / `DCACHE_BLOCK_CAP` 定义；
-  偏移、索引、tag 位宽和掩码自动派生，编译期断言守护二次幂行长/组数与地址切分。
+- 8 KB = 128组×64 B，直接映射、写回＋写分配。
+- data为`SRAM<128,512,8>`，每lane一个字节；metadata为`SRAM<128,21>`，
+  bit0..18为tag、bit19为valid、bit20为dirty。两端同步读取同一组，写口各只有一份。
+- 几何和metadata掩码统一在`common.hpp/common.h`，从组数/行长派生。
 
-### 3.2 两段式状态机（`Phase::READY / WAIT`）
+### 3.2 请求队列与队首串行服务
 
-DCache 是 DMEM 的唯一客户（`MemArbiter` 准入的请求只发给 DCache）。处理器访问
-在 `READY` 拍组合求值（主树 `sampleSet`，模板 `lookupLine`）：
-
-```
-READY ── 命中 ───────────────────────────────► load: 1 拍自答 loadResp / store: 当场写行置脏
-  │
-  └── 缺失 ── latch 身份( park ) + busy=1 ──► WAIT
-       （向 DMEM 双通道发：回填读[+ victim 脏时写回写]，各 20 周期）
-WAIT ── DMEM 回复就绪( ∧ 写口不忙) ──► 填行 → 服务 park → busy=0 → READY
-```
-
-细节：
-
-- **命中自答**：`READY` 拍命中 load 直接填 `loadBuffer`（下拍组合 `loadResp`
-  对 LQ 可见）；store 命中当场写行并置脏，不产生主存流量；
-- **缺失**：周期更新在 `cacheRequestBuffer` 里 **park 请求**（包含
-  地址/宽度/符号/方向），并 latch 本次准入总线上携带的身份
-  （`robTag/memIndex` + 分配的 `targetWay`）——回填完成后据此组装真正的应答；
-  同时置 `busy` 进入 `WAIT`。**busy 期间 `MemArbiter` 不再准入**（见
-  [memory.md](memory.md) §5）；
-- **双通道脉冲**：向 DMEM 发 `DMEMRequest{readValid, writeValid}`。victim 行脏
-  时读、写**并行**发出（读回填 + 写回脏行），各 20 周期；**写回地址由 victim
-  行自身的 tag 重建**（而不是请求地址的 tag——否则脏数据会落到错误帧，回填再
-  读回陈旧值）；
-- **WAIT 完成**：`DMEM.isReplyReady() ∧ ¬isWriteBusy()` 时，把 64 B 行写入
-  `targetWay`（清 dirty、写 tag、置 valid、更新 PLRU），然后服务 park：load →
-  提取字节 + 符号扩展填入 `loadBuffer`；store → 逐字节落行并置脏。最后清
-  park/request/busy 回 `READY`；
-- **行阵是持久状态**：主树 comb 仅采样目标组和命中/替换选择为 Input；tick 只读取该
-  输入与控制快照，构造行/字节/PLRU 写入意图，不读取写入目标。模板以 Register/持久数组
-  表达相同边界，不复制整阵。
+- 保留4项RequestBuffer，`head/count`管理占用；请求携带地址、值、宽度及完整ROB/LQ身份。
+  入队不读取SRAM；MemArbiter仅按旧`isRequestFull()`停发，即使本拍完成也不满槽替换。
+- 只查询旧队首。无更老请求时n拍入队、n+1拍读data/metadata、n+2拍服务命中。
+  Load直接组合返回raw给LQ，由LQ截取/符号扩展；Store实际写byte lane及dirty后才出队。
+- 回填/Store写优先于查询；Store缺失回填写整行，再合并合法Store字节，metadata置脏。
+  命中Store仅写对应byte lane，不形成Load响应。
+- 缺失拍保存旧tag、valid/dirty及完整`victimLine`。读回填和脏写回各有sent标记，
+  只在实际接受时置位；可并行发送，不增加phase FSM或两条外存FIFO。
+- 回填必须已有读接受且DMEM回复就绪；脏victim还要求写已接受并完成。`fillFire`同时
+  写新行、消费回复及释放队首；旧tag和组号重建写回地址，不使用新请求tag。
+- 恢复对已接受Load保存跨拍`cancelled`，禁止迟到响应污染复用ROB/LQ身份；仍完成物理
+  事务并释放队列，已提交Store不取消。只有`readValid`拍使用SRAM输出，之后用保存载荷。
+- 模板两SRAM嵌入DCache Inner，各work一次、父模块正常sync提交，无额外注册或提前sync。
+  主树仅读旧快照/Input逐字段写CPUstate；组合响应/外存请求不增加寄存级。
+- HALT提交立即结束，不等待已提交SQ、D$/DMEM事务或全脏行写回。
 
 ## 4. DMEM（双口主存）
 
@@ -253,7 +244,7 @@ WAIT ── DMEM 回复就绪( ∧ 写口不忙) ──► 填行 → 服务 par
   写完成时，const writeLine从旧writeExecute取得地址/数据，直接在tick写目标阵列，
   不增加待提交状态或CPU循环末提交调用。
   同周期读/写采用读旧值，后续周期回填可见此前已完成的脏写回；
-- `MemPull` 消费已就绪的回复（`readBufferValid` 清零）。
+- 回复保持有效至DCache的`fillFire/replyConsumed`，持有回复时禁止新读，写口仍独立。
 
 ## 5. 关键不变量与画像
 
@@ -261,8 +252,8 @@ WAIT ── DMEM 回复就绪( ∧ 写口不忙) ──► 填行 → 服务 par
   的 tag 与组号重建；后续回填必须读到写回后的数据；
 - **命中率画像**：18 基准的 I$ / D$ 命中率与逐分型预测准确率在
   仓库根目录 `docs/benchmarks.md`（D$ 覆盖 load+store 全部访存）；
-- **debug 校验**：`-D_DEBUG` 下 clean 行命中会把缓存值与活体 DMEM 读数比对
-  （dirty 行更新值不参与）。
+- **验证**：模板`_DEBUG`检验Register单写；外部真实CPU测试检查独立退休/内存参考、
+  SRAM无效输出poison和乱序work，不能以历史寄存器D$三端报告证明当前RTL等价。
 
 ## 6. 关键规格
 
@@ -271,7 +262,7 @@ WAIT ── DMEM 回复就绪( ∧ 写口不忙) ──► 填行 → 服务 par
 | 两树 ICache | 1 KB · 16 行 × 64 B · 直接映射 · 单端口同步 SRAM · 4 项请求队列 |
 | 模板 ICache 验收 | Release / `_DEBUG` 各 18/18 x10+cycles 对活动 golden；逐例与主树一致 |
 | DCache | 8 KB · 128 组 × 1 路 × 64 B · 直接映射 · 写回 + 写分配 |
-| 命中交付时序 | 两树 L1I 队首最早 n+1 拍旁路进入 FQ；L1D load 1 拍自答 / store 当场落行 |
+| 命中交付时序 | L1I 队首最早 n+1 拍交付FQ；L1D n拍入队、最早n+1查询/n+2服务 |
 | 主存延迟 | 固定 **20 周期**（IMEM 回填、DCache 回填、脏逐出写回共用） |
 | DMEM | 读/写双口独立在飞（各 20 周期）；仅行级请求 |
 | 存储阵列 | IMEM/DMEM 各 128 KB；缓存/主存阵列均为模块持久状态 |

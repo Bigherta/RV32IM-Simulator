@@ -1,5 +1,12 @@
 # 访存子系统：加载/存储队列 · 转发 · 保守准入
 
+> **当前双树访存（2026-10-13）**：D$请求队列接收与队首SRAM查询分开；Store在实际
+> 字节写入且metadata dirty置位后完成。缺失读/脏行写独立发送一次，DMEM固定20拍，
+> 返回行保持至回填消费；写回地址由旧tag与组号重建。恢复取消的已接受Load在D$保存
+> cancelled位，迟到结果不因ROB/LQ身份复用而写进新请求，已提交Store保留。
+> HALT提交立即停机，不排空；SQ/D$/外存可仍有未完成Store，不能把最终外存或D$覆盖
+> 外存直接视为全体已退休Store均已落地。两软件已同步，RTL未同步；下面结束协议为历史。
+
 > **CPU顶层结束协议（SPEC §66）**：SQ接受排空/旧访存结束/全dirty实际写回的
 > 资格由CPU拍初状态判断，拍末更新finishPhase；不封装控制模块。活动周期保持。
 
@@ -143,7 +150,7 @@
 |------|-----:|------|
 | `LQ` | 8 个物理槽 / 8 个可用项 | load 条目：地址/值独立就绪、store 转发落值、完成总线 |
 | `SQ` | 8 个物理槽 / 8 个可用项 | store 条目：地址/数据两段就绪 + 显式 `committed`；查询拍初快照 |
-| `MemArbiter` | —（无状态） | 每周期准入 1 个访存请求；**store 优先**、DCache busy 时停发 |
+| `MemArbiter` | —（无状态） | 每周期准入 1 个访存请求；store优先、DCache请求队列旧满时停发 |
 | StoreValue RS | 4 | store 数据源（数据就绪事件的发生地） |
 
 ## 2. 两段就绪与广播事件
@@ -178,14 +185,14 @@ FETCHING ────────── store 转发 ─────────
   与 tag 的新 load 接收旧应答，本拍有效状态则保证更新鲜的 store 转发值优先；
 - AGU 首次解析 load 地址时，SQ 按同word候选查询，最年轻候选须数据就绪且完整覆盖
   Load，并比最后一个未知地址来源年轻才立即转发；返回值按字节偏移移动并截取/扩展；
-- store 离开 ROB 后可能因 DCache busy 继续留在 SQ，因此提交状态由 ROB commit
+- store 离开 ROB 后可能因 DCache 请求队列满继续留在 SQ，因此提交状态由 ROB commit
   显式置位，不再用 retained `robTag` 与当前 ROB head 推断。转发的新旧关系按 SQ
   从 head 到 tail 的队列位置确定；只有未提交、仍在 ROB 活跃窗内的 store 才做
   RobTag 年龄比较；
 - **未知地址或字节重叠的更老 store 会阻塞 cache 请求**。
   `SQ::canSendLoadToCache(addr, nBytes, loadTag)` 检查更老未提交Store的完整字节范围，
   任意重叠都阻塞尚未转发的Load，不能仅检查同起点或Store完整覆盖Load。
-  同word内不重叠的已知Store不阻塞。已提交SQ队首仍由请求仲裁优先发送、Cache busy门控。
+  同word内不重叠的已知Store不阻塞。已提交SQ队首仍优先发送、按Cache请求队列旧满门控。
 
 ## 4. 保守准入与恢复边界
 
@@ -206,14 +213,13 @@ FETCHING ────────── store 转发 ─────────
 - **store 优先互斥**：`SQ.head.committed`，或正位于 ROB 头且满足统一
   `storeWillCommit` 谓词的 SQ 头 store，优先于乱序 load；后者允许在同一周期完成
   ROB 提交并进入 DCache。squash 周期仅允许严格早于 `SquashTag` 的 ready head 提交；
-- **busy 门控**：DCache `isBusy()`（缺失在途）时**不准入**——DCache 注释保证
-  "`!isBusy()` 时必须无条件接受 decision"，因为该拍 store 已从 SQ 弹出；
+- **旧满门控**：DCache `isRequestFull()` 时不准入，即使本拍出队也不替换满槽；
+  缺失在途且队列有空间仍可入队，Store从SQ弹出与DCache接受为同一事件；
 - 请求携带完整身份：`{op, value/address, isSigned, n_bytes, robTag, memIndex}`
-  （store 的 memIndex 带 `MEM_STORE_BIT` 高位标记；`memSlot` 为低 6 位，LQ/SQ/
-  DCache 共槽位域）。
+  （store的memIndex带`MEM_STORE_BIT`标记，memSlot指LQ/SQ槽，不是DCache请求队列索引）。
 
-DCache 按两段 FSM 接受请求并回 `loadResp`（组合、过 squash 门），命中 1 拍
-自答；缺失回填与脏逐出等存储行为见 [cache.md](cache.md)。
+DCache入队与队首同步查询分离，查询下一拍命中服务；`loadResp`为组合输出，
+同时检查跨拍cancelled与当拍squash。缺失回填/脏写见[cache.md](cache.md)。
 
 ## 6. 完成总线
 
@@ -231,13 +237,13 @@ CDB消费只标记已广播，不释放LQ。当前释放使用拍初ROB.willComm
 | 项 | 规格 |
 |----|------|
 | LQ / SQ | 各 8 个物理/有效槽；4-bit epoch 序号区分满空，数组仅用 slot |
-| 地址/数据保留站 | StoreAddr 4（配合 AGU）+ StoreValue 4 |
-| 请求带宽 | 每周期 1 个访存请求（store 优先、DCache busy 停发） |
+| 地址/数据保留站 | StoreAddr 2（配合 AGU）+ StoreValue 2 |
+| 请求带宽 | 每周期1个访存请求（store优先、DCache请求队列旧满停发） |
 | 转发 | 数据事件（StoreValue RS 就绪）+ 地址事件（AGU 最老有效 store 结果），基于 SQ 快照组合求值 |
 | 访存消歧 | 已知同址老 store 阻塞；地址未知老 store 也阻塞，load 不越过未解析 store |
 | 违例恢复 | 不再设置 MDP load-violation squash 通路；顺序由保守准入和 store→load 转发保证 |
 | 完成 | LQ oldest-ready、未广播项 → `lqCDB`（含 memIndex 通路） |
-| 命中路径 | DCache 命中 load 1 拍自答 `loadResp`（见 [cache.md](cache.md)） |
+| 命中路径 | 入队后队首查询SRAM，查询下一拍命中Load组合返回raw给LQ |
 
 ## 相关文档
 
