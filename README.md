@@ -1,6 +1,39 @@
 # RV32IM Out-of-Order Processor Simulator
 
-> **2026-10-13双树D$8拍回填/valid寄存器**：16个128×32bit data SRAM＋128×20bit tag/dirty SRAM，
+## 当前双树：AXI 与课程镜像（2026-10-16）
+
+- 主树/模板共同配置：D$ **4 KiB = 64 组 × 2 路 × 32 B，4 MSHR，8 个请求槽**（包含MSHR owner），同行Load合并、不同组hit-under-miss、Store有序、同步SRAM及tree-PLRU。
+- I$保持1 KiB/64 B，改由AXIFetch供数；I/D共享AXI4-Lite，AR轮询及返回owner FIFO，AW/W独立握手。AXIData读写合计16条整行信用，外部Slave每通道16项、256 MiB RAM、服务延迟10拍。
+- 25个课程镜像位于`data/course-testcases/`，模板有逐字节相同副本，含原始`program.data`/`program.S`/`expected.txt`/`metrics.json`及SHA-256清单。
+- **实际协议是SW向`0x80000000`写入完整32位结果，B响应握手才结束**，不是读。该Store按序退休时冻结核心IPC，随后只推进已提交SQ/Cache/AXI；不强制写回全部dirty行。退休数包含最后的MMIO Store。
+- 原始`addi a0,x0,255`默认是正常指令。旧镜像需显式`LEGACY_HALT=1`，旧18+6镜像及其历史表保留，不混入新的课程golden；RTL尚未同步本轮改造。
+
+```bash
+cmake -S . -B /tmp/opencode/rv32-main -DCMAKE_BUILD_TYPE=Release -DCPU_RUNTIME_OUTPUT_DIRECTORY=/tmp/opencode/rv32-main
+cmake --build /tmp/opencode/rv32-main -j8
+cmake -S RISC-V-Simulator-Template -B /tmp/opencode/rv32-template -DCMAKE_BUILD_TYPE=Release -DCPU_RUNTIME_OUTPUT_DIRECTORY=/tmp/opencode/rv32-template
+cmake --build /tmp/opencode/rv32-template -j8
+python3 data/course.py test --binary /tmp/opencode/rv32-main/code --peer /tmp/opencode/rv32-template/code
+python3 data/course.py smoke --binary /tmp/opencode/rv32-main/code --peer /tmp/opencode/rv32-template/code
+# 重新从课程仓库同步原始镜像（不重新编译、不替换停机指令）
+python3 data/course.py sync
+```
+
+活动周期表见[docs/benchmarks.md](docs/benchmarks.md)。`test.sh`默认运行25例，`test_IPC.sh`默认运行6个`perf_*`例；`BP_BIN`可指定外部构建的二进制，避免覆盖已有`code`。
+
+> **历史主树（2026-10-16，AXI同步前）**：D$为4 KiB（64组×2路×32 B），4 MSHR＋同行Load合并；
+> DMEM读写共用一个**总计16项**的混合队列，所有已接受项独立执行20拍，回复/写完成带事务ID。
+> I$/IMEM及取指接线保持原实现，不实现I$ MSHR。主树Release/`_DEBUG`各18 ISA＋6 IPC
+> 结果/退休数保持，六IPC几何平均 **0.597481783828**，总周期650,407。
+> 模板/RTL代码未同步此数据侧升级，旧三端等价报告不能覆盖当前主树。
+
+> **历史默认（2026-10-14，按RTL同步）**：D$为4 KiB（128组×1路×32 B），8个
+> 128×32bit data SRAM＋128×21bit tag/dirty SRAM＋独立valid。缺失Load首个合格
+> 回填拍从完整256bit回复返回一次；整行4拍填完才释放Cache队首与消费回复。I$保持
+> 1 KiB/64 B，boot1拍及HALT提交立即停机保持；验证和新周期见共同父目录sync/README.md。
+> 当前源码三CPU24镜像逐拍通过，活动golden已刷新；两软件四构建24镜像strict复核通过。
+
+> **历史2026-10-13双树D$8拍回填/valid寄存器**：16个128×32bit data SRAM＋128×20bit tag/dirty SRAM，
 > valid独立为128项寄存器数组，查询沿采样；每拍写两个相邻bank，末拍更新tag/dirty和valid并完成请求。DMEM整行协议和20拍延迟不变；
 > RequestBuffer、并行脏逐出及HALT立即停机保持。两软件Release/`_DEBUG`各18 ISA＋6 IPC
 > 当前四构建结果/周期/退休数及共有统计全等，活动clock合计13,041,323/844,639。RTL结构已同步；本次24镜像三端整核回归重新运行中，golden表不变。
@@ -15,7 +48,7 @@
 | **架构** | Tomasulo 乱序执行 · 按序提交（取指/提交有序，执行/写回/访存乱序） |
 | **ISA** | RV32I 全集 + RV32M（Booth 乘法、SRT radix-4 除法） |
 | **实现** | 单体 C++20，无外部依赖；Linux / WSL / MSYS 均可构建 |
-| **验证** | 两树18/18 RV32IM + 6/6 IPC完整结果/周期/统计一致；主树tick只写审计通过 |
+| **验证** | 当前课程25例与协议/缓存定向例检查完整32位结果、独立退休数及双树周期；旧三端/RTL报告仅属历史 |
 
 ## 目录
 
@@ -54,7 +87,8 @@
 
 取指与提交保持程序序，执行/写回/访存完全乱序。两树 ICache 为 **1 KB（16×64 B）单端口
 同步 SRAM**：n 拍读，队首且无背压时 n+1 拍旁路交付 FQ，否则落槽保存。DCache
-命中 load 1 拍自答；缺失回填与脏逐出统一走 **20 周期主存延迟**（IMEM/DMEM）；
+查询后的命中Load下一拍自答；主树D$支持四MSHR、同行合并和安全hit-under-miss，
+DMEM读写共享总计16项流水队列；缺失回填与脏逐出仍为 **20 周期执行延迟**（IMEM/DMEM）；
 误预测经 `FlushArbiter` 排队，按最老优先整窗恢复（RAT 重放到 `SquashTag`，
 PRF/BPU 取边界 checkpoint，队列整体清空）。
 
@@ -70,8 +104,8 @@ PRF/BPU 取边界 checkpoint，队列整体清空）。
 取指组合求值按“回填选槽与接受事件 → 端口仲裁 → 构建 `FetchDecision` → 分发输入”排列。
 所有消费者必须使用本拍的同一决定；不能先复制旧决定，再在 `comb()` 末尾构建新决定。
 
-阶段顺序可任意交换。停机条件 = halt 已提交 且 FQ/IQ/ROB 全空，并完成**访存 drain**
-（SQ 空、DCache 空闲、DMEM 读/写口空闲），保证停机瞬间无"已提交但未写达缓存"的在途 store。
+各模块只读拍初快照。HALT提交立即停机，不等待FQ/IQ/ROB、SQ、DCache或DMEM排空；
+可能仍有已提交但未写达缓存的在途Store，`total=core`、`drain=0`。
 
 ### 1.2 子系统
 
@@ -81,8 +115,8 @@ PRF/BPU 取边界 checkpoint，队列整体清空）。
 |---|---|---|---|
 | 前端 | 分支预测 → 取指 → 预译码 → 译码 | 1 KB 单端口同步 SRAM ICache；FQ 2 / IQ 2；Tournament + BTB64 + RAS16 | [`frontend.md`](docs/frontend.md) |
 | 后端 | 发射 rename → 乱序执行 → 写回 → 按序提交 | ROB 16 / PRF 48 / RAT 32；RS 七个物理池共 12 槽；四路独立结果总线；MUL Booth 三级流水、DIV SRT 单实例背压 | [`backend.md`](docs/backend.md) |
-| 访存 | LQ/SQ、store→load 转发、保守访存准入 | LQ 8 / SQ 8；每周期 1 个请求（store 优先）；store 提交点落缓存 | [`memory.md`](docs/memory.md) |
-| 缓存 | L1I / L1D / 片上主存 | L1I 1 KB 直映 SRAM；L1D 8 KB、64 B 行、直映写回+写分配；主存 20 周期 | [`cache.md`](docs/cache.md) |
+| 访存 | LQ/SQ、store→load 转发、保守访存准入 | LQ 8 / SQ 8；每周期1请求（store优先）；SQ提交后仍可缓冲，D$接受/实际写入独立 | [`memory.md`](docs/memory.md) |
+| 缓存 | L1I / L1D / 片上主存 | I$1 KB直映；主树D$4 KB、64组×2路×32 B、4 MSHR、同行Load合并/4拍回填；DMEM每项20拍，可多笔并行 | [`cache.md`](docs/cache.md) |
 
 ### 1.3 指令集
 
@@ -160,7 +194,8 @@ VERBOSE=branch,clock ./code < data/testcases/gcd.data   # 统计走 stderr
 **golden 唯一来源 = [`docs/benchmarks.md`](docs/benchmarks.md) 的 `Testcases` 表**
 （`result` = x10、`cycles` = 严格周期门禁）；逐用例 IPC、分支四项分型、I$·D$ 命中率
 也在该文档，本 README 不再重复。重排一致性与旧单元直驱脚手架已退役；现行闭环 =
-① 两树分别对 golden 校验 x10+cycles → ② 双树结果逐位一致。
+主树当前对golden严格校验x10+cycles；2026-10-16起模板/RTL未同步数据侧新模型，
+旧的“双树周期逐位一致”仅适用于历史共同基线，不能用于当前主树。
 
 2026-10-01 两树缓存几何参数化已完成（当时采用 **16 KB、64 B 行、直接映射 DCache**；此为历史容量阶段）；
 主树、模板 Release 与模板 `_DEBUG` x10 与活动 cycles 均为 18/18，总 clock **12,209,929**，
@@ -231,7 +266,10 @@ BP_BIN=/path/to/code ./test_IPC.sh   # 指定二进制
 - `reference/riscv-spec-20191213.pdf` — RISC-V 官方规范（RV32I/M 精确定义）
 - `reference/RISC-V-Reader-Chinese-v2p1.pdf` — 《RISC-V 读者》中文版
 - `reference/CAAQA5.pdf` — 计算机组成与设计：硬件/软件接口
-## 当前紧凑容量配置（2026-10-11）
+## 历史紧凑容量配置与物理评估（2026-10-11）
+
+下面的旧面积/Fmax和共同Cache配置不涵盖2026-10-16主树四MSHR/流水DMEM改造；
+当前主树尚未重新综合或STA，不以这些历史物理数字证明新结构达到面积/时序目标。
 
 主树、模板树及 RTL 已同步采用 ROB16 / PRF48 / FQ2 / IQ2 / LQ8 / SQ8，七池 RS
 （Integer/Multiply/Divide/Branch/Load/StoreAddr/StoreValue）=2/1/1/2/2/2/2，共12槽，

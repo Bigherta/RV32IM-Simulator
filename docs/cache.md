@@ -1,15 +1,44 @@
 # 缓存与存储层次：L1I / L1D / 片上主存
 
-> **当前双树D$（2026-10-13，8拍回填）**：data为16个128×32bit/8bit写粒度SRAM，
+## 2026-10-16 双树AXI同步（当前合同）
+
+D$为4 KiB（64组×2路×32 B），4 MSHR，8请求槽包含MSHR owner；同行Load在首拍回填前合并，整行分4拍、每拍两个32-bit bank写入，Load首拍可返回一次。已预留的组锁至最后回填拍，独立组可继续查询；Store按接受年龄排序，dirty victim实际B完成后才允许其fill完成。
+每路8个`SRAM<64,32,8>`及一个`SRAM<64,22>`，valid独立，2-way tree-PLRU。AXIData保持MSHR事务ID，I/D共享AXI4-Lite，数据读写共享16条整行信用，外部每通道16项、10拍服务、256 MiB RAM。退出MMIO Store绕过Cache，不分配/污染行；不恢复全dirty扫描。
+两软件共同配置；下方旧DMEM20拍、单miss及RTL对拍记录均为历史，当前golden见`benchmarks.md`。
+
+> **历史主树（2026-10-16，AXI前）**：D$为4 KiB、64组×2路×32 B，4个MSHR及同行Load合并。
+> 每路8个`SRAM<64,32,8>`，tag/dirty为每路`SRAM<64,22>`，valid独立寄存。
+> DMEM读写共用一个总计16项的混合队列，每拍最多一读一写，共享信用不足时优先写。
+> 所有活动项独立推进20拍；回复/写完成回送
+> 原MSHR事务ID。I$/IMEM及其接线保持，无I$ MSHR改造。模板/RTL代码尚未同步，
+> 下面旧三端逐拍等价结论为历史；主树新活动结果见[benchmarks.md](benchmarks.md)。
+
+> **历史默认（2026-10-14，按RTL同步）**：D$为4 KiB、128组×1路×32 B，8个
+> `SRAM<128,32,8>`、`SRAM<128,21>`（tag20＋dirty1）及独立valid。每拍回填64bit，
+> 共4拍；缺失Load首个合格回填拍从旧256bit整行回复返回一次，第4拍才安装完整行、
+> 消费回复与释放Cache队首。dirty写实际完成资格、持久取消、boot1拍、立即HALT、
+> CDB/依赖派发边界保持；I$仍1 KiB/64 B。当前源码回归结果见共同父目录sync/README.md。
+> 以下2026-10-13的8 KiB/8拍数据为历史，不是当前默认几何。
+
+> **2026-10-14 4 KiB几何扫描**：两软件/RTL支持32/64/128 B D$行与1/2/4路tree-PLRU。
+> 每路独立SRAM/valid，lookup采样`readWayMask`；Store命中当拍用组合命中路，miss冻结
+> victim way/tag/dirty/data。最低编号invalid优先，否则PLRU；命中及末拍安装更新MRU。
+> 首拍Load只响应一次，末拍才释放Cache队首；回填为4/8/16拍，I$仍64 B且不加流水级。
+> 扫描当时默认与活动golden为8 KiB/64 B/1路；固定4 KiB候选只在独立副本运行，综合/度量见
+> [4 KiB扫描说明](../../RISC-V-CPU-2026/docs/dcache-4k-sweep.md)。下面为默认/历史记录。
+
+> **历史双树D$（2026-10-13，early restart＋8拍回填）**：data为16个128×32bit/8bit写粒度SRAM，
 > metadata为128×20bit SRAM（低19位tag、bit19 dirty），valid独立为128项寄存器数组。
 > 查询沿保存readLineValid，与同步SRAM返回对齐；无效行忽略旧tag/dirty。每拍写两个相邻
-> bank，64 B行用8拍回填；最后一拍更新tag/dirty、置valid、返回Load、释放队首及消费DMEM回复。
+> bank，64 B行用8拍回填。首个合格回填拍从完整DMEM行返回Load一次，`loadResponded`
+> 防重复；该拍清valid，最后一拍更新tag/dirty、置valid、释放队首及消费DMEM回复，不再次返回Load。
 > 请求独立入队，只查询旧队首；查询仍并行读全部bank，命中时序保持。
 > 脏行整行及旧tag先保存再写回，读写分别记已发送，DMEM回复保持至实际回填消费。
 > D$不依赖写/禁用周期的SRAM旧输出；通用SRAM.hpp输出失效检查尚未另行改造。
 > HALT提交立即结束，不排空；不增加SRAM复位/扫描周期，core boot仍1拍。RTL与两软件结构
-> 已同步；四方15,435拍/19字段对拍通过。四构建Release/`_DEBUG`各18 ISA＋6 IPC strict
-> 全过，结果/周期/退休及共有统计保持13,041,323/844,639；全24镜像三端整核回归重新运行中。
+> 已同步；零/非零SRAM初态四方各15,435拍/19字段一致，289次早响应与队首释放独立。
+> 旧无early restart的13,041,323/844,639周期为历史基线；新周期/统计及整核门禁见
+> 共同父目录sync/README.md，活动golden只在完整验证后刷新。
 > 下方排空/最终外存记录为历史。
 
 > **SQ→ROB接口（SPEC §67）**：完成位图由SQ组合输出，ROB只校验并置ready。
@@ -124,7 +153,7 @@
 |------|-----------|------|------|
 | **L1I** · 两树 ICache | 1 KB，16 行 × 64 B，**直接映射**、单端口同步 SRAM | 队首且无背压时最早 n+1 拍旁路进入 FQ；否则落槽保存 | IMEM 整行回填，**20 周期** |
 | **L1I** · 模板迁移前路径（历史对照） | 8 KB，512 行 × 16 B，直接映射、Register 数据阵列 | 命中组合取字、本拍登记请求；最早下一拍进入 FQ | IMEM 16 B 行回填，20 周期 |
-| **L1D** · DCache | 8 KB，128 组 × 64 B，直接映射，data/metadata同步SRAM | 入队后旧队首查询，查询下一拍Load应答/Store写入 | 主存读 **20 周期**＋本地回填 **8 拍**；脏 victim 并行写回 **20 周期** |
+| **L1D** · 主树DCache | 4 KB，64组×2路×32 B，data/metadata同步SRAM，4 MSHR | 查询下一拍Load应答；安全Load可hit-under-miss；Store按接受顺序 | 最多4个不同set miss并发；主存读/脏写各 **20 周期**；首拍返回Load，本地回填 **4 拍** |
 | **IMEM / DMEM** | 各 128 KB 字节寻址 | — | — |
 
 主存延迟由两树共同的 `MEM_LATENCY = 20` 定义：取指请求、DCache 回填读和
@@ -135,21 +164,22 @@
 
 两树以 `common.hpp` / `common.h` 中的基础配置为源：I$ 为
 `NUM_OF_ICACHE_SETS`、`ICACHE_BLOCK_CAP`；D$ 为 `NUM_OF_DCACHE_SETS`、
-`DCACHE_BLOCK_CAP`。当前分别为 16 组/64 B 行和
-128 组/1 路/64 B 行。组数与行长必须为二次幂。
+`DCACHE_BLOCK_CAP`、`NUM_OF_DCACHE_WAYS`。I$保持16组/64 B行；主树D$为
+64组/2路/32 B行，模板旧实现仍128组/1路/32 B行。组数与行长必须为二次幂。
 
 - `*_OFFSET_BITS` / `*_OFFSET_MASK` 从行长派生；`*_INDEX_BITS` / `*_INDEX_MASK`
   从组数派生；`*_TAG_SHIFT = *_OFFSET_BITS + *_INDEX_BITS`，tag 位宽为
-  `RV32_WORD_BITS - *_TAG_SHIFT`（当前 I$ 22 bit、D$ 19 bit）。
+  `RV32_WORD_BITS - *_TAG_SHIFT`（I$22bit；主树D$21bit，模板D$20bit）。
 - 行首 = `addr & ~*_OFFSET_MASK`；组号 = `(addr >> *_OFFSET_BITS) & *_INDEX_MASK`；
   tag = `addr >> *_TAG_SHIFT`。D$ 写回用 victim 自身的 tag 与组号重建行首。
 - I$ 的 `ICACHE_WORDS_PER_LINE`、word 索引掩码、lane 索引位宽和 SRAM 行位宽均从
   行长派生；`LineReturn` / IMEM / CPU 接线共享同一 word 数。D$ 读写载荷长度统一为
-  `DCACHE_BLOCK_CAP`；metadata位宽为tag位宽加dirty一位，valid独立为组数项寄存器。
-- D$当前只实现直接映射，不保留way/PLRU状态；请求队列索引/count及byte lane位宽
-  由容量和行长派生。可选配置不代表已经完成完整CPU周期验收。
+  `DCACHE_BLOCK_CAP`；metadata位宽为tag位宽加dirty一位，valid独立为组数×way寄存器。
+- D$支持1/2/4路tree-PLRU，主树默认两路，模板默认直映；请求表索引/count
+  及byte lane位宽由容量和行长派生。可选配置不代表已经完成完整CPU周期验收。
 
-参数化是同配置表示变换：验收要求 x10、retired、cycles 与缓存/分支统计逐项等价。
+历史参数化属于同配置表示变换，要求所有指标逐项等价；2026-10-16主树四MSHR及流水
+DMEM是用户授权的时序/结构变更，因此重测主树活动表，不要求匹配模板旧周期。
 
 **2026-10-01 参数化阶段验收（旧 64 KB 四路配置）**：两树 Release 的活动 18 例与独立 IPC 6 例，及模板
 `_DEBUG` 与同编译选项改前检查版的 24 例，均逐项一致；活动总 clock 12,228,320，
@@ -157,7 +187,7 @@
 单-word 指令行、高位 tag 区分、行尾子字访问、有序部分写合并与脏 victim 写回；
 两树结果/周期对齐，非二次幂行长或组数在编译期拒绝。
 
-**当前直接映射配置验收**：两树 Release 18+6 例结果、retired、新周期与统计一致，模板
+**历史直接映射配置验收（2026-10-01）**：两树 Release 18+6 例结果、retired、新周期与统计一致，模板
 `_DEBUG` 24/24 结果和周期通过、零断言。独立六例精确几何 IPC **0.720538578156**；
 目标直接映射及两组不同几何的有序缓存边界场景均通过，见 [benchmarks.md](benchmarks.md)。
 
@@ -215,45 +245,59 @@ CPUstate，SRAM从旧datas读取、显式向目标datas写，不再增加模块�
 
 ### 3.1 组织与替换
 
-- 8 KB = 128组×64 B，直接映射、写回＋写分配。
-- data为16个`SRAM<128,32,8>`，每bank四个byte lane；metadata为`SRAM<128,20>`，
-  bit0..18为tag、bit19为dirty。valid为主树`bool validBits[128]`/模板`Register<1>`数组，
-  控制复位不需要清SRAM；宿主冷构造的零存储不代表硬件初始化事务。查询同一组时并行读全部bank和metadata；
+- 主树4 KB = 64组×2路×32 B，写回＋写分配，tree-PLRU；最低编号invalid路优先。
+- 每way八个`SRAM<64,32,8>`，每bank四个byte lane；metadata为每way的`SRAM<64,22>`，
+  tag21bit、dirty1bit，valid为独立寄存器。控制复位不需要清SRAM，宿主冷构造的零存储
+  不代表硬件初始化事务。查询同一组时并行读全部way/bank，valid采样至`readWayMask`；
   每个bank只有一个1RW端口，回填每拍只写两个相邻bank（64bit），不会整行并行写入。
 - 几何和metadata掩码统一在`common.hpp/common.h`，从组数/行长派生。
 
-### 3.2 请求队列与队首串行服务
+### 3.2 主树请求表、四MSHR及同行合并
 
-- 保留4项RequestBuffer，`head/count`管理占用；请求携带地址、值、宽度及完整ROB/LQ身份。
-  入队不读取SRAM；MemArbiter仅按旧`isRequestFull()`停发，即使本拍完成也不满槽替换。
-- 只查询旧队首。无更老请求时n拍入队、n+1拍读data/metadata并采样valid至`readLineValid`、n+2拍服务命中。
-  Load直接组合返回raw给LQ，由LQ截取/符号扩展；Store实际写byte lane及dirty后才出队。
-- 回填/Store写优先于查询；Store缺失在相应bank回填拍合并合法Store字节，末拍metadata置脏。
-  命中Store仅写对应byte lane，不形成Load响应。
-- 缺失拍保存旧tag、valid/dirty及完整`victimLine`。读回填和脏写回各有sent标记，
-  只在实际接受时置位；可并行发送，不增加phase FSM或两条外存FIFO。
-- 回填必须已有读接受且DMEM回复就绪；脏victim还要求写已接受并完成。`fillWord`依次为
-  0/2/4/6/8/10/12/14，各拍写一对bank；前7拍保持metadata和队首，不消费整行回复。
-  第8拍`fillFire`同时更新metadata、置对应valid、消费回复及释放队首；旧tag和组号重建写回地址。
-  DMEM请求/回复格式、20拍延迟及双口并行协议不变，不新增完整回填行缓冲。
-- 恢复对已接受Load保存跨拍`cancelled`，禁止迟到响应污染复用ROB/LQ身份；仍完成物理
-  事务并释放队列，已提交Store不取消。只有`readValid`拍使用SRAM输出，之后用保存载荷。
-- 模板16个data SRAM和metadata SRAM嵌入DCache Inner，各work一次、父模块正常sync提交，
-  无额外注册或提前sync；`fillWord`每拍单写，主树查询与tick不读取写目标。
-  主树仅读旧快照/Input逐字段写CPUstate；组合响应/外存请求不增加寄存级。
+- 保留4个总请求信用，含仍在回填的MSHR owner；活动槽可独立释放，接受顺序由小位图
+  维护，不能使用可能越过ROB年龄窗口的已提交Store tag排序。旧满仍拒收，不满槽同拍替换。
+- 四个MSHR保存行地址、owner、victim way/tag/dirty及32 B victim数据；不同set可同时
+  向DMEM发读/写，同set保守锁定直到完整回填。分配时冻结victim并清其valid，不额外读SRAM。
+- 读/写各从最老未发送MSHR选择一笔，实际接受才置sent。读回复和写完成必须同时匹配
+  事务ID及原地址；MSHR只有全部运输完成、末拍发布完整行后才可复用。
+- 安全的年轻Load可hit-under-miss；更老D$ Store的任意字节重叠阻塞Load，分配年轻miss
+  时还避开更老Store所需set。Store仅作为最老活动请求写入，不新增D$ Store转发。
+- 同行Load在MSHR首拍回填之前合并，Store主miss不合并；有更老同set Store屏障时不合并。
+  首拍由完整旧DMEM回复生成owner响应，同时把其余等待者的原始字节存入各自已有raw槽。
+  每拍仍最多一个Load响应；等待者可在后续拍独立释放，owner仍占信用到末拍。
+- SRAM端口优先级为回填 > Store写 > lookup；首拍回填与上一拍hit结果撞车时，先响应
+  miss owner，hit落槽保存。只有`readValid`资格下读取旧SRAM结果，不使用写/禁用周期输出。
+- 每个MSHR的`fillWord`依次为0/2/4/6。脏行必须已收到实际写完成（或本拍合法写完成），
+  才回填；首拍Load只返回一次，末拍更新metadata/valid/PLRU、消费读回复、释放owner/MSHR。
+- 已接受Load保存持久`cancelled`，取消不提前复用运输身份，物理事务继续但不写LQ；
+  一个owner取消不会取消同MSHR其他存活等待者。LQ/CDB仍读旧态，不新增同拍依赖唤醒。
+- 主树所有查询读this/Input，tick逐字段写CPUstate，各SRAM每拍tick一次，无整模块next-state复制。
+  模板仍是历史单队首模型，其Register规则和旧周期不代表主树新实现。
 - HALT提交立即结束，不等待已提交SQ、D$/DMEM事务或全脏行写回。
 
-## 4. DMEM（双口主存）
+## 4. 主树DMEM（读写共享16项混合队列）
 
-- **读/写双口各自独立**：`readBusy`/`writeBusy`、`readExecute`/`writeExecute`
-  分开计数递减，因此回填读与脏逐出写回可**并行在飞**（各 20 周期）；
+- 只有一个`requests[16]`，读写合计最多16项，由共同`head/count`管理；每项含读写类型、
+  地址/MSHR ID、倒计时、消费标记及一份32 B载荷，写入数据与读回复复用同一载荷字段。
+  先前“读16＋写16”的实现已替换，不是保留两组数组再仅限制总计数。
+- 每拍最多接受一读一写，双接受时先追加写再追加读；仅一个旧信用时只接受写，读保留
+  未发送资格。旧满即使本拍回复消费也拒收；`canAcceptRead(writePending)`、DMEM tick
+  与D$ sent标记使用同一准入条件，不允许两个通道各自误用最后一个信用。
+- 所有已接受项独立递减20拍，旧回复背压不暂停后续项执行；不是只执行混合队首。
+  `isReadBusy/WriteBusy`仅代表仍有该类型未消费请求，不能取反用作信用判据。
 - 只接受 DCache 转发的**行级请求**（读行/写行），不再接受任何处理器侧的
   Load/Store 原语；
-- 主树comb在读倒计时到1时采样持久阵列的64 B，tick只从Input填回复缓冲；
-  写完成时，const writeLine从旧writeExecute取得地址/数据，直接在tick写目标阵列，
+- 每拍单读接受、固定执行延迟使同拍至多一项新读完成；comb采样该项对应的持久32 B，
+  Input携带物理队列slot和数据，tick按资格保存到该读项回复。队列slot不同于MSHR事务ID。
+  写完成时，const writeLine从旧写队列项取得地址/数据，直接在tick写目标阵列，
   不增加待提交状态或CPU循环末提交调用。
   同周期读/写采用读旧值，后续周期回填可见此前已完成的脏写回；
-- 回复保持有效至DCache的`fillFire/replyConsumed`，持有回复时禁止新读，写口仍独立。
+- 读回复携带原行地址/MSHR ID，保持至`fillFire/replyConsumed`；只要共享队列仍有
+  相应信用，持有旧回复也可接收新请求。写在20拍处实际落内存，写完成地址/ID保持至
+  `writeConsumed`。各类型按自身接受顺序取完成，每拍各最多一项，可越过另一类型的
+  未消费项；否则“读回填等脏写完成、写完成又被旧读堵住”会死锁。
+- 被确认的项置consumed，只有混合FIFO的连续已消费前缀才回收；后部已确认槽仍计入
+  16项占用，不提前复用，不会重复响应/重复写入。回收只读旧状态与本拍消费意图。
 
 ## 5. 关键不变量与画像
 
@@ -269,12 +313,12 @@ CPUstate，SRAM从旧datas读取、显式向目标datas写，不再增加模块�
 | 项 | 规格 |
 |----|------|
 | 两树 ICache | 1 KB · 16 行 × 64 B · 直接映射 · 单端口同步 SRAM · 4 项请求队列 |
-| 模板 ICache 验收 | Release / `_DEBUG` 各 18/18 x10+cycles 对活动 golden；逐例与主树一致 |
-| DCache | 8 KB · 128 组 × 1 路 × 64 B · 直接映射 · 写回 + 写分配 |
+| 历史模板验收 | 旧共同基线Release / `_DEBUG`各18＋6通过；主树升级后的新周期不能用于旧模板门禁 |
+| 主树DCache | 4 KB · 64组×2路×32 B · PLRU · 4 MSHR · 同行Load合并 |
 | 命中交付时序 | L1I 队首最早 n+1 拍交付FQ；L1D n拍入队、最早n+1查询/n+2服务 |
 | 主存延迟 | 固定 **20 周期**（IMEM 回填、DCache 回填、脏逐出写回共用） |
-| D$本地回填 | 16个32bit bank，每拍写一对，共8拍；末拍完成并消费整行回复 |
-| DMEM | 读/写双口独立在飞（各 20 周期）；仅行级请求 |
+| D$本地回填 | 每way八个32bit bank，每拍写一对，共4拍；首拍Load早返回，末拍安装完整行并消费回复 |
+| 主树DMEM | 读写共享总计16项混合队列，各20拍；每拍最多一读一写，最后一信用优先写；完成带MSHR ID |
 | 存储阵列 | IMEM/DMEM 各 128 KB；缓存/主存阵列均为模块持久状态 |
 
 ## 相关文档

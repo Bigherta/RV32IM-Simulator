@@ -1,5 +1,24 @@
 # 前端子系统：取指 · 预译码 · 译码 · 分支预测
 
+## 2026-10-16 双树AXI同步（当前合同）
+
+I$仍1 KiB/64 B直映，请求预算随共同`REQUEST_CAP`调整为8，checkpoint上限为ROB16+I$8+FQ2+IQ2=28≤32。原IMEM供数改为AXIFetch逐32-bit AXI读，I/D共享AR与返回owner队列；恢复丢弃旧运输响应，不撤销已断言但未握手AR，计数器覆盖完整在途范围。FQ/IQ、BPU及RAS语义不改。
+`addi a0,x0,255`在课程镜像中是正常指令，只有`LEGACY_HALT=1`使用旧预译码停机规则；默认在MMIO退出Store按序退休后冻结取指。旧IMEM20拍/历史周期表不适用于当前AXI。
+
+> **2026-10-16主树数据侧升级边界**：只新增D$四MSHR/同行合并和DMEM读写共享16项队列，
+> I$/IMEM、取指请求预算、原顺序交付、预测/checkpoint、boot及HALT规则保持。
+> 没有在I$实现MSHR或同行合并；整核周期因数据侧变化而改变，见主树活动表。
+
+> **历史共同默认（2026-10-14）**：D$按RTL同步为4 KiB/32 B直映、4拍回填、首拍Load
+> 早返回；I$仍1 KiB/64 B，取指/预测/checkpoint及boot1拍/立即HALT规则不变。
+> 当前验证见[cache.md](cache.md)，以下8拍回填为旧配置。
+
+> **2026-10-14 D$几何扫描**：数据行32/64/128 B与1/2/4路PLRU独立参数化；
+> I$仍64 B/1 KiB，取指、BPU/checkpoint及停取规则不变，见[cache.md](cache.md)。
+
+> **2026-10-13 D$ early restart**：仅提前缺失Load供数，I$/IMEM、预测、取指、checkpoint
+> 与停取规则不变；HALT可在D$仍回填时立即结束，不新增drain，详见[cache.md](cache.md)。
+
 > **2026-10-13 valid寄存器同步**：D$ tag/dirty SRAM为20bit，valid独立寄存；查询采样对齐、8拍回填和boot1拍保持。I$/预测/取指不变，结构及最新验证见[cache.md](cache.md)。
 
 > **2026-10-13 D$8拍回填**：仅调整数据缓存及其接线，16个32bit bank每拍写一对。
@@ -281,7 +300,9 @@ selector 选出的结果记为 `directionTaken`。最终条件分支方向还受
   当前 BPU checkpoint 仅保存 **8-bit GHR**。RAS 从旧 `archRAS` 提交基线恢复，按 ROB
   从 head 到 `SquashTag`（含自身）的存活前缀重放 call/ret；不保存 per-checkpoint RAS 阵列。
   pop-push会在depth不变时覆盖顶，恢复复制完整arch内容再有序重放；年轻覆盖应撤销，
-  边界本身双动作保留。软件从旧提交基线包含同拍头项，RTL从提交后基线跳过头项。
+  边界本身双动作保留。软件与当前RTL均从旧提交基线包含同拍头项，每项恰好重放一次。
+  RTL内部深度位宽为`$clog2(RAS_ENTRIES+1)`（默认5bit），恢复候选独立计算后再按flush选择；
+  这是位宽/组合结构等价优化，不改变软件算法、预测及恢复周期。
 - **训练**：BRU 条件分支结果更新 localPHT/globalPHT/selector、condSeen 与目标侧状态；
   CDB 的 JAL/JALR 转移只更新目标侧。两个训练口共享周期初旧快照；表更新按资源固定写口
   仲裁（`fetch > cdb > bru`，BTB 的 identity/state 与 target 分两组），每个物理 Register

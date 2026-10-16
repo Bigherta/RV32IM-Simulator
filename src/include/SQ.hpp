@@ -27,6 +27,7 @@ struct SQEntry {
   bool isCommitted = false;
 };
 struct SQInput {
+  bool retireEnabled = true;
   SquashInfo squashDetect;
   const AGU &AGUModule;
   const RSUnit &RSModule;

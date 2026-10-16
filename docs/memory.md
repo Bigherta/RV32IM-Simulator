@@ -1,5 +1,28 @@
 # 访存子系统：加载/存储队列 · 转发 · 保守准入
 
+## 2026-10-16 双树AXI同步（当前合同）
+
+两软件D$均为4 KiB/2-way、4 MSHR、8请求槽（owner计入容量）。AXIFetch和AXIData经共享AR轮询/owner FIFO连接Slave；AW/W独立握手，读写共16条整行信用，所有fill/写完成保留MSHR身份。256 MiB RAM覆盖课程0x40000栈顶；每AXI通道16项，10拍服务延迟，读写同拍服务顺序按课程xorshift选择。
+课程25镜像原样同步。实际停机协议为**4-byte SW写`0x80000000`，WSTRB=0xf，B握手捕获32-bit结果**。Store必须先按序退休，冻结核心但继续已提交SQ/Cache及总线，不能让错误路径Store产生外部副作用。旧HALT仅`LEGACY_HALT=1`启用；不全dirty排空。下方旧20拍DMEM合同是历史。
+
+> **主树独立升级（2026-10-16）**：D$固定4 KiB两路、4 MSHR＋同行Load合并；DMEM读写
+> 共享一个总计16项的混合队列，所有项独立20拍执行，回复/写完成带MSHR ID。I$/IMEM保持现状。
+> 原MemArbiter Store优先、LQ/SQ回收、恢复及立即HALT规则保持；模板/RTL尚未同步。
+
+> **历史共同默认（2026-10-14）**：D$按RTL同步为4 KiB/32 B直映；DMEM完整回复为
+> 256bit，逻辑读写仍20拍。Load首个合格回填拍供数一次，Cache第4拍才消费回复并
+> 释放队首；持久取消、dirty写实际完成资格、LQ提交回收及立即HALT不排空保持。
+> 以下8拍/512bit记录是旧配置，当前结构和验证见[cache.md](cache.md)。
+
+> **2026-10-14 D$几何扫描**：D$完整外存行独立变为256/512/1024 bit，逻辑读写仍20拍；
+> 回填4/8/16拍，首拍Load供数只完成运输，末拍才释放队首。1/2/4路PLRU冻结victim路，
+> CPU处理器端口、owner/宽度/符号/取消与立即HALT合同不变，见[cache.md](cache.md)。
+
+> **2026-10-13 Load early restart**：两软件与RTL在首个合格D$回填拍从旧512bit整行回复
+> 返回原始字节，宽度/符号/身份与持久取消规则不变。队首`loadResponded`禁止重复，
+> Cache仍到第8拍才释放/消费回复，valid在首拍清除、末拍置位。脏写实际完成资格保持；
+> LQ仍在ROB提交才回收，CDB/依赖派发边界不变。立即HALT不因回填继续而新增排空。
+
 > **2026-10-13 valid寄存器同步**：D$ valid从SRAM移至128项寄存器；metadata为tag19+dirty1，查询沿同步采样valid，只有最后回填拍置位。无效行不触发命中/脏写回；不加初始化周期，LSQ/DMEM协议保持，见[cache.md](cache.md)。
 
 > **2026-10-13 D$窄回填更新**：16个32bit bank每拍写一对，64 B回填共8拍；第8拍才
@@ -10,7 +33,7 @@
 > 返回行保持至回填消费；写回地址由旧tag与组号重建。恢复取消的已接受Load在D$保存
 > cancelled位，迟到结果不因ROB/LQ身份复用而写进新请求，已提交Store保留。
 > HALT提交立即停机，不排空；SQ/D$/外存可仍有未完成Store，不能把最终外存或D$覆盖
-> 外存直接视为全体已退休Store均已落地。两软件已同步，RTL未同步；下面结束协议为历史。
+> 外存直接视为全体已退休Store均已落地。两软件与RTL已同步；下面结束协议为历史。
 
 > **CPU顶层结束协议（SPEC §66）**：SQ接受排空/旧访存结束/全dirty实际写回的
 > 资格由CPU拍初状态判断，拍末更新finishPhase；不封装控制模块。活动周期保持。
@@ -223,8 +246,12 @@ FETCHING ────────── store 转发 ─────────
 - 请求携带完整身份：`{op, value/address, isSigned, n_bytes, robTag, memIndex}`
   （store的memIndex带`MEM_STORE_BIT`标记，memSlot指LQ/SQ槽，不是DCache请求队列索引）。
 
-DCache入队与队首同步查询分离，查询下一拍命中服务；`loadResp`为组合输出，
-同时检查跨拍cancelled与当拍squash。缺失回填/脏写见[cache.md](cache.md)。
+DCache入队与同步查询分离，查询下一拍命中服务；请求槽可独立完成，MSHR owner计入
+四项总信用。安全Load可越过其他set的miss，更老D$ Store字节重叠则阻塞，Store只按
+接受顺序落地。同线Load在首拍回填前合并，响应仍每拍一项；`loadResp`携带原
+robTag/memIndex并同时过滤跨拍cancelled及本拍squash，不猜测当前LQ槽身份。
+DMEM队列slot、MSHR事务ID、D$请求slot、LQ/SQ memIndex是不同索引域。
+缺失/脏写和ID回收合同见[cache.md](cache.md)。
 
 ## 6. 完成总线
 
@@ -248,7 +275,7 @@ CDB消费只标记已广播，不释放LQ。当前释放使用拍初ROB.willComm
 | 访存消歧 | 已知同址老 store 阻塞；地址未知老 store 也阻塞，load 不越过未解析 store |
 | 违例恢复 | 不再设置 MDP load-violation squash 通路；顺序由保守准入和 store→load 转发保证 |
 | 完成 | LQ oldest-ready、未广播项 → `lqCDB`（含 memIndex 通路） |
-| 命中路径 | 入队后队首查询SRAM，查询下一拍命中Load组合返回raw给LQ |
+| 命中路径 | 入队后查询SRAM，查询下一拍Load返回raw给LQ；允许安全hit-under-miss，Store仍保序 |
 
 ## 相关文档
 

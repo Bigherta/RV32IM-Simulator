@@ -10,6 +10,9 @@ template <uint32_t N> consteval int log2Pow2() {
 }
 
 using RobTag = uint8_t;
+// Host configuration, set once before constructing the CPU. Course AXI images
+// execute ADDI a0,x0,255 normally; only archived images opt into the old marker.
+inline bool legacyHaltEnabled = false;
 constexpr int INTEGERRS_CAP = 2;
 constexpr int MULTIPLYRS_CAP = 1;
 constexpr int DIVIDERS_CAP = 1;
@@ -157,9 +160,8 @@ constexpr int RV32_WORD_BITS = RV32_WORD_BYTES << 3;
 constexpr int RV32_WORD_BYTE_BITS =
     std::bit_width(static_cast<uint32_t>(RV32_WORD_BYTES - 1));
 
-// Cache geometry. Both caches are direct-mapped: each set is one SRAM row.
-// Capacity is derived from line size and set count to keep the address split
-// consistent with the configured storage.
+// Cache geometry. ICache is direct-mapped; DCache has one SRAM row per set
+// and way. Capacity and address fields follow the configured organization.
 constexpr int ICACHE_BLOCK_CAP = 64; // bytes per line
 constexpr int NUM_OF_ICACHE_SETS = 16;
 static_assert(ICACHE_BLOCK_CAP >= RV32_WORD_BYTES &&
@@ -185,8 +187,44 @@ constexpr int ICACHE_WORD_BITS = ICACHE_WORDS_PER_LINE > 1
 static_assert(ICACHE_TAG_WIDTH > 0 && ICACHE_TAG_WIDTH <= RV32_WORD_BITS,
               "ICache address split must leave a valid tag width");
 
-constexpr int DCACHE_BLOCK_CAP = 64; // bytes per line
-constexpr int NUM_OF_DCACHE_SETS = 128;
+constexpr int DCACHE_BLOCK_CAP = 32; // bytes per line; 64 sets x 2 ways = 4 KiB
+constexpr int NUM_OF_DCACHE_SETS = 64;
+constexpr int NUM_OF_DCACHE_WAYS = 2;
+constexpr int DCACHE_MSHR_CAP = 4;
+// Set associativity with tree-PLRU replacement. Single-way builds keep the
+// proven direct-mapped behavior bit-for-bit; the PLRU state below is unused.
+static_assert(NUM_OF_DCACHE_WAYS == 1 || NUM_OF_DCACHE_WAYS == 2 ||
+                  NUM_OF_DCACHE_WAYS == 4,
+              "DCache supports direct mapping or 2/4-way tree-PLRU");
+constexpr int DCACHE_PLRU_BITS = NUM_OF_DCACHE_WAYS - 1; // 0/1/3 bits per set
+// Tree-PLRU victim: 2-way keeps the MRU way in bit0; 4-way keeps the MRU
+// direction in bit2 (root), bit1 (left), bit0 (right), where a set bit means
+// the right child is more recent. The victim walks the least-recent side.
+inline uint8_t dcachePlruVictim(uint8_t bits) {
+  if (NUM_OF_DCACHE_WAYS == 2) return (bits & 1u) ? 0u : 1u;
+  if (NUM_OF_DCACHE_WAYS == 4) {
+    const uint8_t root = (bits >> 2) & 1u;
+    const uint8_t w1 = root ^ 1u;
+    const uint8_t sub = w1 ? (bits & 1u) : ((bits >> 1) & 1u);
+    return static_cast<uint8_t>((w1 << 1) | (sub ^ 1u));
+  }
+  return 0;
+}
+// Tree-PLRU update on an access to the given way of a set.
+inline uint8_t dcachePlruTouch(uint8_t bits, uint8_t way) {
+  if (NUM_OF_DCACHE_WAYS == 2) return way & 1u;
+  if (NUM_OF_DCACHE_WAYS == 4) {
+    const uint8_t w1 = (way >> 1) & 1u;
+    const uint8_t w0 = way & 1u;
+    uint8_t out = static_cast<uint8_t>((w1 << 2) | (bits & 0x3));
+    if (w1)
+      out = static_cast<uint8_t>((out & ~0x1) | w0);
+    else
+      out = static_cast<uint8_t>((out & ~0x2) | (w0 << 1));
+    return out;
+  }
+  return 0;
+}
 static_assert(DCACHE_BLOCK_CAP >= RV32_WORD_BYTES &&
                   std::has_single_bit(static_cast<uint32_t>(DCACHE_BLOCK_CAP)),
               "DCache line size must be a power of two holding an RV32 word");
@@ -199,7 +237,8 @@ constexpr uint32_t DCACHE_OFFSET_MASK = DCACHE_BLOCK_CAP - 1u;
 constexpr int DCACHE_INDEX_BITS =
     std::bit_width(static_cast<uint32_t>(NUM_OF_DCACHE_SETS - 1));
 constexpr uint32_t DCACHE_INDEX_MASK = NUM_OF_DCACHE_SETS - 1u;
-constexpr int DCACHE_CAPACITY_BYTES = DCACHE_BLOCK_CAP << DCACHE_INDEX_BITS;
+constexpr int DCACHE_CAPACITY_BYTES = DCACHE_BLOCK_CAP <<
+    (DCACHE_INDEX_BITS + std::bit_width(static_cast<uint32_t>(NUM_OF_DCACHE_WAYS - 1)));
 constexpr int DCACHE_TAG_SHIFT = DCACHE_OFFSET_BITS + DCACHE_INDEX_BITS;
 constexpr int DCACHE_TAG_WIDTH = RV32_WORD_BITS - DCACHE_TAG_SHIFT;
 constexpr int DCACHE_LINE_BITS = DCACHE_BLOCK_CAP << 3;
@@ -226,7 +265,19 @@ static_assert(DCACHE_META_BITS <= RV32_WORD_BITS,
 constexpr uint32_t DCACHE_META_DIRTY = 1u << DCACHE_TAG_WIDTH;
 constexpr uint32_t DCACHE_META_TAG_MASK = DCACHE_META_DIRTY - 1u;
 
-constexpr int REQUEST_CAP = 4;
+constexpr int REQUEST_CAP = 8;
+// One shared DMEM FIFO: reads + writes together occupy at most 16 slots.
+// Up to one of each can enter per clock; the final old credit goes to writes.
+// All admitted transactions advance independently, like IMEM.
+constexpr int DMEM_CAP = 16;
+constexpr int DMEM_MASK = DMEM_CAP - 1;
+static_assert(DMEM_CAP > 0 && DMEM_CAP <= 128 &&
+                  std::has_single_bit(static_cast<uint32_t>(DMEM_CAP)),
+              "DMEM queue needs power-of-two capacity fitting its cursors");
+static_assert(DCACHE_MSHR_CAP > 0 && DCACHE_MSHR_CAP <= 8 &&
+                  REQUEST_CAP > 0 && REQUEST_CAP <= 8 &&
+                  std::has_single_bit(static_cast<uint32_t>(REQUEST_CAP)),
+              "DCache request/MSHR masks must fit their small carriers");
 constexpr int CKPT_LIVE_MAX =
     ROB_CAP + REQUEST_CAP + FQ_CAP + IQ_CAP;
 static_assert(CKPT_CAP > 0 && (CKPT_CAP & (CKPT_CAP - 1)) == 0,
@@ -236,6 +287,10 @@ static_assert(CKPT_CAP >= CKPT_LIVE_MAX,
 static_assert(CKPT_CAP <= (1 << 6),
               "checkpoint IDs must fit the retained 6-bit carrier");
 constexpr int MEM_LATENCY = 20;
+constexpr int AXI_DEPTH = 16;
+constexpr int AXI_LATENCY = 10;
+constexpr uint32_t AXI_EXIT_ADDR = 0x80000000u;
+constexpr uint32_t AXI_RAM_BYTES = 256u << 20;
 
 enum class ValueState {
   NOTREADY,
@@ -317,16 +372,18 @@ struct MemDispatchDecision {
 };
 
 // DCache->DMEM
-struct ReadRequest { // 线路读 / NO_ALLOCATE load 透传
+struct ReadRequest {
   int remainCycle = 0;
-  uint32_t address;
+  uint32_t address = 0;
+  uint8_t transaction = 0; // MSHR identity, held until the reply is consumed.
 };
-struct WriteRequest { // 线路写 / NO_ALLOCATE store 透传
+struct WriteRequest {
   int remainCycle = 0;
-  uint32_t address = 0;      // 块对齐(victim 基址重建)
-  uint8_t lineData[DCACHE_BLOCK_CAP] = {}; // LINE_WRITE 载荷
+  uint32_t address = 0;
+  uint8_t transaction = 0;
+  uint8_t lineData[DCACHE_BLOCK_CAP] = {};
 };
-struct DMEMRequest { // DCache → DMEM，双通道（每口一 valid）
+struct DMEMRequest { // Two request intents compete for one shared queue's credits.
   bool readValid = false;
   ReadRequest read{};
   bool writeValid = false;
@@ -336,6 +393,12 @@ struct DMEMRequest { // DCache → DMEM，双通道（每口一 valid）
 // DMEM->DCache
 struct MemReply {
   uint8_t lineData[DCACHE_BLOCK_CAP] = {};
+  uint32_t address = 0;
+  uint8_t transaction = 0;
+};
+struct MemWriteReply {
+  uint32_t address = 0;
+  uint8_t transaction = 0;
 };
 
 struct SquashInfo {

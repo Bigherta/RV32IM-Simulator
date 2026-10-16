@@ -1,5 +1,6 @@
 #pragma once
 #include "AGU.hpp"
+#include "AXI.hpp"
 #include "ALU.hpp"
 #include "BPU.hpp"
 #include "BRU.hpp"
@@ -39,16 +40,19 @@ struct systemState {
   ICache ICacheModule;
   DecodeUnit DecodeUnitModule;
   PRF PRFModule;
-  DMEM DMEMModule;
   DCache DCacheModule;
-  IMEM IMEMModule;
   BPU BPUModule;
   FlushArbiter flushArbiter;
   FetchUnit FetchUnitModule;
   bool initialized = false;
+  bool exitCommitted = false;
+  AXIFetch AXIFetchModule;
+  AXIData AXIDataModule;
+  AXIBus AXIBusModule;
+  Slave SlaveModule;
 
   systemState() = default;
-  systemState(Memory mem) : DMEMModule(mem), IMEMModule(mem) {}
+  systemState(const Memory &mem) : SlaveModule(mem) {}
 };
 
 class CPU {
@@ -69,13 +73,21 @@ private:
   ICache ICacheModule;
   DecodeUnit DecodeUnitModule;
   PRF PRFModule;
-  DMEM DMEMModule;
   DCache DCacheModule;
-  IMEM IMEMModule;
   BPU BPUModule;
   FlushArbiter flushArbiter;
   FetchUnit FetchUnitModule;
   bool initialized = false;
+  bool exitCommitted = false;
+  bool exitRetiring = false;
+  AXIFetch AXIFetchModule;
+  AXIData AXIDataModule;
+  AXIBus AXIBusModule;
+  Slave SlaveModule;
+  AXIFetchInput axiFetchInput{};
+  AXIDataInput axiDataInput{};
+  AXIBusInput axiBusInput{};
+  AXIMaster slaveInput{};
   aluCDB cdbOfALU;
   lqCDB cdbOfLQ;
   mulCDB cdbOfMul; // MUL 专用结果总线（cdbOfALU/cdbOfLQ/cdbOfMul
@@ -88,8 +100,7 @@ private:
   DIVInput divInput{RSModule, PRFModule};
   BRUInput bruInput{RSModule, PRFModule};
   BPUInput bpuInput{BRUModule, ROBModule};
-  DMEMInput dmemInput{};
-  DCacheInput dcacheInput{DMEMModule};
+  DCacheInput dcacheInput{AXIDataModule};
   DecodeInput decodeInput{FQModule, issuePacket};
   LQInput lqInput{AGUModule, ROBModule, SQModule, issuePacket};
   SQInput sqInput{AGUModule, RSModule, PRFModule, ROBModule, issuePacket};
@@ -110,7 +121,7 @@ private:
   FQInput fqInput{ICacheModule, DecodeUnitModule};
 
 public:
-  CPU(Memory mem);
+  CPU(const Memory &mem);
   void comb();
   void run();
 };

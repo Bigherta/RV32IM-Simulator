@@ -1,9 +1,27 @@
 # 后端子系统：发射 · 乱序执行 · 写回 · 提交 · squash 恢复
 
+## 2026-10-16 双树AXI同步（当前合同）
+
+两软件共同D$4 KiB/2-way、4 MSHR、8请求槽，I/D改接共享AXI4-Lite。Load仍以旧态robTag/memIndex通过LQ/CDB返回，没有同拍依赖唤醒或新执行级。SQ只发送已提交/本拍真实退休Store；课程终止Store地址`0x80000000`，退休后CPU冻结其余核心，保留已提交SQ/Cache/AXI推进至Slave的B响应握手，结果为完整32位。IPC包含最终Store，时间与总线结束分开报告。不全dirty写回；旧HALT需显式启用。旧DMEM/RTL验收不覆盖当前实现。
+
+> **主树数据侧升级（2026-10-16）**：4 KiB两路D$＋4 MSHR/同行Load合并，DMEM读写共享
+> 一个总计16项的混合队列、固定20拍。Cache运输可乱序完成，仍通过原带robTag/memIndex的LQ响应
+> 和old-ready CDB返回；ROB退休、PRF依赖唤醒、SQ提交/发送、恢复及立即HALT不变。
+> I$/IMEM未改；模板/RTL代码未同步，不能沿用旧三端逐拍等价声明。
+
+> **历史共同默认（2026-10-14）**：D$按RTL切为4 KiB/32 B直映，Load首个合格回填拍
+> 响应一次、Cache第4拍才释放。ROB/LSQ身份与生命周期、dirty写完成资格、CDB与
+> 依赖派发、恢复及立即HALT均保持。下面8拍回填的数值为历史，详见[cache.md](cache.md)。
+
+> **2026-10-14 D$几何扫描**：三端采用1/2/4路PLRU，回填4/8/16拍；Load首拍响应
+> 与Cache末拍释放仍分离，ROB/LSQ/恢复及ALU/CDB依赖边界不变。立即HALT不排空，
+> 扫描当时默认容量/golden未切换，见[cache.md](cache.md)。
+
 > **2026-10-13 valid寄存器同步**：D$ tag/dirty SRAM为20bit，valid独立寄存；查询采样对齐、8拍回填保持。ROB/LSQ/恢复/立即HALT不变，结构及最新验证见[cache.md](cache.md)。
 
-> **2026-10-13 D$8拍回填**：每拍写两个32bit bank，第8拍才形成缺失Load响应。
-> 命中时序、DMEM协议及后端发射/写回/退休/恢复合同不变；活动周期按双树实测更新。
+> **2026-10-13 D$ early restart＋8拍回填**：每拍写两个32bit bank，缺失Load首个合格
+> 回填拍响应一次，Cache仍第8拍才释放。Load回填/owner/ROB提交三种完成事件分离；
+> 命中、CDB寄存边界、ALU依赖派发/退休/恢复资格不变，活动周期按完整验证实测更新。
 
 > **当前双树结束/恢复（2026-10-13）**：删除finishPhase，HALT提交立即结束、不排空，
 > IPC/clock均截止提交拍。D$队首串行服务，已接受Load的恢复取消标记跨拍保持，防止

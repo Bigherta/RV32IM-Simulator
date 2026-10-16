@@ -1,152 +1,106 @@
 #pragma once
 #include "SRAM.hpp"
-#include "DMEM.hpp"
+#include "AXI.hpp"
 #include "common.hpp"
 #include <array>
 #include <cstdint>
 
 struct systemState;
 struct DCachePark {
-  MemRequest request; // op/addr/value/nBytes/isSigned/robTag/memIndex
-  uint32_t raw = 0; // Little-endian bytes, without Load sign extension.
-  uint32_t tag = 0; // Queried victim tag, not the incoming request tag.
-  bool lineValid = false;
-  bool lineDirty = false;
-  bool needReadMemory = false;
-  bool cancelled = false; // Accepted speculative Load cancelled by recovery.
-  bool valid = false; // SRAM hit data ready; queue occupancy is head/count.
+  MemRequest request{};
+  uint32_t raw = 0;
+  uint8_t way = 0;
+  int8_t miss = -1;
+  bool active = false;
+  bool ready = false;
+  bool deferred = false;
+  bool cancelled = false;
 };
+struct DCacheMiss {
+  uint32_t line = 0;
+  uint32_t victimTag = 0;
+  std::array<uint8_t, DCACHE_BLOCK_CAP> victimLine{};
+  uint8_t owner = 0;
+  uint8_t way = 0;
+  uint8_t fillWord = 0;
+  bool valid = false;
+  bool dirty = false;
+  bool readSent = false;
+  bool writeSent = false;
+  bool writeDone = false;
+  bool responded = false;
+};
+
+// Comb-only events and physical SRAM ports, all derived from one old snapshot.
 struct DCacheInput {
   MemDispatchDecision decision{};
-  bool popConsume = false; // Load returned, Store written, or refill served.
-  bool fillBeat = false;   // A refill beat writes a pair of banks this cycle.
-  bool fillFire = false;   // Last refill beat: line completes this cycle.
-  DMEMRequest memoryRequest{}; // Same accepted read/write events as DMEMInput.
   SquashInfo squashDetect{};
-  // Enqueue and lookup are independent. Only the old head reads the SRAMs.
-  // Data is banked by word; a refill beat enables two adjacent banks.
-  std::array<SRAM<NUM_OF_DCACHE_SETS, 32, 8>::Input, DCACHE_WORDS_PER_LINE>
+  int8_t lookup = -1;
+  int8_t response = -1;
+  int8_t store = -1;
+  int8_t mergeSlot = -1;
+  int8_t mergeMiss = -1;
+  int8_t allocate = -1;
+  int8_t fillMiss = -1;
+  int8_t writeAck = -1;
+  bool fillBeat = false;
+  bool fillFire = false;
+  bool exitValid = false;
+  uint32_t exitValue = 0;
+  LoadResponse loadResp{};
+  DMEMRequest memoryRequest{};
+  std::array<std::array<SRAM<NUM_OF_DCACHE_SETS, 32, 8>::Input,
+                        DCACHE_WORDS_PER_LINE>, NUM_OF_DCACHE_WAYS>
       InputDCacheDataSRAMInput{};
-  SRAM<NUM_OF_DCACHE_SETS, DCACHE_META_BITS>::Input
-      InputDCacheMetadataSRAMInput{};
-  const DMEM &DMEMModule;
-  DCacheInput(const DMEM &dmem) : DMEMModule(dmem) {}
+  std::array<SRAM<NUM_OF_DCACHE_SETS, DCACHE_META_BITS>::Input,
+             NUM_OF_DCACHE_WAYS> InputDCacheMetadataSRAMInput{};
+  const AXIData &DMEMModule;
+  DCacheInput(const AXIData &dmem) : DMEMModule(dmem) {}
 };
 
-// Direct-mapped, write-back/write-allocate cache. Requests queue independently
-// of the single-port SRAMs; only the head is serviced. One miss can use both
-// DMEM ports. No HALT scan or drain is implemented here.
+// Eight request credits INCLUDE four MSHR owners. Different sets may have independent
+// misses in flight. A reserved set stays locked until its complete refill;
+// same-line Load waiters join before the first refill beat. Stores stay ordered.
 class DCache {
-private:
-  SRAM<NUM_OF_DCACHE_SETS, 32, 8> datas[DCACHE_WORDS_PER_LINE];
-  SRAM<NUM_OF_DCACHE_SETS, DCACHE_META_BITS> metadata;
-  bool validBits[NUM_OF_DCACHE_SETS]{};
+  SRAM<NUM_OF_DCACHE_SETS, 32, 8>
+      datas[NUM_OF_DCACHE_WAYS][DCACHE_WORDS_PER_LINE];
+  SRAM<NUM_OF_DCACHE_SETS, DCACHE_META_BITS> metadata[NUM_OF_DCACHE_WAYS];
+  bool validBits[NUM_OF_DCACHE_SETS][NUM_OF_DCACHE_WAYS]{};
+  uint8_t plru[NUM_OF_DCACHE_SETS]{};
   DCachePark RequestBuffer[REQUEST_CAP]{};
-  uint8_t head = 0;
+  DCacheMiss misses[DCACHE_MSHR_CAP]{};
+  // Bit j in row i means i was accepted before j. ROB tags cannot order
+  // committed Stores that may outlive the current ROB window.
+  uint8_t olderMask[REQUEST_CAP]{};
   uint8_t count = 0;
+  uint8_t cursor = 0;
   uint8_t readIndex = 0;
-  uint8_t readLaneIndex = 0;
-  uint8_t readBytes = 0;
+  uint8_t readWayMask = 0;
   bool readValid = false;
-  bool readLineValid = false; // Sampled with the synchronous SRAM read.
-  bool memoryReadSent = false;
-  bool memoryWriteSent = false;
-  uint8_t fillWord = 0; // First bank of the next refill beat (0,2,...,14).
-  std::array<uint8_t, DCACHE_BLOCK_CAP> victimLine{};
   uint64_t hitCount = 0;
   uint64_t missCount = 0;
-  void pop(systemState &CPUstate) const;
-  void pushRequest(const MemRequest &request, systemState &CPUstate) const;
-  uint32_t readRaw() const;
+
+  uint8_t activeMask() const;
+  int oldestRequest(uint8_t mask) const;
+  int oldestMiss(uint8_t mask) const;
+  int freeRequest() const;
+  int findMiss(uint32_t line) const;
+  int freeMiss() const;
+  bool setLocked(uint32_t address) const;
+  bool storeHazard(int slot, bool allocatingMiss) const;
+  bool victimHazard(int miss) const;
+  int hitWay() const;
+  uint8_t selectVictim(uint32_t set) const;
+  uint32_t sramRaw(int slot, int way) const;
+  uint32_t memoryRaw(int slot, const AXIData &dmem) const;
+  uint32_t victimAddress(int miss) const;
 
 public:
-  // Cold host storage is deterministic; no SRAM initialization transaction.
-  // Valid/control registers start clear; this class remains trivially copyable.
   DCache() = default;
-  bool isEmpty() const { return count == 0; }
   bool isRequestFull() const { return count == REQUEST_CAP; }
-  bool canAccept(bool popConsume) const {
-    return !isRequestFull() || (popConsume && !isEmpty());
-  }
-  bool needsLookup() const {
-    return !isEmpty() && !readValid && !RequestBuffer[head].valid &&
-           !RequestBuffer[head].needReadMemory;
-  }
-  // Both result storage and head bypass use the same old-row hit predicate.
-  bool readHit() const {
-    return readValid && readLineValid &&
-           (RequestBuffer[readIndex].request.address >> DCACHE_TAG_SHIFT) ==
-               (metadata.readLane(0) & DCACHE_META_TAG_MASK);
-  }
-  // SRAM hit data belongs only to its saved occupied, not-yet-ready slot.
-  bool headReadReady() const {
-    return count > 0 && !RequestBuffer[head].valid && readValid &&
-           readIndex == head && readHit();
-  }
-  bool isHeadRequestStore() const {
-    return !isEmpty() && RequestBuffer[head].request.op == Operation::Store;
-  }
-  bool isHeadCancelled() const {
-    return !isEmpty() && RequestBuffer[head].cancelled;
-  }
-  uint32_t headValue() const {
-    return RequestBuffer[head].request.value;
-  }
-  uint32_t headAddr() const {
-    return RequestBuffer[head].request.address;
-  }
-  uint8_t headBytes() const {
-    return RequestBuffer[head].request.nBytes;
-  }
-  bool headReadMemory() const {
-    return !isEmpty() && RequestBuffer[head].needReadMemory;
-  }
-  bool headDirty() const {
-    return !isEmpty() && RequestBuffer[head].lineValid &&
-           RequestBuffer[head].lineDirty;
-  }
-  bool needsMemoryRead() const {
-    return headReadMemory() && !memoryReadSent;
-  }
-  bool needsMemoryWrite() const {
-    return headReadMemory() && headDirty() && !memoryWriteSent;
-  }
-  bool canFill(const DMEM &dmem) const {
-    return headReadMemory() && memoryReadSent && dmem.isReplyReady() &&
-           (!headDirty() || (memoryWriteSent && !dmem.isWriteBusy()));
-  }
-  uint8_t fillWordIndex() const { return fillWord; }
-  bool fillIsLast() const {
-    return fillWord == DCACHE_WORDS_PER_LINE - DCACHE_FILL_WORDS_PER_BEAT;
-  }
-  uint32_t victimAddr() const {
-    const auto set = (headAddr() >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
-    return ((RequestBuffer[head].tag << DCACHE_INDEX_BITS) | set)
-           << DCACHE_OFFSET_BITS;
-  }
-  uint8_t victimByte(int i) const {
-    return victimLine[i];
-  }
-  bool isReturnReady() const {
-    return count > 0 && (RequestBuffer[head].valid || headReadReady());
-  }
-  const MemRequest &returnRequest() const { return RequestBuffer[head].request; }
-  uint32_t returnRaw() const {
-    return headReadReady() ? readRaw() : RequestBuffer[head].raw;
-  }
-  uint32_t returnTag() const {
-    return headReadReady() ? (metadata.readLane(0) & DCACHE_META_TAG_MASK)
-                           : RequestBuffer[head].tag;
-  }
-  bool returnLineValid() const {
-    return headReadReady() ? readLineValid
-                           : RequestBuffer[head].lineValid;
-  }
-  bool returnLineDirty() const {
-    return headReadReady() ? (metadata.readLane(0) & DCACHE_META_DIRTY) != 0
-                           : RequestBuffer[head].lineDirty;
-  }
+  bool isEmpty() const { return count == 0; }
   uint64_t getHitCount() const { return hitCount; }
   uint64_t getMissCount() const { return missCount; }
+  void plan(DCacheInput &) const;
   void tick(const DCacheInput &, systemState &);
 };

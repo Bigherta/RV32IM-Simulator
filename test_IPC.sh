@@ -4,6 +4,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "${LEGACY_CORPUS:-0}" != 1 ]; then
+  exec python3 "$ROOT/data/course.py" test 'perf_*' --binary "${BP_BIN:-$ROOT/code}"
+fi
+export LEGACY_HALT=1
 CORPUS="$ROOT/data/testcases_ipc"
 OUTPUT="$ROOT/docs/ipc_benchmarks.md"
 BIN_INPUT="${BP_BIN:-$ROOT/code}"
