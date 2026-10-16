@@ -129,6 +129,6 @@ void DecodeUnit::tick(const DecodeInput &input, systemState &CPUstate) {
   uop.pc = input.FQModule.headpc();
   uop.predictedPC = input.FQModule.headPredictedPC();
   uop.ckptId = input.FQModule.headCkptId();
-  uop.isHalt = (raw == 0x0ff00513);
+  uop.isHalt = legacyHaltEnabled && (raw == 0x0ff00513);
   push(uop, CPUstate);
 }

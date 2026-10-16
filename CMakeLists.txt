@@ -5,9 +5,9 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(CPU_SOURCES
+    src/AXI/AXI.cpp
     src/CPU/CPU.cpp
     src/Decoder/Decoder.cpp
-    src/DMEM/DMEM.cpp
     src/DCache/DCache.cpp
     src/ROB/ROB.cpp
     src/RS/RS.cpp
@@ -19,7 +19,6 @@ set(CPU_SOURCES
     src/DynamicArbiter/DynamicArbiter.cpp
     src/StaticArbiter/StaticArbiter.cpp
     src/CDB/CDB.cpp
-    src/IMEM/IMEM.cpp
     src/ICache/ICache.cpp
     src/FetchUnit/FetchUnit.cpp
     src/LQ/LQ.cpp
@@ -37,8 +36,9 @@ add_executable(code
 
 target_include_directories(code PRIVATE src/include)
 
+set(CPU_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}" CACHE PATH "Simulator output directory")
 set_target_properties(code PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_SOURCE_DIR}
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_SOURCE_DIR}
+    RUNTIME_OUTPUT_DIRECTORY ${CPU_RUNTIME_OUTPUT_DIRECTORY}
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CPU_RUNTIME_OUTPUT_DIRECTORY}
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CPU_RUNTIME_OUTPUT_DIRECTORY}
 )

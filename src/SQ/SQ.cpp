@@ -276,7 +276,7 @@ void SQ::tick(const SQInput &input, systemState &CPUstate) {
     storeDispatched = true;
   if (storeDispatched)
     pop(CPUstate);
-  if (input.ROBModule.storeWillCommit(input.squashDetect)) {
+  if (input.retireEnabled && input.ROBModule.storeWillCommit(input.squashDetect)) {
     const auto storeTag = input.ROBModule.getHead();
     for (int i = 0; i < SQ_CAP; ++i) {
       if (isActive(i) && SQqueue[i].robTag == storeTag &&

@@ -3,9 +3,9 @@
 #include <cstring>
 #include <iostream>
 
-// host-only: compile-time size constant (128 KiB). Constant folding is fine,
+// host-only: course RAM image address space (256 MiB). Constant folding is fine,
 // but the project bans `*` in source text so the CI grep stays signal-only.
-static constexpr uint32_t MEM_SIZE = 128 << 10;
+static constexpr uint32_t MEM_SIZE = 256u << 20;
 
 // Base class shared by IMEM (instruction memory) and DMEM (data memory).
 // It owns only the byte-addressable storage array and the functions that

@@ -8,6 +8,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "${LEGACY_CORPUS:-0}" != 1 ]; then
+  exec python3 "$ROOT/data/course.py" test "${1:-*}" --binary "${BP_BIN:-$ROOT/code}"
+fi
+export LEGACY_HALT=1
 DATA_DIR="$ROOT/data/testcases"
 GOLDEN_MD="${GOLDEN_MD:-$ROOT/docs/benchmarks.md}"
 BIN_INPUT="${BP_BIN:-$ROOT/code}"
