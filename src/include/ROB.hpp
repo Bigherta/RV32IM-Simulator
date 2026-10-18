@@ -4,6 +4,7 @@
 #include "common.hpp"
 #include <cstdint>
 #include <cstring>
+constexpr int COMMIT_WIDTH = 2;
 enum class ROBType {
   REGISTER,
   BRANCH,
@@ -19,8 +20,8 @@ struct ROBEntry {
   int32_t pc = 0;
   bool halt = false;
   bool exception = false;
-  bool isRet = false;  // RISC-V RAS pop hint
-  bool isCall = false; // RISC-V RAS push hint
+  bool isRet = false;      // RISC-V RAS pop hint
+  bool isCall = false;     // RISC-V RAS push hint
   bool isIndirect = false; // JALR variant: target from reg, not static imm
   uint8_t lqTailSnapshot = 0;
   uint8_t sqTailSnapshot = 0;
@@ -32,9 +33,7 @@ struct IssuePacket;
 struct ROBInput {
   SquashInfo squashDetect;
   aluCDB cdbOfALU;
-  lqCDB cdbOfLQ;
-  mulCDB cdbOfMul;
-  divCDB cdbOfDiv;
+  sharedCDB cdbOfShared;
   const BRU &BRUModule;
   StoreCompletion storeCompletion;
   const IssuePacket &issuePacket;
@@ -82,9 +81,10 @@ public:
   uint8_t getNewPhy(int index) const;
   uint8_t getOldPhy(int index) const;
   uint8_t getRd(int index) const;
-  uint8_t getTag(int index) const {return ROBqueue[index].tag;}
+  uint8_t getTag(int index) const { return ROBqueue[index].tag; }
   bool isRet(int index) const;
   bool isCall(int index) const;
   bool isIndirect(int index) const;
+  RecoveryWindow recoveryWindow(unsigned offset) const;
   void tick(const ROBInput &, systemState &);
 };

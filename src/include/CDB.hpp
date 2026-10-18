@@ -33,3 +33,11 @@ struct lqCDB {
   bool valid = false;
   static lqCDB build(const LQ &lq, const SquashInfo &squash);
 };
+
+// CDB1: one age-selected result; source grants are returned separately.
+struct sharedCDB {
+  int32_t value = 0;
+  uint8_t robTag = 0;
+  bool valid = false;
+  static sharedCDB arbitrate(mulCDB &mul, divCDB &div, lqCDB &lq);
+};

@@ -1,5 +1,6 @@
 #pragma once
 #include "common.hpp"
+#include "SRAM.hpp"
 #include <cstdint>
 #include <cstring>
 
@@ -17,6 +18,8 @@ struct BPUInput {
   SquashInfo squashDetect;
   FetchDecision fetchDecision;
   FetchTypeInfo fetchInfo;
+  RecoveryStep recovery;
+  std::array<RecoveryRasEntry, RECOVERY_WIDTH> replay{};
   BPUInput(const BRU &bru, const ROB &rob) : BRUModule(bru), ROBModule(rob) {}
 };
 // Tournament direction predictor: direct-PC local counters, gshare global
@@ -39,7 +42,10 @@ struct DirectionPred {
 struct TargetPred {
   BTBEntry BTB[BTB_CAP] = {};
   uint32_t specRAS[RAS_CAP] = {};
-  uint32_t archRAS[RAS_CAP] = {};
+  SRAM<1, (RAS_CAP << 5), 32> archStorage;
+  uint32_t archValid = 0;
+  uint8_t baselineTop = 0;
+  bool replayOpen = false;
   uint8_t specTopOfRAS = 0;
   uint8_t archTopOfRAS = 0;
   bool condSeen[CONDSEEN_CAP] = {};

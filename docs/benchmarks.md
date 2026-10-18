@@ -1,6 +1,16 @@
 # Benchmarks
 
-## 当前共同golden：课程AXI镜像（2026-10-16）
+> **2026-10-17 当前共同golden**：两软件已同步RTL的SRAM基线读＋固定四拍恢复，以及AXIData
+> word-bank共享payload、DCache局部地址/独立raw-victim缓冲。两软件Release/断言四构建25/25
+> 同值、同退休及同分段周期；两软件分别与真实RTL共享Slave全25例逐拍及独立ISA通过，源码摘要保持。
+> 当前表按实测更新，下面16日单拍恢复记录保留为历史；验收见父工作区`sync/RECOVERY4-SYNC-20261017.md`。
+
+> **2026-10-16 两路CDB复核**：ALU独占一路，MUL/DIV/LQ按ROB年龄共用另一路。
+> 两软件Release/断言四构建25例完整结果、独立退休数、init/core/drain/total逐项一致，
+> 与本活动表全部逐拍数值相同，无需改写golden。六perf几何IPC仍0.589912318160。
+> 总线争用的保持/恢复由独立定向测试覆盖；此结果不代表所有程序周期不变或Fmax提升。
+
+## 当前共同golden：四拍恢复＋课程AXI镜像（2026-10-17）
 
 两软件D$4 KiB/64组/2-way/32 B、4 MSHR、8请求槽；I$1 KiB/64 B、8请求槽。
 AXI4-Lite外存每通道16项，服务延迟10拍、256 MiB RAM；数据读写共享16条整行信用。
@@ -13,34 +23,68 @@ Release及`_DEBUG`+标准assert四构建25/25完整结果、独立退休数、in
 
 | case | result | cycles | retired | core | drain |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| correctness_add_to_100 | 5050 | 717 | 421 | 703 | 14 |
-| correctness_array_test1 | 123 | 702 | 131 | 688 | 14 |
-| correctness_array_test2 | 43 | 686 | 149 | 672 | 14 |
-| correctness_basicopt1 | 88 | 220919 | 142059 | 220905 | 14 |
-| correctness_bulgarian | 159 | 388057 | 265654 | 388043 | 14 |
-| correctness_expr | 136 | 1029 | 291 | 1015 | 14 |
-| correctness_gcd | 178 | 682 | 82 | 668 | 14 |
-| correctness_hanoi | 184 | 7579 | 3674 | 7565 | 14 |
-| correctness_lvalue2 | 175 | 363 | 53 | 349 | 14 |
-| correctness_magic | 216 | 691898 | 441938 | 691884 | 14 |
-| correctness_manyarguments | 40 | 462 | 37 | 448 | 14 |
-| correctness_multiarray | 115 | 3464 | 1543 | 3450 | 14 |
-| correctness_naive | 97 | 350 | 37 | 336 | 14 |
-| correctness_pi | 112 | 8412006 | 3117658 | 8411992 | 14 |
-| correctness_qsort | 81 | 1538869 | 1097111 | 1538855 | 14 |
-| correctness_queens | 144 | 483649 | 265167 | 483635 | 14 |
-| correctness_statement_test | 50 | 1779 | 546 | 1765 | 14 |
-| correctness_superloop | 134 | 562113 | 371607 | 562099 | 14 |
-| correctness_tak | 186 | 1854395 | 1221227 | 1854381 | 14 |
-| perf_median | 0 | 14518 | 6961 | 14504 | 14 |
-| perf_multiply | 0 | 27467 | 21722 | 27453 | 14 |
-| perf_qsort | 0 | 267429 | 139900 | 267415 | 14 |
-| perf_rsort | 0 | 331436 | 195719 | 331422 | 14 |
-| perf_towers | 0 | 9728 | 5278 | 9714 | 14 |
-| perf_vvadd | 0 | 6857 | 4524 | 6843 | 14 |
+| correctness_add_to_100 | 5050 | 733 | 421 | 719 | 14 |
+| correctness_array_test1 | 123 | 758 | 131 | 744 | 14 |
+| correctness_array_test2 | 43 | 746 | 149 | 732 | 14 |
+| correctness_basicopt1 | 88 | 221631 | 142059 | 221617 | 14 |
+| correctness_bulgarian | 159 | 421646 | 265654 | 421632 | 14 |
+| correctness_expr | 136 | 1073 | 291 | 1059 | 14 |
+| correctness_gcd | 178 | 742 | 82 | 728 | 14 |
+| correctness_hanoi | 184 | 8451 | 3674 | 8437 | 14 |
+| correctness_lvalue2 | 175 | 391 | 53 | 377 | 14 |
+| correctness_magic | 216 | 788390 | 441938 | 788376 | 14 |
+| correctness_manyarguments | 40 | 494 | 37 | 480 | 14 |
+| correctness_multiarray | 115 | 3748 | 1543 | 3734 | 14 |
+| correctness_naive | 97 | 378 | 37 | 364 | 14 |
+| correctness_pi | 112 | 8413649 | 3117658 | 8413635 | 14 |
+| correctness_qsort | 81 | 1646052 | 1097111 | 1646038 | 14 |
+| correctness_queens | 144 | 551069 | 265167 | 551055 | 14 |
+| correctness_statement_test | 50 | 1915 | 546 | 1901 | 14 |
+| correctness_superloop | 134 | 660441 | 371607 | 660427 | 14 |
+| correctness_tak | 186 | 2113812 | 1221227 | 2113798 | 14 |
+| perf_median | 0 | 16385 | 6961 | 16371 | 14 |
+| perf_multiply | 0 | 30373 | 21722 | 30359 | 14 |
+| perf_qsort | 0 | 310180 | 139900 | 310166 | 14 |
+| perf_rsort | 0 | 331559 | 195719 | 331545 | 14 |
+| perf_towers | 0 | 10463 | 5278 | 10449 | 14 |
+| perf_vvadd | 0 | 6876 | 4524 | 6862 | 14 |
 
-全25例总cycles **14,827,154**、retired **7,303,489**；六perf总cycles **657,435**，
-按`retired/core`计算的几何IPC **0.589912318160**。当前数据不能与旧镜像混算。
+全25例总cycles **15,541,955**、core **15,541,605**、drain **350**、retired **7,303,489**；
+六perf总cycles **705,836**，按`retired/core`计算的几何IPC **0.547643861067**。
+每例boot1拍另列；课程RTL仿真含boot合计15,541,980。不能混用含drain/boot的周期计算IPC。
+
+### 历史：单拍恢复课程AXI（2026-10-16，非活动golden）
+
+旧总cycles14,827,154、retired7,303,489；六perf657,435、几何IPC0.589912318160。
+保留逐例记录；本表特意增加“模式”列，不由活动golden解析器消费。
+
+| 模式 | case | result | cycles | retired | core | drain |
+|---|---|---:|---:|---:|---:|---:|
+| 单拍 | correctness_add_to_100 | 5050 | 717 | 421 | 703 | 14 |
+| 单拍 | correctness_array_test1 | 123 | 702 | 131 | 688 | 14 |
+| 单拍 | correctness_array_test2 | 43 | 686 | 149 | 672 | 14 |
+| 单拍 | correctness_basicopt1 | 88 | 220919 | 142059 | 220905 | 14 |
+| 单拍 | correctness_bulgarian | 159 | 388057 | 265654 | 388043 | 14 |
+| 单拍 | correctness_expr | 136 | 1029 | 291 | 1015 | 14 |
+| 单拍 | correctness_gcd | 178 | 682 | 82 | 668 | 14 |
+| 单拍 | correctness_hanoi | 184 | 7579 | 3674 | 7565 | 14 |
+| 单拍 | correctness_lvalue2 | 175 | 363 | 53 | 349 | 14 |
+| 单拍 | correctness_magic | 216 | 691898 | 441938 | 691884 | 14 |
+| 单拍 | correctness_manyarguments | 40 | 462 | 37 | 448 | 14 |
+| 单拍 | correctness_multiarray | 115 | 3464 | 1543 | 3450 | 14 |
+| 单拍 | correctness_naive | 97 | 350 | 37 | 336 | 14 |
+| 单拍 | correctness_pi | 112 | 8412006 | 3117658 | 8411992 | 14 |
+| 单拍 | correctness_qsort | 81 | 1538869 | 1097111 | 1538855 | 14 |
+| 单拍 | correctness_queens | 144 | 483649 | 265167 | 483635 | 14 |
+| 单拍 | correctness_statement_test | 50 | 1779 | 546 | 1765 | 14 |
+| 单拍 | correctness_superloop | 134 | 562113 | 371607 | 562099 | 14 |
+| 单拍 | correctness_tak | 186 | 1854395 | 1221227 | 1854381 | 14 |
+| 单拍 | perf_median | 0 | 14518 | 6961 | 14504 | 14 |
+| 单拍 | perf_multiply | 0 | 27467 | 21722 | 27453 | 14 |
+| 单拍 | perf_qsort | 0 | 267429 | 139900 | 267415 | 14 |
+| 单拍 | perf_rsort | 0 | 331436 | 195719 | 331422 | 14 |
+| 单拍 | perf_towers | 0 | 9728 | 5278 | 9714 | 14 |
+| 单拍 | perf_vvadd | 0 | 6857 | 4524 | 6843 | 14 |
 
 ## 历史：旧HALT镜像、逻辑DMEM
 

@@ -72,38 +72,13 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
       }
     }
   }
-  // 2. cdb of lq wake up prf
-  if (input.cdbOfLQ.valid && input.ROBModule.matchesTag(input.cdbOfLQ.robTag)) {
+  // 2. Shared MUL/DIV/LQ result: exactly one physical write port.
+  if (input.cdbOfShared.valid &&
+      input.ROBModule.matchesTag(input.cdbOfShared.robTag)) {
     if (!input.squashDetect.needSquash ||
-        ROB::isOlder(input.cdbOfLQ.robTag, input.squashDetect.SquashTag)) {
-      auto robIdx = robSlot(input.cdbOfLQ.robTag);
-      auto value = input.cdbOfLQ.value;
-      int newPhy = input.ROBModule.getNewPhy(robIdx);
-      if (newPhy != InvalidPhy) {
-        write(newPhy, value, CPUstate);
-      }
-    }
-  }
-  // 3. cdb of mul wake up prf
-  if (input.cdbOfMul.valid &&
-      input.ROBModule.matchesTag(input.cdbOfMul.robTag)) {
-    if (!input.squashDetect.needSquash ||
-        ROB::isOlder(input.cdbOfMul.robTag, input.squashDetect.SquashTag)) {
-      auto robIdx = robSlot(input.cdbOfMul.robTag);
-      auto value = input.cdbOfMul.value;
-      int newPhy = input.ROBModule.getNewPhy(robIdx);
-      if (newPhy != InvalidPhy) {
-        write(newPhy, value, CPUstate);
-      }
-    }
-  }
-  // 4. cdb of div wake up prf
-  if (input.cdbOfDiv.valid &&
-      input.ROBModule.matchesTag(input.cdbOfDiv.robTag)) {
-    if (!input.squashDetect.needSquash ||
-        ROB::isOlder(input.cdbOfDiv.robTag, input.squashDetect.SquashTag)) {
-      auto robIdx = robSlot(input.cdbOfDiv.robTag);
-      auto value = input.cdbOfDiv.value;
+        ROB::isOlder(input.cdbOfShared.robTag, input.squashDetect.SquashTag)) {
+      auto robIdx = robSlot(input.cdbOfShared.robTag);
+      auto value = input.cdbOfShared.value;
       int newPhy = input.ROBModule.getNewPhy(robIdx);
       if (newPhy != InvalidPhy) {
         write(newPhy, value, CPUstate);
@@ -112,21 +87,19 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
   }
   
   // 5. if squash, recover the PRF state to the branch instruction
-  if (input.squashDetect.needSquash) {
-    const RobTag oldNext = input.ROBModule.getNextTag();
-    RobTag tag = robNextTag(input.squashDetect.SquashTag);
-    bool scanDone = (tag == oldNext);
-    for (int k = 0; k < ROB_CAP; ++k) {
-      if (scanDone)
-        continue;
-      auto recoverPRF = input.ROBModule.getNewPhy(robSlot(tag));
-      if (recoverPRF != InvalidPhy)
-        push(recoverPRF, writeTail, CPUstate);
+  if (input.recovery.active) {
+    RobTag tag = input.recovery.nextTag;
+    for (unsigned lane = 0; lane < RECOVERY_WIDTH; ++lane) {
+      const unsigned offset = unsigned(input.recovery.offset) + lane;
+      if (offset < ROB_CAP && offset < input.recovery.liveCount &&
+          input.replay[lane].tag == tag &&
+          ROB::isYounger(tag, input.recovery.squashTag)) {
+        const auto phy = input.replay[lane].newPhy;
+        if (phy != InvalidPhy) push(phy, writeTail, CPUstate);
+      }
       tag = robNextTag(tag);
-      if (tag == oldNext)
-        scanDone = true;
     }
-  } else {
+  } else if (!input.squashDetect.needSquash) {
     // 6. if not, distribute a free PRF to the logic register
     if (input.issuePacket.valid) {
       if (input.issuePacket.allocDest) {

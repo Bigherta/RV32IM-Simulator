@@ -46,6 +46,7 @@ struct systemState {
   FetchUnit FetchUnitModule;
   bool initialized = false;
   bool exitCommitted = false;
+  RecoveryStep recovery;
   AXIFetch AXIFetchModule;
   AXIData AXIDataModule;
   AXIBus AXIBusModule;
@@ -80,6 +81,7 @@ private:
   bool initialized = false;
   bool exitCommitted = false;
   bool exitRetiring = false;
+  RecoveryStep recovery;
   AXIFetch AXIFetchModule;
   AXIData AXIDataModule;
   AXIBus AXIBusModule;
@@ -89,10 +91,10 @@ private:
   AXIBusInput axiBusInput{};
   AXIMaster slaveInput{};
   aluCDB cdbOfALU;
+  // Source-specific acknowledgements for the single shared CDB1.
   lqCDB cdbOfLQ;
-  mulCDB cdbOfMul; // MUL 专用结果总线（cdbOfALU/cdbOfLQ/cdbOfMul
-                   // 三路，各源独立、无跨单元仲裁）
-  divCDB cdbOfDiv; // fourth independent result bus (ALU/LQ/MUL/DIV)
+  mulCDB cdbOfMul;
+  divCDB cdbOfDiv;
   IssuePacket issuePacket;
   AGUInput aguInput{RSModule, PRFModule};
   ALUInput aluInput{RSModule, PRFModule};

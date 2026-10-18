@@ -1,6 +1,16 @@
 # RV32IM IPC Benchmarks
 
-## 当前课程AXI基线（2026-10-16）
+## 当前四拍恢复＋课程AXI（2026-10-17）
+
+两软件Release/断言四构建和各自与真实RTL的25例逐拍/独立ISA验证闭合后更新共同golden。
+Cache/AXI容量及10拍外部服务保持；本次周期变化来自四拍恢复协议，不用软件模拟速度推断Fmax。
+六perf总cycles **705,836**、core **705,752**；按`retired/core`计算的几何IPC **0.547643861067**。
+严格逐例门禁读取`benchmarks.md`首表，旧单拍恢复表保留为历史。
+
+> **2026-10-16 两路CDB**：ALU独占、MUL/DIV/LQ按ROB年龄共享后，四软件构建六perf
+> 结果/退休/周期全部保持；总657,435拍、几何IPC0.589912318160，不推断综合频率收益。
+
+## 历史：单拍恢复课程AXI基线（2026-10-16）
 
 活动perf语料为`data/course-testcases/perf_*/`的6个原始课程镜像，非下方旧HALT镜像。
 两软件D$4 KiB/2-way/4 MSHR/8请求槽、AXI服务10拍；MMIO退出SW退休计入指令数，

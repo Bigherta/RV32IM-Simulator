@@ -8,7 +8,6 @@
 struct systemState;
 struct DCachePark {
   MemRequest request{};
-  uint32_t raw = 0;
   uint8_t way = 0;
   int8_t miss = -1;
   bool active = false;
@@ -19,7 +18,6 @@ struct DCachePark {
 struct DCacheMiss {
   uint32_t line = 0;
   uint32_t victimTag = 0;
-  std::array<uint8_t, DCACHE_BLOCK_CAP> victimLine{};
   uint8_t owner = 0;
   uint8_t way = 0;
   uint8_t fillWord = 0;
@@ -36,6 +34,7 @@ struct DCacheInput {
   MemDispatchDecision decision{};
   SquashInfo squashDetect{};
   int8_t lookup = -1;
+  int8_t lookupCandidate = -1;
   int8_t response = -1;
   int8_t store = -1;
   int8_t mergeSlot = -1;
@@ -47,6 +46,7 @@ struct DCacheInput {
   bool fillFire = false;
   bool exitValid = false;
   uint32_t exitValue = 0;
+  uint32_t readHitRaw = 0; // One synchronous read result, shared by all consumers.
   LoadResponse loadResp{};
   DMEMRequest memoryRequest{};
   std::array<std::array<SRAM<NUM_OF_DCACHE_SETS, 32, 8>::Input,
@@ -69,6 +69,8 @@ class DCache {
   uint8_t plru[NUM_OF_DCACHE_SETS]{};
   DCachePark RequestBuffer[REQUEST_CAP]{};
   DCacheMiss misses[DCACHE_MSHR_CAP]{};
+  uint32_t rawPayload[REQUEST_CAP]{};
+  std::array<uint32_t, DCACHE_WORDS_PER_LINE> victimPayload[DCACHE_MSHR_CAP]{};
   // Bit j in row i means i was accepted before j. ROB tags cannot order
   // committed Stores that may outlive the current ROB window.
   uint8_t olderMask[REQUEST_CAP]{};

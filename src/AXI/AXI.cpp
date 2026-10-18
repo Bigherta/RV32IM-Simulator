@@ -2,6 +2,21 @@
 #include "CPU.hpp"
 #include <cassert>
 
+namespace {
+uint8_t freeDataSlot(uint16_t busy) {
+  uint8_t slot = 0;
+  bool found = false;
+  for (int i = 0; i < AXI_DATA_CAP; ++i) {
+    if (!found && !(busy & (uint16_t{1} << i))) {
+      slot = static_cast<uint8_t>(i);
+      found = true;
+    }
+  }
+  assert(found);
+  return slot;
+}
+} // namespace
+
 AXIBusPorts AXIBus::ports(const AXIBusInput &in) const {
   AXIBusPorts out{};
   const bool credit = count < 64;
@@ -34,29 +49,18 @@ void AXIBus::tick(const AXIBusInput &in, systemState &next) const {
 }
 
 unsigned AXIFetch::occupancy() const {
-  unsigned n = 0;
-  for (const auto &line : lines) n += unsigned(line.valid);
-  return n;
+  return count;
 }
 int AXIFetch::unscheduled() const {
-  int found = -1;
-  for (int age = 0; age < IMEM_CAP; ++age) {
-    const int s = (head + age) & (IMEM_CAP - 1);
-    if (found < 0 && lines[s].valid && lines[s].issued < ICACHE_WORDS_PER_LINE) found = s;
-  }
-  return found;
+  return issue != tail ? issue & (IMEM_CAP - 1) : -1;
 }
 int AXIFetch::collecting() const {
-  int found = -1;
-  for (int age = 0; age < IMEM_CAP; ++age) {
-    const int s = (head + age) & (IMEM_CAP - 1);
-    if (found < 0 && lines[s].valid && lines[s].collected < lines[s].issued) found = s;
-  }
-  return found;
+  const int s = collect & (IMEM_CAP - 1);
+  return collect != tail && lines[s].collected < lines[s].issued ? s : -1;
 }
 LineReturn AXIFetch::getReturn() const {
   const auto &line = lines[head];
-  return {line.valid && line.collected == ICACHE_WORDS_PER_LINE, line.address, line.words};
+  return {line.valid && line.collected == ICACHE_WORDS_PER_LINE, line.address, payload[head]};
 }
 AXIMaster AXIFetch::port() const {
   AXIMaster out{};
@@ -76,6 +80,10 @@ void AXIFetch::tick(const AXIFetchInput &in, systemState &next) const {
   if (in.squash) {
     for (int i = 0; i < IMEM_CAP; ++i) next.AXIFetchModule.lines[i].valid = false;
     next.AXIFetchModule.head = 0;
+    next.AXIFetchModule.count = 0;
+    next.AXIFetchModule.tail = 0;
+    next.AXIFetchModule.issue = 0;
+    next.AXIFetchModule.collect = 0;
     next.AXIFetchModule.discard = infl;
     if (pending && ar) next.AXIFetchModule.pending = false;
     else if (!pending && !ar && out.arValid) {
@@ -88,13 +96,17 @@ void AXIFetch::tick(const AXIFetchInput &in, systemState &next) const {
     else if (r) {
       const int s = collecting();
       assert(s >= 0);
-      next.AXIFetchModule.lines[s].words[lines[s].collected] = in.bus.rData;
+      next.AXIFetchModule.payload[s][lines[s].collected] = in.bus.rData;
       next.AXIFetchModule.lines[s].collected = lines[s].collected + 1;
+      if (lines[s].collected + 1 == ICACHE_WORDS_PER_LINE)
+        next.AXIFetchModule.collect = (collect + 1) & ((IMEM_CAP << 1) - 1);
     }
     if (ar && pending) { next.AXIFetchModule.pending = false; ++disc; }
     else if (ar) {
       const int s = unscheduled();
       next.AXIFetchModule.lines[s].issued = lines[s].issued + 1;
+      if (lines[s].issued + 1 == ICACHE_WORDS_PER_LINE)
+        next.AXIFetchModule.issue = (issue + 1) & ((IMEM_CAP << 1) - 1);
     }
     next.AXIFetchModule.discard = disc;
     const unsigned occ = occupancy();
@@ -106,51 +118,54 @@ void AXIFetch::tick(const AXIFetchInput &in, systemState &next) const {
       next.AXIFetchModule.lines[tail].address = in.fetchPC;
       next.AXIFetchModule.lines[tail].issued = 0;
       next.AXIFetchModule.lines[tail].collected = 0;
+      next.AXIFetchModule.tail = (this->tail + 1) & ((IMEM_CAP << 1) - 1);
     }
     if (in.lineConsumed) next.AXIFetchModule.head = (head + 1) & (IMEM_CAP - 1);
+    next.AXIFetchModule.count = count + unsigned(push) - unsigned(in.lineConsumed);
   }
 }
 
 int AXIData::readIssue() const {
-  int found = -1;
-  for (int age = 0; age < AXI_DEPTH; ++age) {
-    const int s = (rh + age) & (AXI_DEPTH - 1);
-    if (age < rn && found < 0 && reads[s].issued < DCACHE_WORDS_PER_LINE) found = s;
-  }
-  return found;
+  return ra != rt ? ra & (AXI_ORDER_CAP - 1) : -1;
 }
 int AXIData::writeIssue(bool address) const {
-  int found = -1;
-  for (int age = 0; age < AXI_DEPTH; ++age) {
-    const int s = (wh + age) & (AXI_DEPTH - 1);
-    if (age < wn && found < 0 && (address ? writes[s].aw : writes[s].w) <
-        (writes[s].mmio ? 1 : DCACHE_WORDS_PER_LINE)) found = s;
-  }
-  return found;
+  const uint8_t cursor = address ? wa : wd;
+  return cursor != wt ? cursor & (AXI_ORDER_CAP - 1) : -1;
 }
-bool AXIData::isReplyReady() const { return rn != 0 && reads[rh].collected == DCACHE_WORDS_PER_LINE; }
+int AXIData::readCollect() const {
+  const int s = rr & (AXI_ORDER_CAP - 1);
+  return rr != rt && readEntry(s).collected < readEntry(s).issued ? s : -1;
+}
+int AXIData::writeCollect() const {
+  const int s = wb & (AXI_ORDER_CAP - 1);
+  return wb != wt && writeEntry(s).collected < writeEntry(s).issued &&
+      writeEntry(s).collected < writeEntry(s).w ? s : -1;
+}
+bool AXIData::isReplyReady() const { return rn != 0 && readEntry(rh).collected == DCACHE_WORDS_PER_LINE; }
 bool AXIData::isWriteReplyReady() const {
-  return wn != 0 && writes[wh].collected == (writes[wh].mmio ? 1 : DCACHE_WORDS_PER_LINE);
+  return wn != 0 && writeEntry(wh).collected == (writeEntry(wh).mmio ? 1 : DCACHE_WORDS_PER_LINE);
 }
 MemReply AXIData::reply() const {
   MemReply out{};
-  out.address = reads[rh].address;
-  out.transaction = reads[rh].transaction;
-  for (int i = 0; i < DCACHE_BLOCK_CAP; ++i) out.lineData[i] = reads[rh].bytes[i];
+  out.address = readEntry(rh).address;
+  out.transaction = readEntry(rh).transaction;
+  if (isReplyReady())
+    for (int i = 0; i < DCACHE_BLOCK_CAP; ++i)
+      out.lineData[i] = payload[readOrder[rh]][i >> 2] >> ((i & 3) << 3);
   return out;
 }
-MemWriteReply AXIData::writeReply() const { return {writes[wh].address, writes[wh].transaction}; }
+MemWriteReply AXIData::writeReply() const { return {writeEntry(wh).address, writeEntry(wh).transaction}; }
 AXIMaster AXIData::port() const {
   AXIMaster out{};
   const int rd = readIssue(), aw = writeIssue(true), wd = writeIssue(false);
   out.arValid = rd >= 0;
-  if (rd >= 0) out.arAddr = reads[rd].address + (reads[rd].issued << 2);
+  if (rd >= 0) out.arAddr = readEntry(rd).address + (readEntry(rd).issued << 2);
   out.awValid = aw >= 0;
-  if (aw >= 0) out.awAddr = writes[aw].address + (writes[aw].aw << 2);
+  if (aw >= 0) out.awAddr = writeEntry(aw).address + (writeEntry(aw).issued << 2);
   out.wValid = wd >= 0;
   if (wd >= 0) {
     out.wStrb = 15;
-    for (int b = 0; b < 4; ++b) out.wData |= uint32_t(writes[wd].bytes[(writes[wd].w << 2) + b]) << (b << 3);
+    out.wData = payload[writeOrder[wd]][writeEntry(wd).w];
   }
   out.rReady = out.bReady = true;
   return out;
@@ -163,52 +178,85 @@ void AXIData::tick(const AXIDataInput &in, systemState &next) const {
   assert(!pushW || canAcceptWrite());
   assert(!pushR || canAcceptRead(pushW));
   assert(!in.exitValid || (!in.request.writeValid && exitReady()));
-  if (out.arValid && in.bus.arReady) next.AXIDataModule.reads[rd].issued = reads[rd].issued + 1;
-  if (out.awValid && in.bus.awReady) next.AXIDataModule.writes[aw].aw = writes[aw].aw + 1;
-  if (out.wValid && in.bus.wReady) next.AXIDataModule.writes[wd].w = writes[wd].w + 1;
-  if (in.bus.rValid) {
-    int s = -1;
-    for (int age = 0; age < AXI_DEPTH; ++age) {
-      const int i = (rh + age) & (AXI_DEPTH - 1);
-      if (age < rn && s < 0 && reads[i].collected < reads[i].issued) s = i;
-    }
-    assert(s >= 0 && in.bus.rResp == 0);
-    for (int b = 0; b < 4; ++b)
-      next.AXIDataModule.reads[s].bytes[(reads[s].collected << 2) + b] = in.bus.rData >> (b << 3);
-    next.AXIDataModule.reads[s].collected = reads[s].collected + 1;
-  }
-  if (in.bus.bValid) {
-    int s = -1;
-    for (int age = 0; age < AXI_DEPTH; ++age) {
-      const int i = (wh + age) & (AXI_DEPTH - 1);
-      if (age < wn && s < 0 && writes[i].collected < writes[i].aw && writes[i].collected < writes[i].w) s = i;
-    }
-    assert(s >= 0 && in.bus.bResp == 0);
-    next.AXIDataModule.writes[s].collected = writes[s].collected + 1;
+  // Allocate from OLD free slots. A completion consumed this cycle cannot
+  // bypass old-full admission or alias an incoming read-data write.
+  uint16_t reserved = dataBusy;
+  uint16_t allocated = 0;
+  uint8_t writeSlot = 0, readSlot = 0;
+  if (pushW) {
+    writeSlot = freeDataSlot(reserved);
+    allocated |= uint16_t{1} << writeSlot;
+    reserved |= uint16_t{1} << writeSlot;
   }
   if (pushR) {
-    const int s = (rh + rn) & (AXI_DEPTH - 1);
-    next.AXIDataModule.reads[s].address = in.request.read.address;
-    next.AXIDataModule.reads[s].transaction = in.request.read.transaction;
-    next.AXIDataModule.reads[s].issued = 0;
-    next.AXIDataModule.reads[s].collected = 0;
+    readSlot = freeDataSlot(reserved);
+    allocated |= uint16_t{1} << readSlot;
+  }
+  if (out.arValid && in.bus.arReady) {
+    next.AXIDataModule.entries[readOrder[rd]].issued = readEntry(rd).issued + 1;
+    if (readEntry(rd).issued + 1 == DCACHE_WORDS_PER_LINE)
+      next.AXIDataModule.ra = (ra + 1) & 31;
+  }
+  if (out.awValid && in.bus.awReady) {
+    next.AXIDataModule.entries[writeOrder[aw]].issued = writeEntry(aw).issued + 1;
+    if (writeEntry(aw).issued + 1 == (writeEntry(aw).mmio ? 1 : DCACHE_WORDS_PER_LINE))
+      next.AXIDataModule.wa = (wa + 1) & 31;
+  }
+  if (out.wValid && in.bus.wReady) {
+    next.AXIDataModule.entries[writeOrder[wd]].w = writeEntry(wd).w + 1;
+    if (writeEntry(wd).w + 1 == (writeEntry(wd).mmio ? 1 : DCACHE_WORDS_PER_LINE))
+      next.AXIDataModule.wd = (this->wd + 1) & 31;
+  }
+  if (in.bus.rValid) {
+    const int s = readCollect();
+    assert(s >= 0 && in.bus.rResp == 0);
+    next.AXIDataModule.payload[readOrder[s]][readEntry(s).collected] = in.bus.rData;
+    next.AXIDataModule.entries[readOrder[s]].collected = readEntry(s).collected + 1;
+    if (readEntry(s).collected + 1 == DCACHE_WORDS_PER_LINE)
+      next.AXIDataModule.rr = (rr + 1) & 31;
+  }
+  if (in.bus.bValid) {
+    const int s = writeCollect();
+    assert(s >= 0 && in.bus.bResp == 0);
+    next.AXIDataModule.entries[writeOrder[s]].collected = writeEntry(s).collected + 1;
+    if (writeEntry(s).collected + 1 == (writeEntry(s).mmio ? 1 : DCACHE_WORDS_PER_LINE))
+      next.AXIDataModule.wb = (wb + 1) & 31;
+  }
+  if (pushR) {
+    const int s = (rh + rn) & (AXI_ORDER_CAP - 1);
+    next.AXIDataModule.readOrder[s] = readSlot;
+    next.AXIDataModule.entries[readSlot].address = in.request.read.address;
+    next.AXIDataModule.entries[readSlot].transaction = in.request.read.transaction;
+    next.AXIDataModule.entries[readSlot].issued = 0;
+    next.AXIDataModule.entries[readSlot].collected = 0;
+    next.AXIDataModule.rt = (rt + 1) & 31;
   }
   if (pushW) {
-    const int s = (wh + wn) & (AXI_DEPTH - 1);
-    next.AXIDataModule.writes[s].address = in.exitValid ? AXI_EXIT_ADDR : in.request.write.address;
-    next.AXIDataModule.writes[s].transaction = in.request.write.transaction;
-    next.AXIDataModule.writes[s].aw = 0;
-    next.AXIDataModule.writes[s].w = 0;
-    next.AXIDataModule.writes[s].collected = 0;
-    next.AXIDataModule.writes[s].mmio = in.exitValid;
-    for (int b = 0; b < DCACHE_BLOCK_CAP; ++b)
-      next.AXIDataModule.writes[s].bytes[b] = in.exitValid
-          ? (b < 4 ? in.exitValue >> ((b & 3) << 3) : 0) : in.request.write.lineData[b];
+    const int s = (wh + wn) & (AXI_ORDER_CAP - 1);
+    next.AXIDataModule.writeOrder[s] = writeSlot;
+    next.AXIDataModule.entries[writeSlot].address = in.exitValid ? AXI_EXIT_ADDR : in.request.write.address;
+    next.AXIDataModule.entries[writeSlot].transaction = in.request.write.transaction;
+    next.AXIDataModule.entries[writeSlot].issued = 0;
+    next.AXIDataModule.entries[writeSlot].w = 0;
+    next.AXIDataModule.entries[writeSlot].collected = 0;
+    next.AXIDataModule.entries[writeSlot].mmio = in.exitValid;
+    for (int word = 0; word < DCACHE_WORDS_PER_LINE; ++word) {
+      uint32_t value = 0;
+      for (int byte = 0; byte < 4; ++byte)
+        value |= uint32_t(in.request.write.lineData[(word << 2) + byte]) << (byte << 3);
+      if (!in.exitValid || word == 0)
+        next.AXIDataModule.payload[writeSlot][word] = in.exitValid ? in.exitValue : value;
+    }
+    next.AXIDataModule.wt = (wt + 1) & 31;
   }
   if (in.replyConsumed) { assert(isReplyReady()); next.AXIDataModule.rh = (rh + 1) & 15; }
   if (in.writeConsumed) { assert(isWriteReplyReady()); next.AXIDataModule.wh = (wh + 1) & 15; }
   next.AXIDataModule.rn = rn + unsigned(pushR) - unsigned(in.replyConsumed);
   next.AXIDataModule.wn = wn + unsigned(pushW) - unsigned(in.writeConsumed);
+  uint16_t released = 0;
+  if (in.replyConsumed) released |= uint16_t{1} << readOrder[rh];
+  if (in.writeConsumed) released |= uint16_t{1} << writeOrder[wh];
+  next.AXIDataModule.dataBusy = (dataBusy & ~released) | allocated;
 }
 
 Slave::Slave(const Memory &mem) : ram(AXI_RAM_BYTES, 0) {
