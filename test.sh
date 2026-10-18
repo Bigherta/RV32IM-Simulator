@@ -1,8 +1,8 @@
 #!/bin/bash
-# RV32IM behavior and cycle regression.
+# Course behavior/cycle regression with overall/cond/JAL/JALR accuracy.
 # Usage: ./test.sh [pattern]
-#   pattern    : optional shell glob for case names (for example "gcd" or "q*")
-#   env QUICK=1: skip pi
+#   pattern    : optional course case glob (for example "*gcd" or "perf_*")
+#   env LEGACY_CORPUS=1: use the archived 18-case runner (QUICK=1 skips pi)
 #   env BP_BIN=: override the simulator binary (default: ./code)
 #   env GOLDEN_MD=: override docs/benchmarks.md
 set -euo pipefail

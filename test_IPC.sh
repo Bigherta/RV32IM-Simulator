@@ -1,5 +1,6 @@
 #!/bin/bash
-# Run the RV32IM IPC corpus and regenerate docs/ipc_benchmarks.md.
+# Run six course perf cases with IPC and overall/cond/JAL/JALR accuracy.
+# LEGACY_CORPUS=1 runs the archived corpus and regenerates docs/ipc_benchmarks.md.
 # Usage: BP_BIN=/path/to/code ./test_IPC.sh
 set -euo pipefail
 

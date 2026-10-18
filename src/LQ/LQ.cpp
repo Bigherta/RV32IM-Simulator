@@ -47,16 +47,10 @@ void LQ::writeAddress(uint32_t address, int index,
 
 void LQ::writeValue(int32_t value, int index, uint8_t nBytes, bool isSigned,
                     systemState &CPUstate) const {
-  if (nBytes == 1) {
-    value = value & 0xff;
-  } else if (nBytes == 2) {
-    value = value & 0xffff;
-  }
-  if (isSigned && nBytes != 4) {
-    if (value & (1 << ((8 << (nBytes - 1)) - 1))) {
-      value |= ~((1 << (8 << (nBytes - 1))) - 1);
-    }
-  }
+  // Raw data from every producer; width/sign are applied only at readout.
+  // The immutable live row, not a second transport copy, owns these fields.
+  (void)nBytes;
+  (void)isSigned;
   CPUstate.LQModule.LQqueue[index].value = value;
   CPUstate.LQModule.LQqueue[index].valueState = ValueState::READY;
   CPUstate.LQModule.LQqueue[index].isCDBBroadcast = false;
@@ -89,7 +83,8 @@ auto LQ::getAddress(int index) const -> uint32_t {
 
 auto LQ::getValue(int index) const -> int32_t {
   if (LQqueue[index].valueState == ValueState::READY)
-    return LQqueue[index].value;
+    return static_cast<int32_t>(extendLoad(static_cast<uint32_t>(LQqueue[index].value),
+                                          LQqueue[index].nBytes, LQqueue[index].isUnsigned));
   throw std::runtime_error("Value is not ready!");
 }
 
@@ -179,7 +174,7 @@ void LQ::tick(const LQInput &input, systemState &CPUstate) {
   if (input.storeAddrNotify.valid)
     forwarded |= applyStoreForward(input.storeAddrNotify, CPUstate);
   // AGU: load address ready -> write address + query SQ for forwarding
-  if (!input.AGUModule.isEmpty() &&
+  if (input.executeEnabled && !input.AGUModule.isEmpty() &&
       !isStoreMem(input.AGUModule.headMemIndex())) {
     auto aguRobTag = input.AGUModule.headRobTag();
     const auto index = memSlot(input.AGUModule.headMemIndex());

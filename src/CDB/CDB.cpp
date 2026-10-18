@@ -58,3 +58,26 @@ lqCDB lqCDB::build(const LQ &lq, const SquashInfo &squash) {
   }
   return lqcdb;
 }
+
+sharedCDB sharedCDB::arbitrate(mulCDB &mul, divCDB &div, lqCDB &lq) {
+  // Inputs have already passed flush qualification. Fold in MUL/DIV/LQ
+  // order; equal live tags cannot belong to different producers.
+  sharedCDB result{};
+  uint8_t winner = 0;
+  if (mul.valid) {
+    result = {mul.value, mul.robTag, true};
+    winner = 1;
+  }
+  if (div.valid && (!result.valid || ROB::isOlder(div.robTag, result.robTag))) {
+    result = {div.value, div.robTag, true};
+    winner = 2;
+  }
+  if (lq.valid && (!result.valid || ROB::isOlder(lq.robTag, result.robTag))) {
+    result = {lq.value, lq.robTag, true};
+    winner = 3;
+  }
+  mul.valid = winner == 1;
+  div.valid = winner == 2;
+  lq.valid = winner == 3;
+  return result;
+}

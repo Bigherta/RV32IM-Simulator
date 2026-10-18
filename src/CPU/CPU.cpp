@@ -78,12 +78,23 @@ void CPU::comb() {
   memcpy(&FetchUnitModule, &CPUstate.FetchUnitModule, sizeof(FetchUnitModule));
   initialized = CPUstate.initialized;
   exitCommitted = CPUstate.exitCommitted;
+  recovery = CPUstate.recovery;
   // The SRAM-backed lookup reads this old snapshot, like ICache.
   memcpy(&DCacheModule, &CPUstate.DCacheModule, sizeof(DCacheModule));
   squashDetect = CPUstate.flushArbiter.arbitResult();
+  if (recovery.active || exitCommitted) squashDetect.needSquash = false;
+  squashDetect.pauseCommit = recovery.active || squashDetect.needSquash;
   isarbInput.squashDetect = squashDetect;
   issuePacket = IssueArbiter::build(isarbInput);
-  if (exitCommitted) issuePacket.valid = false;
+  if (exitCommitted || recovery.active) issuePacket.valid = false;
+  ratInput.recovery = recovery;
+  prfInput.recovery = recovery;
+  bpuInput.recovery = recovery;
+  const auto replay = ROBModule.recoveryWindow(recovery.active ? recovery.offset : 0);
+  ratInput.replay = prfInput.replay = replay.narrow;
+  bpuInput.replay = replay.ras;
+  lqInput.executeEnabled = !recovery.active;
+  sqInput.executeEnabled = !recovery.active;
   exitRetiring = false;
   for (int i = 0; i < SQ_CAP; ++i)
     if (!exitCommitted && SQModule.isActive(i) && SQModule.isAddressReady(i) &&
@@ -91,10 +102,10 @@ void CPU::comb() {
         ROBModule.willCommit(squashDetect)) exitRetiring = true;
   sqInput.retireEnabled = !exitCommitted;
   fqInput.issueValid = issuePacket.valid;
-  const bool fqPop = !squashDetect.needSquash && !FQModule.isEmpty() &&
+  const bool fqPop = !recovery.active && !squashDetect.needSquash && !FQModule.isEmpty() &&
                      DecodeUnitModule.canAccept(issuePacket.valid);
   const bool fqReady = !squashDetect.needSquash && FQModule.canAccept(fqPop);
-  const bool popConsume = fqReady && ICacheModule.isReturnReady() &&
+  const bool popConsume = !recovery.active && fqReady && ICacheModule.isReturnReady() &&
                           !FetchUnitModule.isHaltFetched();
   const bool haltSignal =
       FetchUnitModule.isHaltFetched() ||
@@ -112,7 +123,7 @@ void CPU::comb() {
                              (!AXIFetchModule.isRequestFull() || refillHit) &&
                             !readBlocked;
   fetchDecision = FetchDecision::build(BPUModule, pc, squashDetect, haltSignal,
-                                        fqReady, memCanAccept && initialized && !exitCommitted);
+                                         fqReady, memCanAccept && initialized && !exitCommitted && !recovery.active);
   {
     fetchUnitInput.squashDetect = squashDetect;
     fetchUnitInput.fetchDecision = fetchDecision;
@@ -145,9 +156,15 @@ void CPU::comb() {
   cdbOfLQ = lqCDB::build(LQModule, squashDetect);
   cdbOfMul = mulCDB::build(MULModule, squashDetect);
   cdbOfDiv = divCDB::build(DIVModule, squashDetect);
+  if (recovery.active) {
+    cdbOfALU.valid = false; cdbOfLQ.valid = false;
+    cdbOfMul.valid = false; cdbOfDiv.valid = false;
+  }
+  const auto cdbOfShared = sharedCDB::arbitrate(cdbOfMul, cdbOfDiv, cdbOfLQ);
   DispatchBus dispatchBus = DispatchArbiter::arbitrate(
       RSModule, ALUModule, AGUModule, BRUModule, MULModule, DIVModule,
-      PRFModule, squashDetect, cdbOfMul, cdbOfDiv, true);
+      PRFModule, squashDetect, cdbOfMul, cdbOfDiv, cdbOfDiv.valid);
+  if (recovery.active) dispatchBus = {};
   aguInput.squashDetect = squashDetect;
   aluInput.squashDetect = squashDetect;
   aluInput.cdbOutput = cdbOfALU;
@@ -157,7 +174,7 @@ void CPU::comb() {
   mulInput.dispatch = dispatchBus.mul;
   divInput.squashDetect = squashDetect;
   divInput.cdbOutput = cdbOfDiv;
-  divInput.outReady = true; // Dedicated DIV result channel.
+  divInput.outReady = cdbOfDiv.valid;
   divInput.dispatch = dispatchBus.div;
   aguInput.dispatch = dispatchBus.agu;
   bruInput.dispatch = dispatchBus.bru;
@@ -177,7 +194,7 @@ void CPU::comb() {
   // against the SQ snapshot (store address must already be known)
   for (int i = 0; i < STORERS_CAP; ++i) {
     lqInput.storeNotifies[i] = StoreNotify{};
-    if (!RSModule.storeValueRS[i].free &&
+    if (!recovery.active && !RSModule.storeValueRS[i].free &&
         PRFModule.isOperandReady(RSModule.storeValueRS[i].data)) {
       auto tag = RSModule.storeValueRS[i].robTag;
       if (!squashDetect.needSquash ||
@@ -191,7 +208,7 @@ void CPU::comb() {
   }
   // store address-ready broadcast (address event): AGU head is a store
   lqInput.storeAddrNotify = StoreNotify{};
-  if (!AGUModule.isEmpty() && isStoreMem(AGUModule.headMemIndex())) {
+  if (!recovery.active && !AGUModule.isEmpty() && isStoreMem(AGUModule.headMemIndex())) {
     auto aguRobTag = AGUModule.headRobTag();
     if (!squashDetect.needSquash ||
         (squashDetect.needSquash &&
@@ -204,14 +221,10 @@ void CPU::comb() {
   robInput.squashDetect = squashDetect;
   robInput.storeCompletion = SQModule.completionBitmap();
   robInput.cdbOfALU = cdbOfALU;
-  robInput.cdbOfLQ = cdbOfLQ;
-  robInput.cdbOfMul = cdbOfMul;
-  robInput.cdbOfDiv = cdbOfDiv;
+  robInput.cdbOfShared = cdbOfShared;
   prfInput.squashDetect = squashDetect;
   prfInput.cdbOfALU = cdbOfALU;
-  prfInput.cdbOfLQ = cdbOfLQ;
-  prfInput.cdbOfMul = cdbOfMul;
-  prfInput.cdbOfDiv = cdbOfDiv;
+  prfInput.cdbOfShared = cdbOfShared;
   ratInput.squashDetect = squashDetect;
   flarbInput.squashDetect = squashDetect;
   flarbInput.cdbOut = cdbOfALU;
@@ -254,6 +267,24 @@ void CPU::comb() {
 }
 
 void CPU::clock() {
+  if (!exitCommitted) {
+    if (squashDetect.needSquash) {
+      assert(!recovery.active && ROBModule.matchesTag(squashDetect.SquashTag));
+      CPUstate.recovery.active = true;
+      CPUstate.recovery.beat = 0;
+      CPUstate.recovery.offset = 0;
+      CPUstate.recovery.nextTag = ROBModule.getHead();
+      CPUstate.recovery.squashTag = squashDetect.SquashTag;
+      CPUstate.recovery.liveCount = (ROBModule.getNextTag() - ROBModule.getHead()) & ROB_TAG_MASK;
+    } else if (recovery.active) {
+      RobTag next = recovery.nextTag;
+      for (unsigned lane = 0; lane < RECOVERY_WIDTH; ++lane) next = robNextTag(next);
+      CPUstate.recovery.nextTag = next;
+      CPUstate.recovery.offset = recovery.offset + RECOVERY_WIDTH;
+      if (recovery.beat == RECOVERY_BEATS - 1) CPUstate.recovery.active = false;
+      else CPUstate.recovery.beat = recovery.beat + 1;
+    }
+  }
   AXIFetchModule.tick(axiFetchInput, CPUstate);
   AXIDataModule.tick(axiDataInput, CPUstate);
   AXIBusModule.tick(axiBusInput, CPUstate);
@@ -261,22 +292,24 @@ void CPU::clock() {
   DCacheModule.tick(dcacheInput, CPUstate);
   SQModule.tick(sqInput, CPUstate);
   if (!exitCommitted) {
+   ICacheModule.tick(icacheInput, CPUstate);
+   LQModule.tick(lqInput, CPUstate);
+   PRFModule.tick(prfInput, CPUstate);
+   BPUModule.tick(bpuInput, CPUstate);
+   RATModule.tick(ratInput, CPUstate);
+   if (!recovery.active) {
   FetchUnitModule.tick(fetchUnitInput, CPUstate);
-  ICacheModule.tick(icacheInput, CPUstate);
   FQModule.tick(fqInput, CPUstate);
-  LQModule.tick(lqInput, CPUstate);
   ROBModule.tick(robInput, CPUstate);
-  PRFModule.tick(prfInput, CPUstate);
   ALUModule.tick(aluInput, CPUstate);
   MULModule.tick(mulInput, CPUstate);
   DIVModule.tick(divInput, CPUstate);
   AGUModule.tick(aguInput, CPUstate);
   BRUModule.tick(bruInput, CPUstate);
-  BPUModule.tick(bpuInput, CPUstate);
   RSModule.tick(rsInput, CPUstate);
-  RATModule.tick(ratInput, CPUstate);
   flushArbiter.tick(flarbInput, CPUstate);
   DecodeUnitModule.tick(decodeInput, CPUstate);
+   }
   }
   if (exitRetiring) CPUstate.exitCommitted = true;
   CPUstate.initialized = true;

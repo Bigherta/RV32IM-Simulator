@@ -185,9 +185,7 @@ auto SQ::replyToLoadRequest(uint32_t addr, uint8_t nBytes,
       // nothing forwards (single source, full cover -- no byte stitching).
       const uint32_t storeAddr = SQqueue[index].address;
       const uint8_t storeNBytes = SQqueue[index].nBytes;
-      const bool overlaps = addr >= storeAddr
-          ? addr - storeAddr < static_cast<uint32_t>(storeNBytes)
-          : storeAddr - addr < nBytes;
+      const bool overlaps = byteOverlap(addr, nBytes, storeAddr, storeNBytes);
       if (overlaps) {
         youngestSameAddrOrder = k;
         SameAddrValueReady = SQqueue[index].isValueReady;
@@ -221,11 +219,7 @@ bool SQ::canSendLoadToCache(uint32_t addr, uint8_t nBytes,
       continue;
     if (SQqueue[cur].isAddressReady) {
       const uint32_t storeAddr = SQqueue[cur].address;
-      // Any byte overlap blocks an unforwarded Load, including partial
-      // coverage in either direction. Differences avoid overflowing end addresses.
-      hasOverlappingStore = addr >= storeAddr
-          ? addr - storeAddr < static_cast<uint32_t>(SQqueue[cur].nBytes)
-          : storeAddr - addr < nBytes;
+      hasOverlappingStore = byteOverlap(addr, nBytes, storeAddr, SQqueue[cur].nBytes);
     } else {
       hasUnknownAddressStore = true;
     }
@@ -245,7 +239,7 @@ void SQ::tick(const SQInput &input, systemState &CPUstate) {
   // store value ready: write the value from the PRF (RS owns the slot,
   // it frees it in its own tick)
   for (int i = 0; i < STORERS_CAP; ++i) {
-    if (!input.RSModule.storeValueRS[i].free &&
+    if (input.executeEnabled && !input.RSModule.storeValueRS[i].free &&
         input.PRFModule.isOperandReady(input.RSModule.storeValueRS[i].data)) {
       uint8_t SeqTag = input.RSModule.storeValueRS[i].robTag;
       if (!input.squashDetect.needSquash ||
@@ -258,7 +252,7 @@ void SQ::tick(const SQInput &input, systemState &CPUstate) {
     }
   }
   // store address ready: write the address from the AGU result
-  if (!input.AGUModule.isEmpty() &&
+  if (input.executeEnabled && !input.AGUModule.isEmpty() &&
       isStoreMem(input.AGUModule.headMemIndex())) {
     auto aguRobTag = input.AGUModule.headRobTag();
     const auto index = memSlot(input.AGUModule.headMemIndex());

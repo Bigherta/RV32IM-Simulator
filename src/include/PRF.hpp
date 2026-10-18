@@ -10,10 +10,10 @@ struct PRFEntry {
 struct PRFInput {
   const IssuePacket &issuePacket;
   SquashInfo squashDetect;
+  RecoveryStep recovery;
+  std::array<RecoveryNarrowEntry, RECOVERY_WIDTH> replay{};
   aluCDB cdbOfALU;
-  lqCDB cdbOfLQ;
-  mulCDB cdbOfMul;
-  divCDB cdbOfDiv;
+  sharedCDB cdbOfShared;
   const ROB &ROBModule;
   PRFInput(const ROB &rob, const IssuePacket &pkt)
       : ROBModule(rob), issuePacket(pkt) {}

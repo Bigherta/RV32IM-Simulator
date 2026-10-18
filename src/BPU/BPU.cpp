@@ -150,7 +150,7 @@ void BPU::recoverCheckPoint(const uint8_t ghr, systemState &CPUstate) const {
 void BPU::tick(const BPUInput &input, systemState &CPUstate) {
   uint64_t total = branchTotal, totalCorrect = branchCorrect;
   Cand bru, cdb;
-  if (!input.BRUModule.isEmpty() &&
+  if (!input.recovery.active && !input.BRUModule.isEmpty() &&
       input.ROBModule.matchesTag(input.BRUModule.headRobTag())) {
     uint8_t brRobTag = input.BRUModule.headRobTag();
     const uint32_t pcResult = input.BRUModule.headPCResult();
@@ -236,7 +236,7 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
   // Squash reconstructs CONTENTS from the old architectural stack and live
   // ROB prefix; a depth-only checkpoint cannot undo that overwrite.
   const auto &fi = input.fetchInfo;
-  if (fi.valid) {
+  if (!input.recovery.active && fi.valid) {
     const uint32_t returnAddress = fi.pc + 4;
     if (!input.squashDetect.needSquash && (fi.isCall || fi.isRet)) {
       auto specTop = tgt.specTopOfRAS;
@@ -260,7 +260,10 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
       CPUstate.BPUModule.tgt.BTB[BTB_index].target = fi.jalTarget;
   }
 
-  // Commit is the architectural RAS baseline used for later ROB replay.
+  // The committed wide word is single port: the redirect edge reads it,
+  // normal retirement writes one masked lane. No commit overlaps recovery.
+  SRAM<1, (RAS_CAP << 5), 32>::Input archPort{};
+  archPort.enable = input.squashDetect.needSquash;
   if (input.ROBModule.willCommit(input.squashDetect)) {
     const auto headIndex = robSlot(input.ROBModule.getHead());
     const bool push = input.ROBModule.isCall(headIndex);
@@ -269,8 +272,10 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
       auto archTop = tgt.archTopOfRAS;
       if (pop && archTop > 0) --archTop;
       if (push && archTop < RAS_CAP) {
-        CPUstate.BPUModule.tgt.archRAS[archTop] =
-            static_cast<uint32_t>(input.ROBModule.getPC(headIndex)) + 4u;
+        archPort.enable = archPort.writeEnable = true;
+        archPort.writeMask[archTop] = true;
+        archPort.writeData[archTop] = static_cast<uint32_t>(input.ROBModule.getPC(headIndex)) + 4u;
+        CPUstate.BPUModule.tgt.archValid = tgt.archValid | (1u << archTop);
         ++archTop;
       }
       CPUstate.BPUModule.tgt.archTopOfRAS = archTop;
@@ -279,33 +284,38 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
   if (input.squashDetect.needSquash) {
     // recover GHR
     recoverCheckPoint(GHRCheckpoint[input.squashDetect.CkptId], CPUstate);
-    // Restore the old committed baseline, then replay every surviving ROB
-    // entry through the squash instruction itself.
     assert(input.ROBModule.matchesTag(input.squashDetect.SquashTag));
-    auto commitTOS = tgt.archTopOfRAS;
-    for (int i = 0; i < RAS_CAP; ++i) {
-      CPUstate.BPUModule.tgt.specRAS[i] = tgt.archRAS[i];
-    }
-    bool recovered = false;
-    auto robTag = input.ROBModule.getHead();
-    for (int i = 0; i < ROB_CAP; ++i) {
-      if (!recovered) {
-        const auto robIndex = robSlot(robTag);
-        if (input.ROBModule.isRet(robIndex) && commitTOS > 0)
-          --commitTOS;
-        if (input.ROBModule.isCall(robIndex) && commitTOS < RAS_CAP)
-          CPUstate.BPUModule.tgt.specRAS[commitTOS++] =
-              static_cast<uint32_t>(input.ROBModule.getPC(robIndex)) + 4u;
-        recovered = robTag == input.squashDetect.SquashTag;
-        robTag = robNextTag(robTag);
-      }
-    }
-    assert(recovered);
-    CPUstate.BPUModule.tgt.specTopOfRAS = commitTOS;
+    CPUstate.BPUModule.tgt.baselineTop = tgt.archTopOfRAS;
     // recover next checkpoint id
     CPUstate.BPUModule.nextCkptId =
         (input.squashDetect.CkptId + 1) & (CKPT_CAP - 1);
   }
+  if (input.recovery.active) {
+    const auto &step = input.recovery;
+    unsigned top = step.first() ? tgt.baselineTop : tgt.specTopOfRAS;
+    bool open = step.first() || tgt.replayOpen;
+    uint32_t stack[RAS_CAP];
+    for (int i = 0; i < RAS_CAP; ++i)
+      stack[i] = step.first() ? ((tgt.archValid & (1u << i)) ? tgt.archStorage.readLane(i) : 0u) : tgt.specRAS[i];
+    RobTag tag = step.nextTag;
+    for (unsigned lane = 0; lane < RECOVERY_WIDTH; ++lane) {
+      const unsigned offset = unsigned(step.offset) + lane;
+      if (open && offset < ROB_CAP && offset < step.liveCount) {
+        const auto &entry = input.replay[lane];
+        if (entry.tag == tag) {
+          if (entry.pop && top > 0) --top;
+          if (entry.push && top < RAS_CAP)
+            stack[top++] = entry.pc + 4u;
+          if (tag == step.squashTag) open = false;
+        } else open = false;
+      }
+      tag = robNextTag(tag);
+    }
+    for (int i = 0; i < RAS_CAP; ++i) CPUstate.BPUModule.tgt.specRAS[i] = stack[i];
+    CPUstate.BPUModule.tgt.specTopOfRAS = top;
+    CPUstate.BPUModule.tgt.replayOpen = open;
+  }
+  tgt.archStorage.tick(archPort, CPUstate.BPUModule.tgt.archStorage);
   CPUstate.BPUModule.branchTotal = total;
   CPUstate.BPUModule.branchCorrect = totalCorrect;
 }

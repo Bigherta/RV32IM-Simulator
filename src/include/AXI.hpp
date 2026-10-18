@@ -35,7 +35,6 @@ public:
 };
 
 struct AXIFetchLine {
-  std::array<uint32_t, ICACHE_WORDS_PER_LINE> words{};
   uint32_t address = 0;
   uint8_t issued = 0, collected = 0;
   bool valid = false;
@@ -47,7 +46,9 @@ struct AXIFetchInput {
 };
 class AXIFetch {
   std::array<AXIFetchLine, IMEM_CAP> lines{};
+  std::array<std::array<uint32_t, ICACHE_WORDS_PER_LINE>, IMEM_CAP> payload{};
   uint8_t head = 0;
+  uint8_t count = 0, tail = 0, issue = 0, collect = 0;
   uint16_t inflight = 0, discard = 0;
   bool pending = false;
   uint32_t pendingAddr = 0;
@@ -62,10 +63,9 @@ public:
 };
 
 struct AXIDataEntry {
-  std::array<uint8_t, DCACHE_BLOCK_CAP> bytes{};
   uint32_t address = 0;
-  uint8_t transaction = 0, issued = 0, collected = 0, aw = 0, w = 0;
-  bool write = false, mmio = false;
+  uint8_t transaction = 0, issued = 0, collected = 0, w = 0;
+  bool mmio = false;
 };
 struct AXIDataInput {
   DMEMRequest request{};
@@ -74,18 +74,29 @@ struct AXIDataInput {
   uint32_t exitValue = 0;
   AXISlavePort bus{};
 };
-// Independent read/write streams share 16 line credits. Responses retain MSHR
+// Independent read/write streams share 8 line credits. Responses retain MSHR
 // identity; AW and W have independent cursors and never wait on each other.
 class AXIData {
-  std::array<AXIDataEntry, AXI_DEPTH> reads{}, writes{};
+  std::array<AXIDataEntry, AXI_DATA_CAP> entries{};
+  std::array<uint8_t, AXI_ORDER_CAP> readOrder{}, writeOrder{};
+  // A descriptor owns a slot until its line completion is consumed. Read and
+  // write streams share the same physical storage, not only admission credits.
+  std::array<std::array<uint32_t, DCACHE_WORDS_PER_LINE>, AXI_DATA_CAP> payload{};
+  uint8_t dataBusy = 0;
   uint8_t rh = 0, rn = 0, wh = 0, wn = 0;
+  // Epoch cursors retain the RTL's 16-row order ring, independently of credits.
+  uint8_t rt = 0, wt = 0, ra = 0, rr = 0, wa = 0, wd = 0, wb = 0;
   int readIssue() const;
   int writeIssue(bool address) const;
+  int readCollect() const;
+  int writeCollect() const;
+  const AXIDataEntry &readEntry(int slot) const { return entries[readOrder[slot]]; }
+  const AXIDataEntry &writeEntry(int slot) const { return entries[writeOrder[slot]]; }
 public:
   bool canAcceptRead(bool writePending = false) const {
-    return rn + wn + unsigned(writePending) < AXI_DEPTH;
+    return rn + wn + unsigned(writePending) < AXI_DATA_CAP;
   }
-  bool canAcceptWrite() const { return rn + wn < AXI_DEPTH; }
+  bool canAcceptWrite() const { return rn + wn < AXI_DATA_CAP; }
   bool isReplyReady() const;
   bool isWriteReplyReady() const;
   MemReply reply() const;

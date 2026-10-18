@@ -20,6 +20,7 @@ struct LQEntry {
   bool isCDBBroadcast;
 };
 struct LQInput {
+  bool executeEnabled = true;
   SquashInfo squashDetect;
   const AGU &AGUModule;
   const ROB &ROBModule;

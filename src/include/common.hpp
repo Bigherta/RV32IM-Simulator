@@ -152,8 +152,30 @@ static_assert(ROB_CAP < (static_cast<uint32_t>(PRF_CAP) << 1),
 // always in 1..PRF_CAP-1 and 0 is unambiguous. Guarded by asserts in PRF::pop,
 // PRF::push, RAT mapping writers and IssueArbiter::resolveSrc.
 inline constexpr int InvalidPhy = 0;
-constexpr int IMEM_CAP = 16;
+constexpr int IMEM_CAP = 8; // AXIFetch: one line per ICache request credit
 constexpr int CKPT_CAP = 32;
+constexpr unsigned RECOVERY_BEATS = 4;
+constexpr unsigned RECOVERY_WIDTH = (ROB_CAP + 3u) >> 2;
+struct RecoveryStep {
+  bool active = false;
+  uint8_t beat = 0, offset = 0, liveCount = 0;
+  RobTag nextTag = 0, squashTag = 0;
+  bool first() const { return beat == 0; }
+};
+struct RecoveryNarrowEntry {
+  RobTag tag = 0;
+  uint8_t rd = 0, newPhy = 0;
+};
+// The software ROB already stores decoded RAS hints, not raw instructions.
+struct RecoveryRasEntry {
+  RobTag tag = 0;
+  uint32_t pc = 0;
+  bool pop = false, push = false;
+};
+struct RecoveryWindow {
+  std::array<RecoveryNarrowEntry, RECOVERY_WIDTH> narrow{};
+  std::array<RecoveryRasEntry, RECOVERY_WIDTH> ras{};
+};
 // RV32 word geometry, shared by instruction-line packing and SRAM lanes.
 constexpr int RV32_WORD_BYTES = sizeof(uint32_t);
 constexpr int RV32_WORD_BITS = RV32_WORD_BYTES << 3;
@@ -287,10 +309,50 @@ static_assert(CKPT_CAP >= CKPT_LIVE_MAX,
 static_assert(CKPT_CAP <= (1 << 6),
               "checkpoint IDs must fit the retained 6-bit carrier");
 constexpr int MEM_LATENCY = 20;
-constexpr int AXI_DEPTH = 16;
+constexpr int AXI_DEPTH = 16; // External Slave channels; not master line credits.
+constexpr int AXI_DATA_CAP = 8;
+constexpr int AXI_ORDER_CAP = 16; // Preserve the RTL's 4-bit order-ring indices.
+static_assert(AXI_DATA_CAP >= (DCACHE_MSHR_CAP << 1));
+static_assert(IMEM_CAP == REQUEST_CAP);
 constexpr int AXI_LATENCY = 10;
 constexpr uint32_t AXI_EXIT_ADDR = 0x80000000u;
 constexpr uint32_t AXI_RAM_BYTES = 256u << 20;
+
+// Select two words, rotate by byte, then truncate; no line-wide barrel shifter.
+inline uint32_t extractLoadWord(uint32_t low, uint32_t high, unsigned offset,
+                                unsigned nBytes) {
+  uint32_t raw = low;
+  switch (offset & 3u) {
+  case 1: raw = (low >> 8) | (high << 24); break;
+  case 2: raw = (low >> 16) | (high << 16); break;
+  case 3: raw = (low >> 24) | (high << 8); break;
+  default: break;
+  }
+  return nBytes == 1 ? raw & 0xffu : nBytes == 2 ? raw & 0xffffu : raw;
+}
+
+inline uint32_t extendLoad(uint32_t raw, unsigned nBytes, bool isUnsigned) {
+  if (nBytes == 1) {
+    raw &= 0xffu;
+    if (!isUnsigned && (raw & 0x80u)) raw |= 0xffffff00u;
+  } else if (nBytes == 2) {
+    raw &= 0xffffu;
+    if (!isUnsigned && (raw & 0x8000u)) raw |= 0xffff0000u;
+  }
+  return raw;
+}
+
+// Preserve unaligned accesses and unsigned address-wrap boundary semantics.
+inline bool byteOverlap(uint32_t loadAddress, unsigned loadBytes,
+                        uint32_t storeAddress, unsigned storeBytes) {
+  const unsigned lo = loadAddress & 3u, so = storeAddress & 3u;
+  const uint32_t lastWord = 0x3fffffffu;
+  const uint32_t delta = ((loadAddress >> 2) - (storeAddress >> 2)) & lastWord;
+  if (delta == 0) return lo < so + storeBytes && so < lo + loadBytes;
+  if (delta == 1 && (storeAddress >> 2) != lastWord) return lo + 4u < so + storeBytes;
+  if (delta == lastWord && (loadAddress >> 2) != lastWord) return so + 4u < lo + loadBytes;
+  return false;
+}
 
 enum class ValueState {
   NOTREADY,
@@ -406,6 +468,7 @@ struct SquashInfo {
   uint8_t SquashTag = 0;
   uint32_t SquashPC = 0;
   uint8_t CkptId = 0;
+  bool pauseCommit = false;
 };
 #include "CDB.hpp"
 

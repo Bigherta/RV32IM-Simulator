@@ -74,9 +74,13 @@ bool DCache::storeHazard(int slot, bool allocatingMiss) const {
     if (RequestBuffer[s].active && RequestBuffer[s].request.op == Operation::Store &&
         (olderMask[s] & (1u << slot))) {
       const auto &store = RequestBuffer[s].request;
-      const bool overlap = load.address >= store.address
-          ? load.address - store.address < static_cast<uint32_t>(store.nBytes)
-          : store.address - load.address < static_cast<uint32_t>(load.nBytes);
+      // Cache requests never cross a line. Compare the line once and use
+      // small byte offsets, not two full-address subtractors for each pair.
+      const uint32_t lo = load.address & DCACHE_OFFSET_MASK;
+      const uint32_t so = store.address & DCACHE_OFFSET_MASK;
+      const bool overlap = (load.address >> DCACHE_OFFSET_BITS) == (store.address >> DCACHE_OFFSET_BITS) &&
+          lo <= so + static_cast<uint32_t>(store.nBytes) - 1u &&
+          so <= lo + static_cast<uint32_t>(load.nBytes) - 1u;
       // Hits may bypass disjoint bytes. A younger miss must not reserve the
       // set needed by an older Store; recheck it after the Store has executed.
       if (overlap || (allocatingMiss &&
@@ -124,14 +128,14 @@ uint8_t DCache::selectVictim(uint32_t set) const {
 
 uint32_t DCache::sramRaw(int slot, int way) const {
   const auto &request = RequestBuffer[slot].request;
-  uint32_t raw = 0;
-  for (int i = 0; i < 4; ++i) {
-    if (i < request.nBytes) {
-      const uint32_t byte = (request.address & DCACHE_OFFSET_MASK) + i;
-      raw |= datas[way][byte >> RV32_WORD_BYTE_BITS].readLane(byte & 3) << (i << 3);
-    }
+  const unsigned bank = (request.address & DCACHE_OFFSET_MASK) >> 2;
+  uint32_t low = 0, high = 0;
+  for (int lane = 0; lane < 4; ++lane) {
+    low |= datas[way][bank].readLane(lane) << (lane << 3);
+    if (bank + 1 < DCACHE_WORDS_PER_LINE)
+      high |= datas[way][bank + 1].readLane(lane) << (lane << 3);
   }
-  return raw;
+  return extractLoadWord(low, high, request.address, request.nBytes);
 }
 
 uint32_t DCache::memoryRaw(int slot, const AXIData &dmem) const {
@@ -157,6 +161,7 @@ void DCache::plan(DCacheInput &input) const {
   const uint8_t active = activeMask();
   const int first = oldestRequest(active);
   const int way = hitWay();
+  input.readHitRaw = readValid && way >= 0 ? sramRaw(readIndex, way) : 0;
   if (first >= 0 && RequestBuffer[first].request.address == AXI_EXIT_ADDR &&
       RequestBuffer[first].request.op == Operation::Store && dmem.exitReady()) {
     assert(RequestBuffer[first].request.nBytes == 4);
@@ -202,7 +207,7 @@ void DCache::plan(DCacheInput &input) const {
     const auto &entry = RequestBuffer[input.response];
     const uint32_t raw = early ? memoryRaw(input.response, dmem)
         : (readValid && readIndex == input.response && way >= 0)
-            ? sramRaw(input.response, way) : entry.raw;
+            ? input.readHitRaw : rawPayload[input.response];
     if (!entry.cancelled && (!input.squashDetect.needSquash ||
         ROB::isOlder(entry.request.robTag, input.squashDetect.SquashTag)))
       input.loadResp = {true, entry.request.memIndex, entry.request.robTag, int32_t(raw)};
@@ -236,7 +241,7 @@ void DCache::plan(DCacheInput &input) const {
       input.mergeMiss = findMiss(RequestBuffer[input.mergeSlot].request.address & ~DCACHE_OFFSET_MASK);
   }
 
-  if (!readValid && !input.fillBeat && input.store < 0) {
+  {
     uint8_t eligible = 0;
     bool anyMiss = false;
     for (int m = 0; m < DCACHE_MSHR_CAP; ++m) anyMiss = anyMiss || misses[m].valid;
@@ -251,7 +256,8 @@ void DCache::plan(DCacheInput &input) const {
       if (!anyMiss && slot != first) continue;
       eligible |= static_cast<uint8_t>(1u << slot);
     }
-    input.lookup = oldestRequest(eligible);
+    input.lookupCandidate = oldestRequest(eligible);
+    if (!readValid && !input.fillBeat && input.store < 0) input.lookup = input.lookupCandidate;
   }
 
   uint8_t readable = 0, writable = 0;
@@ -274,11 +280,16 @@ void DCache::plan(DCacheInput &input) const {
     input.memoryRequest.write.address = victimAddress(write);
     input.memoryRequest.write.transaction = write;
     for (int byte = 0; byte < DCACHE_BLOCK_CAP; ++byte)
-      input.memoryRequest.write.lineData[byte] = misses[write].victimLine[byte];
+      input.memoryRequest.write.lineData[byte] = victimPayload[write][byte >> 2] >> ((byte & 3) << 3);
   }
 
   auto &data = input.InputDCacheDataSRAMInput;
   auto &meta = input.InputDCacheMetadataSRAMInput;
+  const uint32_t lookupSet = (RequestBuffer[unsigned(input.lookupCandidate) & (REQUEST_CAP - 1)].request.address >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
+  for (int w = 0; w < NUM_OF_DCACHE_WAYS; ++w) {
+    meta[w].addr = lookupSet;
+    for (int b = 0; b < DCACHE_WORDS_PER_LINE; ++b) data[w][b].addr = lookupSet;
+  }
   if (input.fillBeat) {
     const auto &m = misses[input.fillMiss];
     const auto &request = RequestBuffer[m.owner].request;
@@ -388,13 +399,13 @@ void DCache::tick(const DCacheInput &input, systemState &CPUstate) {
             RequestBuffer[fillOwner].request.op == Operation::Load &&
             entry.miss == input.fillMiss && slot != fillOwner;
         if (mergedReady) {
-          CPUstate.DCacheModule.RequestBuffer[slot].raw = memoryRaw(slot, input.DMEMModule);
+          CPUstate.DCacheModule.rawPayload[slot] = memoryRaw(slot, input.DMEMModule);
           CPUstate.DCacheModule.RequestBuffer[slot].ready = true;
           CPUstate.DCacheModule.RequestBuffer[slot].deferred = false;
           CPUstate.DCacheModule.RequestBuffer[slot].miss = -1;
         } else if (readValid && readIndex == slot) {
           if (hit >= 0) {
-            CPUstate.DCacheModule.RequestBuffer[slot].raw = sramRaw(slot, hit);
+            CPUstate.DCacheModule.rawPayload[slot] = input.readHitRaw;
             CPUstate.DCacheModule.RequestBuffer[slot].ready = true;
             CPUstate.DCacheModule.RequestBuffer[slot].way = hit;
           } else {
@@ -436,9 +447,11 @@ void DCache::tick(const DCacheInput &input, systemState &CPUstate) {
       CPUstate.DCacheModule.misses[m].writeDone = false;
       CPUstate.DCacheModule.misses[m].responded = false;
       CPUstate.DCacheModule.misses[m].fillWord = 0;
-      for (int byte = 0; byte < DCACHE_BLOCK_CAP; ++byte)
-        CPUstate.DCacheModule.misses[m].victimLine[byte] =
-            datas[victimWay][byte >> RV32_WORD_BYTE_BITS].readLane(byte & 3);
+      for (int word = 0; word < DCACHE_WORDS_PER_LINE; ++word) {
+        uint32_t value = 0;
+        for (int lane = 0; lane < 4; ++lane) value |= datas[victimWay][word].readLane(lane) << (lane << 3);
+        CPUstate.DCacheModule.victimPayload[m][word] = value;
+      }
     } else if (input.fillFire && input.fillMiss == m) {
       CPUstate.DCacheModule.misses[m].valid = false;
     } else if (misses[m].valid) {

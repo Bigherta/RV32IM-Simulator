@@ -14,6 +14,56 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ("program.data", "program.S", "expected.txt", "metrics.json")
+BRANCH_TYPES = ("all", "cond", "jal", "jalr")
+
+
+def parse_branches(log, name):
+    """Read the historical branch:/branch-type: protocol, not rounded rates."""
+    def line_for(prefix, required=True):
+        lines = [line for line in log.splitlines() if line.startswith(prefix)]
+        if len(lines) > 1 or (required and not lines):
+            raise ValueError(f"{name}: expected one {prefix} statistic")
+        return lines[0] if lines else None
+
+    summary = line_for("branch:")
+    match = re.fullmatch(r"branch:\s+(\d+)/(\d+) correct \(\d+(?:\.\d+)?%\)", summary)
+    if not match:
+        raise ValueError(f"{name}: malformed branch statistic: {summary}")
+    stats = dict.fromkeys(BRANCH_TYPES)
+    stats["all"] = dict(zip(("correct", "total"), map(int, match.groups())))
+    detail = line_for("branch-type:", required=False)
+    if detail is not None:
+        pattern = r"branch-type:\s+" + r"\s+".join(
+            kind + r"=(\d+)/(\d+)\(\d+(?:\.\d+)?%\)" for kind in BRANCH_TYPES[1:])
+        match = re.fullmatch(pattern, detail)
+        if not match:
+            raise ValueError(f"{name}: malformed branch-type statistic: {detail}")
+        counts = tuple(map(int, match.groups()))
+        for index, kind in enumerate(BRANCH_TYPES[1:]):
+            stats[kind] = dict(correct=counts[index * 2], total=counts[index * 2 + 1])
+        for field in ("correct", "total"):
+            if sum(stats[kind][field] for kind in BRANCH_TYPES[1:]) != stats["all"][field]:
+                raise ValueError(f"{name}: branch-type {field} sum differs from branch summary")
+    for kind, counts in stats.items():
+        if counts is not None and counts["correct"] > counts["total"]:
+            raise ValueError(f"{name}: {kind} correct count exceeds total")
+    return stats
+
+
+def branch_rate(counts):
+    if counts is None or counts["total"] == 0:
+        return "N/A"
+    return f"{100 * counts['correct'] / counts['total']:.4f}%"
+
+
+def branch_totals(rows):
+    totals = {}
+    for kind in BRANCH_TYPES:
+        counts = [row["branches"][kind] for row in rows]
+        # Never present a partial aggregate as the whole corpus's accuracy.
+        totals[kind] = (None if any(c is None for c in counts) else
+                        {field: sum(c[field] for c in counts) for field in ("correct", "total")})
+    return totals
 
 
 def digest(path):
@@ -42,8 +92,8 @@ def synchronize(args):
     print(f"Synchronized {len(cases)} cases to both software trees (byte-for-byte).")
 
 
-def simulate(binary, case, timeout):
-    env = dict(os.environ, VERBOSE="clock", RESULT_FULL="1")
+def simulate(binary, case, timeout, *, collect_branches=False):
+    env = dict(os.environ, VERBOSE="clock,branch" if collect_branches else "clock", RESULT_FULL="1")
     env.pop("LEGACY_HALT", None)
     with (case / "program.data").open("rb") as image:
         result = subprocess.run([str(binary.resolve())], stdin=image, capture_output=True,
@@ -54,7 +104,8 @@ def simulate(binary, case, timeout):
     ipc = re.search(r"ipc: [\d.]+ retired=(\d+) cycles=(\d+)", log)
     if not timing or not ipc:
         raise ValueError(f"missing timing/IPC output: {case.name}: {log}")
-    return value, tuple(map(int, timing.groups())), int(ipc[1])
+    branches = parse_branches(log, case.name) if collect_branches else None
+    return value, tuple(map(int, timing.groups())), int(ipc[1]), branches
 
 
 def test(args):
@@ -76,6 +127,15 @@ def test(args):
     if not names:
         raise ValueError(f"no cases match {args.pattern!r}")
     rows = []
+    columns = ("Case", "Result", "Clock", "Core", "Retired", "IPC", "Br%", "Cond%", "Jal%", "Jalr%")
+    widths = (max(len("Case"), *(len(name) for name in names)), 10, 10, 10, 10, 8, 10, 10, 10, 10)
+
+    def print_row(cells):
+        print(" | ".join(f"{str(cell):<{width}}" if index == 0 else f"{str(cell):>{width}}"
+                         for index, (cell, width) in enumerate(zip(cells, widths))), flush=True)
+
+    print_row(columns)
+    print("-+-".join("-" * width for width in widths), flush=True)
     for name in names:
         case = args.data / name
         for filename, expected_hash in manifest["cases"][name].items():
@@ -83,7 +143,7 @@ def test(args):
                 raise ValueError(f"corpus checksum mismatch: {case / filename}")
         expected = int((case / "expected.txt").read_text())
         instructions = int(json.loads((case / "metrics.json").read_text())["dynamic_instructions"])
-        actual, timing, retired = simulate(args.binary, case, args.timeout)
+        actual, timing, retired, branches = simulate(args.binary, case, args.timeout, collect_branches=True)
         if actual != expected or retired != instructions:
             raise ValueError(f"{name}: result {actual}/{expected}, retired {retired}/{instructions}")
         g = golden[name]
@@ -91,16 +151,24 @@ def test(args):
             raise ValueError(f"{name}: strict cycle/retirement golden mismatch: {(actual, timing, retired)} != {g}")
         if args.peer:
             peer = simulate(args.peer, case, args.timeout)
-            if peer != (actual, timing, retired):
+            if peer[:3] != (actual, timing, retired):
                 raise ValueError(f"{name}: trees differ: {(actual, timing, retired)} != {peer}")
         row = dict(case=name, result=actual, init=timing[0], core=timing[1],
-                   drain=timing[2], cycles=timing[3], retired=retired)
+                   drain=timing[2], cycles=timing[3], retired=retired, branches=branches)
         rows.append(row)
-        print(f"PASS {name}: result={actual} retired={retired} core={timing[1]} total={timing[3]} IPC={retired / timing[1]:.6f}", flush=True)
+        print_row((name, actual, timing[3], timing[1], retired, f"{retired / timing[1]:.6f}",
+                   *(branch_rate(branches[kind]) for kind in BRANCH_TYPES)))
     if args.report:
         args.report.write_text(json.dumps(rows, indent=2) + "\n")
     print(f"PASS {len(rows)}/{len(names)}" + ("; result/retirement/cycles identical across both trees" if args.peer else ""))
+    print(f"Totals: cycles={sum(r['cycles'] for r in rows)} retired={sum(r['retired'] for r in rows)} core={sum(r['core'] for r in rows)}")
     print(f"Geomean IPC: {math.exp(sum(math.log(r['retired'] / r['core']) for r in rows) / len(rows)):.12f}")
+    print("Branch accuracy (weighted by counts; correct/total):")
+    for kind, counts in branch_totals(rows).items():
+        fraction = "unavailable" if counts is None else f"{counts['correct']}/{counts['total']}"
+        print(f"  {kind:4s}: {branch_rate(counts):>10s} ({fraction})")
+    print("N/A = no samples or simulator does not emit branch-type counts; JALR includes returns.")
+    print("Accuracy follows the simulator's resolved next-PC counters, not retirement or direction-only accuracy.")
 
 
 def smoke(args):
@@ -162,7 +230,7 @@ def smoke(args):
             if args.peer and simulate(args.peer, path, args.timeout) != result:
                 raise ValueError(f"{name}: trees differ")
             rows.append(dict(case=name, result=result[0], timing=result[1], retired=result[2]))
-            print(f"PASS {name}: {result}", flush=True)
+            print(f"PASS {name}: {result[:3]}", flush=True)
     if args.report:
         args.report.write_text(json.dumps(rows, indent=2) + "\n")
 

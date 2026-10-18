@@ -3,6 +3,19 @@
 #include <cassert>
 #include <cstdint>
 
+RecoveryWindow ROB::recoveryWindow(unsigned offset) const {
+  RecoveryWindow window{};
+  for (unsigned lane = 0; lane < RECOVERY_WIDTH; ++lane) {
+    unsigned slot = robSlot(head) + offset + lane;
+    if (slot >= ROB_CAP) slot -= ROB_CAP;
+    const auto &entry = ROBqueue[slot];
+    window.narrow[lane] = {entry.tag, static_cast<uint8_t>(entry.dest),
+                            static_cast<uint8_t>(entry.newPhy)};
+    window.ras[lane] = {entry.tag, static_cast<uint32_t>(entry.pc), entry.isRet, entry.isCall};
+  }
+  return window;
+}
+
 bool ROB::isOlder(RobTag tag_a, RobTag tag_b) {
   if (tag_a >> (ROB_TAG_WIDTH - 1) != tag_b >> (ROB_TAG_WIDTH - 1)) {
     return (tag_a & ROB_INDEX_MASK) > (tag_b & ROB_INDEX_MASK);
@@ -44,7 +57,7 @@ bool ROB::matchesTag(RobTag tag) const {
 }
 
 bool ROB::willCommit(const SquashInfo &squash) const {
-  return !isEmpty() && isHeadCommitReady() &&
+  return !squash.pauseCommit && !isEmpty() && isHeadCommitReady() &&
          (!squash.needSquash || isOlder(getHead(), squash.SquashTag));
 }
 
@@ -160,25 +173,11 @@ void ROB::tick(const ROBInput &input, systemState &CPUstate) {
       markReady(input.cdbOfALU.robTag);
     }
   }
-  if (input.cdbOfLQ.valid) {
+  if (input.cdbOfShared.valid) {
     if (!input.squashDetect.needSquash ||
-        ROB::isOlder(input.cdbOfLQ.robTag, input.squashDetect.SquashTag)) {
-      markReady(input.cdbOfLQ.robTag);
-    }
-  }
-  if (input.cdbOfMul.valid) {
-    if (!input.squashDetect.needSquash ||
-        ROB::isOlder(input.cdbOfMul.robTag, input.squashDetect.SquashTag)) {
-      if (matchesTag(input.cdbOfMul.robTag)) {
-        markReady(input.cdbOfMul.robTag);
-      }
-    }
-  }
-  if (input.cdbOfDiv.valid) {
-    if (!input.squashDetect.needSquash ||
-        ROB::isOlder(input.cdbOfDiv.robTag, input.squashDetect.SquashTag)) {
-      if (matchesTag(input.cdbOfDiv.robTag)) {
-        markReady(input.cdbOfDiv.robTag);
+        ROB::isOlder(input.cdbOfShared.robTag, input.squashDetect.SquashTag)) {
+      if (matchesTag(input.cdbOfShared.robTag)) {
+        markReady(input.cdbOfShared.robTag);
       }
     }
   }
