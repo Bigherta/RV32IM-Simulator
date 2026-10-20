@@ -20,6 +20,7 @@ struct LQEntry {
   bool isCDBBroadcast;
 };
 struct LQInput {
+  CommitPlan commits;
   bool executeEnabled = true;
   SquashInfo squashDetect;
   const AGU &AGUModule;

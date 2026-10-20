@@ -201,11 +201,13 @@ void LQ::tick(const LQInput &input, systemState &CPUstate) {
     forwarded &= ~(1u << index);
   }
   // retire pop
-  const bool retireLoad = !isEmpty() &&
-                          input.ROBModule.willCommit(input.squashDetect) &&
-                          headRobTag() == input.ROBModule.getHead();
-  if (retireLoad)
-    pop(CPUstate);
+  auto retiredHead = head;
+  for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane) {
+    if (lane < input.commits.count && retiredHead != tail &&
+        LQqueue[retiredHead & LQ_MASK].robTag == input.commits.tags[lane])
+      retiredHead = (retiredHead + 1) & LQ_SEQ_MASK;
+  }
+  if (retiredHead != head) CPUstate.LQModule.head = retiredHead;
   // load response from DMEM
   if (input.loadResp.valid) {
     auto index = memSlot(input.loadResp.memIndex);

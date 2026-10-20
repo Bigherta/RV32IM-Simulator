@@ -8,6 +8,7 @@ struct PRFEntry {
   bool ready;
 };
 struct PRFInput {
+  CommitPlan commits;
   const IssuePacket &issuePacket;
   SquashInfo squashDetect;
   RecoveryStep recovery;

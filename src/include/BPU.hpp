@@ -12,6 +12,7 @@ struct systemState;
 // update calls keep a fixed order (BRU candidate first) regardless of stage
 // scheduling order.
 struct BPUInput {
+  CommitPlan commits;
   const BRU &BRUModule;
   const ROB &ROBModule;
   aluCDB cdbOut;

@@ -84,6 +84,10 @@ void CPU::comb() {
   squashDetect = CPUstate.flushArbiter.arbitResult();
   if (recovery.active || exitCommitted) squashDetect.needSquash = false;
   squashDetect.pauseCommit = recovery.active || squashDetect.needSquash;
+  auto commits = ROBModule.planCommit(squashDetect, SQModule);
+  if (!initialized || exitCommitted) commits = {};
+  robInput.commits = ratInput.commits = prfInput.commits = lqInput.commits =
+      sqInput.commits = bpuInput.commits = commits;
   isarbInput.squashDetect = squashDetect;
   issuePacket = IssueArbiter::build(isarbInput);
   if (exitCommitted || recovery.active) issuePacket.valid = false;
@@ -95,11 +99,7 @@ void CPU::comb() {
   bpuInput.replay = replay.ras;
   lqInput.executeEnabled = !recovery.active;
   sqInput.executeEnabled = !recovery.active;
-  exitRetiring = false;
-  for (int i = 0; i < SQ_CAP; ++i)
-    if (!exitCommitted && SQModule.isActive(i) && SQModule.isAddressReady(i) &&
-        SQModule.getAddress(i) == AXI_EXIT_ADDR && SQModule.getRobTag(i) == ROBModule.getHead() &&
-        ROBModule.willCommit(squashDetect)) exitRetiring = true;
+  exitRetiring = commits.exits;
   sqInput.retireEnabled = !exitCommitted;
   fqInput.issueValid = issuePacket.valid;
   const bool fqPop = !recovery.active && !squashDetect.needSquash && !FQModule.isEmpty() &&
@@ -342,7 +342,12 @@ void CPU::run() {
     const uint32_t headAfter =
         static_cast<uint32_t>(CPUstate.ROBModule.getHead());
     const bool haltAfter = CPUstate.ROBModule.isHaltCommitted();
-    const uint32_t committed = headAfter != headBefore;
+    unsigned committed = 0;
+    RobTag cursor = headBefore;
+    for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane) {
+      if (cursor != headAfter) { ++committed; cursor = robNextTag(cursor); }
+    }
+    assert(cursor == headAfter);
     const bool haltCommitted = !haltBefore && haltAfter;
     assert(!haltCommitted || committed != 0);
     if (!ipcFrozen) {

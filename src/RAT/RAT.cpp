@@ -48,16 +48,20 @@ void RAT::tick(const RATInput &input, systemState &CPUstate) {
   } else if (!input.squashDetect.needSquash && input.issuePacket.valid && input.issuePacket.allocDest) {
     CPUstate.RATModule.specRAT[input.issuePacket.robEntry.dest] = input.issuePacket.phy;
   }
-  if (!input.squashDetect.needSquash && !step.active && input.ROBModule.willCommit(input.squashDetect)) {
-    auto index = robSlot(input.ROBModule.getHead());
+  uint32_t committedValid = archValid;
+  for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane) {
+   if (lane < input.commits.count) {
+    auto index = robSlot(input.commits.tags[lane]);
     auto dest = input.ROBModule.getRd(index);
     auto newPhy = input.ROBModule.getNewPhy(index);
     if (dest != 0 && newPhy != InvalidPhy) {
       port.enable = port.writeEnable = true;
       port.writeMask[dest] = true;
       port.writeData[dest] = newPhy;
-      CPUstate.RATModule.archValid = archValid | (1u << dest);
+       committedValid |= 1u << dest;
     }
   }
+  }
+  if (committedValid != archValid) CPUstate.RATModule.archValid = committedValid;
   archStorage.tick(port, CPUstate.RATModule.archStorage);
 }

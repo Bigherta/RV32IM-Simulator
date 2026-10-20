@@ -65,6 +65,35 @@ bool ROB::storeWillCommit(const SquashInfo &squash) const {
   return willCommit(squash) && headType() == ROBType::STORE;
 }
 
+CommitPlan ROB::planCommit(const SquashInfo &squash, const SQ &sq) const {
+  CommitPlan plan{};
+  bool open = !squash.pauseCommit && !squash.needSquash && !haltCommitted && !trapCommitted;
+  RobTag tag = head;
+  for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane) {
+    const auto &entry = ROBqueue[robSlot(tag)];
+    if (open && matchesTag(tag) && entry.isCommitReady) {
+      bool storeReady = entry.type != ROBType::STORE;
+      bool exits = false;
+      if (entry.type == ROBType::STORE) {
+        for (int row = 0; row < SQ_CAP; ++row) {
+          if (sq.isActive(row) && !sq.isCommitted(row) && sq.getRobTag(row) == tag &&
+              sq.isReadyToCommit(row)) {
+            storeReady = true;
+            exits = sq.getAddress(row) == AXI_EXIT_ADDR;
+          }
+        }
+      }
+      if (storeReady) {
+        plan.tags[plan.count++] = tag;
+        plan.exits |= exits;
+        open = !entry.halt && !entry.exception && !exits;
+      } else open = false;
+    } else open = false;
+    tag = robNextTag(tag);
+  }
+  return plan;
+}
+
 int ROB::push(ROBEntry entry, systemState &CPUstate) const {
   // The issue path must gate on isFull: a push into a full ROB silently
   // overwrites the head entry.
@@ -134,7 +163,6 @@ void ROB::flush(RobTag squashTag, systemState &CPUstate) const {
 }
 
 void ROB::tick(const ROBInput &input, systemState &CPUstate) {
-  const bool willCommitNow = willCommit(input.squashDetect);
   static_assert(ROB_CAP <= 32, "ROB completion bitmap fits its carrier");
   uint32_t readySetMask = 0;
   auto markReady = [&](RobTag tag) {
@@ -197,13 +225,18 @@ void ROB::tick(const ROBInput &input, systemState &CPUstate) {
   if (input.squashDetect.needSquash) {
     flush(input.squashDetect.SquashTag, CPUstate);
   }
-  if (!willCommitNow) {
-    return;
+  RobTag retiredHead = head;
+  for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane) {
+    if (lane < input.commits.count) {
+      assert(input.commits.tags[lane] == retiredHead && matchesTag(retiredHead));
+      const auto &entry = ROBqueue[robSlot(retiredHead)];
+      if (entry.exception) CPUstate.ROBModule.trapCommitted = true;
+      if (entry.halt) {
+        CPUstate.ROBModule.haltCommitted = true;
+        CPUstate.ROBModule.haltRd = entry.dest;
+      }
+      retiredHead = robNextTag(retiredHead);
+    }
   }
-  const bool halt = isHeadHalt();
-  pop(CPUstate);
-  if (halt) {
-    CPUstate.ROBModule.haltCommitted = true;
-    CPUstate.ROBModule.haltRd = headDest();
-  }
+  if (input.commits.count != 0) CPUstate.ROBModule.head = retiredHead;
 }

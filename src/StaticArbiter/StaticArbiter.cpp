@@ -191,7 +191,7 @@ MemDispatchDecision MemArbiter::arbitrate(const LQ &LQ, const SQ &SQ,
     auto storeTag = SQ.headRobTag();
     bool committed = SQ.isCommitted(SQ.getHead());
     bool atHeadReady =
-        !committed && rob.storeWillCommit(squash) && storeTag == rob.getHead();
+        !committed && rob.planCommit(squash, SQ).contains(storeTag);
     if (committed || atHeadReady) {
       MemRequest newRequest{};
       newRequest.address = SQ.getAddress(SQ.getHead());

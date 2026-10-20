@@ -115,6 +115,13 @@ def test(args):
     active = False
     for line in args.golden.read_text().splitlines():
         cells = tuple(c.strip() for c in line.strip().strip("|").split("|"))
+        if args.commit_width == 1:
+            if len(cells) == 7 and cells[0] == "单提交":
+                cells = cells[1:]
+                if cells[0] in golden:
+                    raise ValueError(f"duplicate single-commit golden: {cells[0]}")
+                golden[cells[0]] = dict(zip(columns[1:], map(int, cells[1:])))
+            continue
         if cells == columns:
             active = True
         elif active and len(cells) == len(columns) and cells[0] in manifest["cases"]:
@@ -249,6 +256,8 @@ def main():
     run.add_argument("--timeout", type=float, default=300)
     run.add_argument("--report", type=Path)
     run.add_argument("--golden", type=Path, default=Path(os.environ.get("GOLDEN_MD", ROOT / "docs/benchmarks.md")))
+    run.add_argument("--commit-width", type=int, choices=(1, 2), default=2,
+                     help="select the matching golden table; does not change the binary's compiled width")
     run.set_defaults(action=test)
     edge = commands.add_parser("smoke")
     edge.add_argument("--binary", type=Path, default=ROOT / "code")

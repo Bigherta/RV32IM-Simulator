@@ -112,14 +112,16 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
     }
   }
   // 7. release the old physical register
-  if (input.ROBModule.willCommit(input.squashDetect)) {
-    int headIdx = robSlot(input.ROBModule.getHead());
-    if (!input.ROBModule.isHeadHalt() &&
-        (input.ROBModule.headType() == ROBType::REGISTER ||
-         input.ROBModule.headType() == ROBType::LINK)) {
+  for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane) {
+   if (lane < input.commits.count) {
+    int headIdx = robSlot(input.commits.tags[lane]);
+    if (!input.ROBModule.isHalt(headIdx) &&
+        (input.ROBModule.getType(headIdx) == ROBType::REGISTER ||
+         input.ROBModule.getType(headIdx) == ROBType::LINK)) {
       int oldPhy = input.ROBModule.getOldPhy(headIdx);
       if (oldPhy != InvalidPhy)
         push(oldPhy, writeTail, CPUstate);
     }
+  }
   }
 }
