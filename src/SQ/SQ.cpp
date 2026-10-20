@@ -270,10 +270,9 @@ void SQ::tick(const SQInput &input, systemState &CPUstate) {
     storeDispatched = true;
   if (storeDispatched)
     pop(CPUstate);
-  if (input.retireEnabled && input.ROBModule.storeWillCommit(input.squashDetect)) {
-    const auto storeTag = input.ROBModule.getHead();
+  if (input.retireEnabled) {
     for (int i = 0; i < SQ_CAP; ++i) {
-      if (isActive(i) && SQqueue[i].robTag == storeTag &&
+      if (isActive(i) && input.commits.contains(SQqueue[i].robTag) &&
           !SQqueue[i].isCommitted) {
         setCommitted(i, CPUstate);
       }

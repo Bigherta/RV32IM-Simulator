@@ -264,21 +264,22 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
   // normal retirement writes one masked lane. No commit overlaps recovery.
   SRAM<1, (RAS_CAP << 5), 32>::Input archPort{};
   archPort.enable = input.squashDetect.needSquash;
-  if (input.ROBModule.willCommit(input.squashDetect)) {
-    const auto headIndex = robSlot(input.ROBModule.getHead());
+  auto archTop = tgt.archTopOfRAS;
+  uint32_t archValid = tgt.archValid;
+  for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane) {
+   if (lane < input.commits.count) {
+    const auto headIndex = robSlot(input.commits.tags[lane]);
     const bool push = input.ROBModule.isCall(headIndex);
     const bool pop = input.ROBModule.isRet(headIndex);
     if (push || pop) {
-      auto archTop = tgt.archTopOfRAS;
       if (pop && archTop > 0) --archTop;
       if (push && archTop < RAS_CAP) {
         archPort.enable = archPort.writeEnable = true;
         archPort.writeMask[archTop] = true;
         archPort.writeData[archTop] = static_cast<uint32_t>(input.ROBModule.getPC(headIndex)) + 4u;
-        CPUstate.BPUModule.tgt.archValid = tgt.archValid | (1u << archTop);
+        archValid |= 1u << archTop;
         ++archTop;
       }
-      CPUstate.BPUModule.tgt.archTopOfRAS = archTop;
     }
   }
   if (input.squashDetect.needSquash) {
@@ -289,6 +290,11 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
     // recover next checkpoint id
     CPUstate.BPUModule.nextCkptId =
         (input.squashDetect.CkptId + 1) & (CKPT_CAP - 1);
+  }
+  }
+  if (input.commits.count != 0) {
+    CPUstate.BPUModule.tgt.archTopOfRAS = archTop;
+    CPUstate.BPUModule.tgt.archValid = archValid;
   }
   if (input.recovery.active) {
     const auto &step = input.recovery;

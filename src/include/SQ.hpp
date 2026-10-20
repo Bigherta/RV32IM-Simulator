@@ -27,6 +27,7 @@ struct SQEntry {
   bool isCommitted = false;
 };
 struct SQInput {
+  CommitPlan commits;
   bool retireEnabled = true;
   bool executeEnabled = true;
   SquashInfo squashDetect;

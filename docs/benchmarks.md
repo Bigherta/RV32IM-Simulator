@@ -1,6 +1,46 @@
 # Benchmarks
 
-> **2026-10-17 当前共同golden**：两软件已同步RTL的SRAM基线读＋固定四拍恢复，以及AXIData
+## 当前共同golden：双提交＋四拍恢复（2026-10-20）
+
+保持单取指/单发射、两路CDB、固定四拍恢复和全部存储参数。两软件Release/断言四构建25例
+结果、退休和周期一致；主树对最终RTL的25例逐拍/独立ISA、8例冒烟和21例双提交定向均通过。
+单宽两软件25例严格保持下方旧golden。双提交改变资源释放/调度时刻，不保证每例加速；
+旧表完整保留，不修改课程镜像或预期答案。数据主机信用为8，外部Slave每通道16项、服务10拍。
+
+| case | result | cycles | retired | core | drain |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| correctness_add_to_100 | 5050 | 733 | 421 | 719 | 14 |
+| correctness_array_test1 | 123 | 757 | 131 | 743 | 14 |
+| correctness_array_test2 | 43 | 745 | 149 | 731 | 14 |
+| correctness_basicopt1 | 88 | 221630 | 142059 | 221616 | 14 |
+| correctness_bulgarian | 159 | 421372 | 265654 | 421358 | 14 |
+| correctness_expr | 136 | 1072 | 291 | 1058 | 14 |
+| correctness_gcd | 178 | 741 | 82 | 727 | 14 |
+| correctness_hanoi | 184 | 8407 | 3674 | 8393 | 14 |
+| correctness_lvalue2 | 175 | 390 | 53 | 376 | 14 |
+| correctness_magic | 216 | 789782 | 441938 | 789768 | 14 |
+| correctness_manyarguments | 40 | 494 | 37 | 480 | 14 |
+| correctness_multiarray | 115 | 3747 | 1543 | 3733 | 14 |
+| correctness_naive | 97 | 377 | 37 | 363 | 14 |
+| correctness_pi | 112 | 8413648 | 3117658 | 8413634 | 14 |
+| correctness_qsort | 81 | 1643752 | 1097111 | 1643738 | 14 |
+| correctness_queens | 144 | 549076 | 265167 | 549062 | 14 |
+| correctness_statement_test | 50 | 1914 | 546 | 1900 | 14 |
+| correctness_superloop | 134 | 660440 | 371607 | 660426 | 14 |
+| correctness_tak | 186 | 2113806 | 1221227 | 2113792 | 14 |
+| perf_median | 0 | 16363 | 6961 | 16349 | 14 |
+| perf_multiply | 0 | 30373 | 21722 | 30359 | 14 |
+| perf_qsort | 0 | 312137 | 139900 | 312123 | 14 |
+| perf_rsort | 0 | 330274 | 195719 | 330260 | 14 |
+| perf_towers | 0 | 10583 | 5278 | 10569 | 14 |
+| perf_vvadd | 0 | 6839 | 4524 | 6825 | 14 |
+
+全25例总cycles **15,539,452**、core **15,539,102**、drain **350**、retired **7,303,489**。
+六perf总cycles **706,569**、core **706,485**，几何IPC **0.546998574899**。
+total不含boot1拍，IPC只使用core；退出Store计入退休。相对单提交总周期减少2,503（约0.0161%），
+六perf总周期反而增加733；不据此推导普遍性能提升或Fmax收益。
+
+> **2026-10-17 单提交基线**：两软件已同步RTL的SRAM基线读＋固定四拍恢复，以及AXIData
 > word-bank共享payload、DCache局部地址/独立raw-victim缓冲。两软件Release/断言四构建25/25
 > 同值、同退休及同分段周期；两软件分别与真实RTL共享Slave全25例逐拍及独立ISA通过，源码摘要保持。
 > 当前表按实测更新，下面16日单拍恢复记录保留为历史；验收见父工作区`sync/RECOVERY4-SYNC-20261017.md`。
@@ -10,7 +50,7 @@
 > 与本活动表全部逐拍数值相同，无需改写golden。六perf几何IPC仍0.589912318160。
 > 总线争用的保持/恢复由独立定向测试覆盖；此结果不代表所有程序周期不变或Fmax提升。
 
-## 当前共同golden：四拍恢复＋课程AXI镜像（2026-10-17）
+## 历史：单提交＋四拍恢复＋课程AXI镜像（2026-10-17）
 
 两软件D$4 KiB/64组/2-way/32 B、4 MSHR、8请求槽；I$1 KiB/64 B、8请求槽。
 AXI4-Lite外存每通道16项，服务延迟10拍、256 MiB RAM；数据读写共享16条整行信用。
@@ -19,35 +59,35 @@ AXI4-Lite外存每通道16项，服务延迟10拍、256 MiB RAM；数据读写�
 `cycles=core+drain`不含独立boot1拍；本批镜像drain实测均14拍，不是硬编码等待。
 Release及`_DEBUG`+标准assert四构建25/25完整结果、独立退休数、init/core/drain/total逐项相同；8个实际CPU定向例也相同。
 外部无响应背压夹具实测两树同时占用8请求槽、4 MSHR并发出4个独立读，不增生产探针。
-本表是`data/course.py test`的严格周期门禁；不是RTL对拍结论，下面旧18+6表全部仅作历史。
+本表为`CPU_COMMIT_WIDTH=1`兼容回归基线；默认双提交门禁读取本文首表。
 
-| case | result | cycles | retired | core | drain |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| correctness_add_to_100 | 5050 | 733 | 421 | 719 | 14 |
-| correctness_array_test1 | 123 | 758 | 131 | 744 | 14 |
-| correctness_array_test2 | 43 | 746 | 149 | 732 | 14 |
-| correctness_basicopt1 | 88 | 221631 | 142059 | 221617 | 14 |
-| correctness_bulgarian | 159 | 421646 | 265654 | 421632 | 14 |
-| correctness_expr | 136 | 1073 | 291 | 1059 | 14 |
-| correctness_gcd | 178 | 742 | 82 | 728 | 14 |
-| correctness_hanoi | 184 | 8451 | 3674 | 8437 | 14 |
-| correctness_lvalue2 | 175 | 391 | 53 | 377 | 14 |
-| correctness_magic | 216 | 788390 | 441938 | 788376 | 14 |
-| correctness_manyarguments | 40 | 494 | 37 | 480 | 14 |
-| correctness_multiarray | 115 | 3748 | 1543 | 3734 | 14 |
-| correctness_naive | 97 | 378 | 37 | 364 | 14 |
-| correctness_pi | 112 | 8413649 | 3117658 | 8413635 | 14 |
-| correctness_qsort | 81 | 1646052 | 1097111 | 1646038 | 14 |
-| correctness_queens | 144 | 551069 | 265167 | 551055 | 14 |
-| correctness_statement_test | 50 | 1915 | 546 | 1901 | 14 |
-| correctness_superloop | 134 | 660441 | 371607 | 660427 | 14 |
-| correctness_tak | 186 | 2113812 | 1221227 | 2113798 | 14 |
-| perf_median | 0 | 16385 | 6961 | 16371 | 14 |
-| perf_multiply | 0 | 30373 | 21722 | 30359 | 14 |
-| perf_qsort | 0 | 310180 | 139900 | 310166 | 14 |
-| perf_rsort | 0 | 331559 | 195719 | 331545 | 14 |
-| perf_towers | 0 | 10463 | 5278 | 10449 | 14 |
-| perf_vvadd | 0 | 6876 | 4524 | 6862 | 14 |
+| 模式 | case | result | cycles | retired | core | drain |
+|---|---|---:|---:|---:|---:|---:|
+| 单提交 | correctness_add_to_100 | 5050 | 733 | 421 | 719 | 14 |
+| 单提交 | correctness_array_test1 | 123 | 758 | 131 | 744 | 14 |
+| 单提交 | correctness_array_test2 | 43 | 746 | 149 | 732 | 14 |
+| 单提交 | correctness_basicopt1 | 88 | 221631 | 142059 | 221617 | 14 |
+| 单提交 | correctness_bulgarian | 159 | 421646 | 265654 | 421632 | 14 |
+| 单提交 | correctness_expr | 136 | 1073 | 291 | 1059 | 14 |
+| 单提交 | correctness_gcd | 178 | 742 | 82 | 728 | 14 |
+| 单提交 | correctness_hanoi | 184 | 8451 | 3674 | 8437 | 14 |
+| 单提交 | correctness_lvalue2 | 175 | 391 | 53 | 377 | 14 |
+| 单提交 | correctness_magic | 216 | 788390 | 441938 | 788376 | 14 |
+| 单提交 | correctness_manyarguments | 40 | 494 | 37 | 480 | 14 |
+| 单提交 | correctness_multiarray | 115 | 3748 | 1543 | 3734 | 14 |
+| 单提交 | correctness_naive | 97 | 378 | 37 | 364 | 14 |
+| 单提交 | correctness_pi | 112 | 8413649 | 3117658 | 8413635 | 14 |
+| 单提交 | correctness_qsort | 81 | 1646052 | 1097111 | 1646038 | 14 |
+| 单提交 | correctness_queens | 144 | 551069 | 265167 | 551055 | 14 |
+| 单提交 | correctness_statement_test | 50 | 1915 | 546 | 1901 | 14 |
+| 单提交 | correctness_superloop | 134 | 660441 | 371607 | 660427 | 14 |
+| 单提交 | correctness_tak | 186 | 2113812 | 1221227 | 2113798 | 14 |
+| 单提交 | perf_median | 0 | 16385 | 6961 | 16371 | 14 |
+| 单提交 | perf_multiply | 0 | 30373 | 21722 | 30359 | 14 |
+| 单提交 | perf_qsort | 0 | 310180 | 139900 | 310166 | 14 |
+| 单提交 | perf_rsort | 0 | 331559 | 195719 | 331545 | 14 |
+| 单提交 | perf_towers | 0 | 10463 | 5278 | 10449 | 14 |
+| 单提交 | perf_vvadd | 0 | 6876 | 4524 | 6862 | 14 |
 
 全25例总cycles **15,541,955**、core **15,541,605**、drain **350**、retired **7,303,489**；
 六perf总cycles **705,836**，按`retired/core`计算的几何IPC **0.547643861067**。

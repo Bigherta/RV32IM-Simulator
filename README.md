@@ -1,6 +1,6 @@
 # RV32IM 周期级乱序处理器模拟器
 
-C++20单宽乱序核：按序取指/发射/提交，乱序执行；含重命名、ROB、七池RS、Booth乘法和SRT radix-4除法。
+C++20乱序核：单宽按序取指/发射、双宽按序提交，乱序执行；含重命名、ROB、七池RS、Booth乘法和SRT radix-4除法。
 主树用拍初快照与`comb()/tick()`，模板树用`Wire/Register`与`work()/sync()`；二者与当前RTL在已验收范围内逐拍一致。
 
 ## 当前配置
@@ -47,6 +47,7 @@ Cond/JAL/JALR分型缺失或无样本显示`N/A`；汇总按原始计数加权�
 
 - [前端](docs/frontend.md) · [后端与MUL/SRT](docs/backend.md) · [访存](docs/memory.md) · [Cache/AXI](docs/cache.md)
 - [模板框架](RISC-V-Simulator-Template/docs/help.md) · [同步与验证入口](../sync/README.md)
-- 最新验收：四软件构建及两软件各自对RTL的25例均通过；总15,541,955拍（不含boot），退休7,303,489条。
+- 双提交：四软件构建25例通过，总15,539,452拍（不含boot），退休7,303,489条；单提交兼容回归严格保持旧golden。
+- 本轮RTL逐拍/独立ISA、退休专项和验证边界见[双提交记录](../sync/DUAL-COMMIT-20261020.md)。
   详见[验收记录](../sync/RTL-TO-SW-SYNC-20261018.md)，不等于全异常域或门级等价证明。
 - [历史文档](docs/_archive/20261018/INDEX.md)保留旧配置、迁移过程及完整算术推导，不作为当前容量/退出规则。

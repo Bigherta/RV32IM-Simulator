@@ -4,7 +4,6 @@
 #include "common.hpp"
 #include <cstdint>
 #include <cstring>
-constexpr int COMMIT_WIDTH = 2;
 enum class ROBType {
   REGISTER,
   BRANCH,
@@ -31,6 +30,7 @@ struct ROBEntry {
 };
 struct IssuePacket;
 struct ROBInput {
+  CommitPlan commits;
   SquashInfo squashDetect;
   aluCDB cdbOfALU;
   sharedCDB cdbOfShared;
@@ -60,6 +60,7 @@ public:
   bool isEmpty() const;
   bool matchesTag(RobTag tag) const;
   bool willCommit(const SquashInfo &squash) const;
+  CommitPlan planCommit(const SquashInfo &squash, const SQ &sq) const;
   bool storeWillCommit(const SquashInfo &squash) const;
   bool isHaltCommitted() const;
   bool isTrapCommitted() const { return trapCommitted; }

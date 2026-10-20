@@ -26,7 +26,11 @@ MUL/SRT的完整推导、伪代码、位宽表和调试轨迹保留在[详细原
 
 - 两条物理CDB：ALU独占CDB0；MUL/DIV/Load按完整ROB年龄竞争CDB1。
 - 未获授权者保持结果和背压；消费者资格、生产者释放和授权是同一事件。
-- PRF/ROB拍末接收WB，退休读取旧ready，每拍最多提交1条。
+- PRF/ROB拍末接收WB，退休读取旧ready，每拍最多提交2条连续队首指令。
+- `CommitPlan`（模板为ROB输出的`CommitPort`数组）统一驱动ROB、RAT、PRF、LQ、SQ、RAS和计数。
+  后一lane不能绕过前一lane；HALT、异常、退出Store截断后续提交。恢复广播及四拍重放仍禁提交。
+- 同rd的已提交映射以年轻lane为准；每条oldPhy按年龄追加自由FIFO；本拍回收下拍才可分配。
+  已提交RAT/RAS仍用单端口宽字SRAM，先合并写掩码/同槽年轻优先，再写一次。
 - Load广播只置已广播标记，实际退休才回收LQ；Store退休后可在SQ等待Cache接受。
 - LQ内部保存raw，CDB读出时按存活行的宽度/符号扩展，不把raw缓存直接当作架构值。
 

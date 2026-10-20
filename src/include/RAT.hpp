@@ -12,6 +12,7 @@ struct OperandInfo {
 };
 struct IssuePacket;
 struct RATInput {
+  CommitPlan commits;
   const ROB &ROBModule;
   const IssuePacket &issuePacket;
   SquashInfo squashDetect;

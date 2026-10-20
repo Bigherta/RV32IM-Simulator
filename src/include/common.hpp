@@ -10,6 +10,23 @@ template <uint32_t N> consteval int log2Pow2() {
 }
 
 using RobTag = uint8_t;
+#ifndef CPU_COMMIT_WIDTH
+#define CPU_COMMIT_WIDTH 2
+#endif
+constexpr unsigned COMMIT_WIDTH = CPU_COMMIT_WIDTH;
+static_assert(COMMIT_WIDTH >= 1 && COMMIT_WIDTH <= 2);
+// Accepted, head-ordered retirement prefix, computed only from old state.
+struct CommitPlan {
+  unsigned count = 0;
+  std::array<RobTag, COMMIT_WIDTH> tags{};
+  bool exits = false;
+  bool contains(RobTag tag) const {
+    bool found = false;
+    for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane)
+      found |= lane < count && tags[lane] == tag;
+    return found;
+  }
+};
 // Host configuration, set once before constructing the CPU. Course AXI images
 // execute ADDI a0,x0,255 normally; only archived images opt into the old marker.
 inline bool legacyHaltEnabled = false;

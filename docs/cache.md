@@ -21,6 +21,8 @@ AXIFetch8行；AXIData读写共享8项描述符/payload，顺序环仍16项。�
 
 ## DCache事件
 
+双提交只拓宽ROB到LSQ的退休事件，不增加Cache请求、AGU、CDB或AXI带宽；SQ继续按序单路排空。
+
 - 请求入队与同步查询分开；查询读取拍初状态，不把同拍SRAM写结果当作新读数据。
 - lookup候选提前计算，最终授权按**Fill > Store > lookup**；各way/bank和metadata独立选本地地址。
 - 命中数据先选相邻word，再四路字节旋转并截取；一次read grant只提取一次raw，响应与缓存保存共享。
