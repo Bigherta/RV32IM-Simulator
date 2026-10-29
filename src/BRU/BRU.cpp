@@ -122,8 +122,8 @@ void BRU::tick(const BRUInput &input, systemState &CPUstate) {
     const bool keep = !input.squashDetect.needSquash ||
                       ROB::isOlder(input.dispatch.robTag, input.squashDetect.SquashTag);
     BRUExecute(
-        static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
-        static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
+        static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1, input.operandWriteback)),
+        static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2, input.operandWriteback)),
         static_cast<uint32_t>(rs.pc), static_cast<uint32_t>(rs.imm), rs.op,
         input.dispatch.robTag, keep, CPUstate);
   }

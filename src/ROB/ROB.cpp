@@ -167,10 +167,9 @@ void ROB::tick(const ROBInput &input, systemState &CPUstate) {
   uint32_t readySetMask = 0;
   auto markReady = [&](RobTag tag) {
     const auto slot = robSlot(tag);
-    if (slot >= ROB_CAP || (isEmpty() && !input.issuePacket.valid))
+    if (slot >= ROB_CAP || !matchesTag(tag))
       return;
-    const auto rowTag = input.issuePacket.valid && slot == robSlot(next_tag)
-                            ? next_tag : ROBqueue[slot].tag;
+    const auto rowTag = ROBqueue[slot].tag;
     if (rowTag == tag) readySetMask |= uint32_t{1} << slot;
   };
   // BRU set ROB ready
@@ -210,15 +209,23 @@ void ROB::tick(const ROBInput &input, systemState &CPUstate) {
     }
   }
   // Single ready write per row, including initialization of a new allocation.
-  if (input.issuePacket.valid) {
-    ROBEntry entry = input.issuePacket.robEntry;
-    entry.isCommitReady = entry.isCommitReady ||
-                          bool(readySetMask & (uint32_t{1} << robSlot(next_tag)));
-    push(entry, CPUstate);
+  RobTag allocatedNext = next_tag;
+  uint32_t allocatedMask = 0;
+  for (unsigned lane = 0; lane < ISSUE_WIDTH; ++lane) {
+    if (lane < input.issuePacket.count) {
+      const auto &p = input.issuePacket.lanes[lane];
+      assert(p.valid && p.robTag == allocatedNext && !matchesTag(allocatedNext));
+      ROBEntry entry = p.robEntry;
+      entry.tag = allocatedNext;
+      CPUstate.ROBModule.ROBqueue[robSlot(allocatedNext)] = entry;
+      allocatedMask |= uint32_t{1} << robSlot(allocatedNext);
+      allocatedNext = robNextTag(allocatedNext);
+    }
   }
+  if (input.issuePacket.count != 0) CPUstate.ROBModule.next_tag = allocatedNext;
   for (int slot = 0; slot < ROB_CAP; ++slot) {
     if ((readySetMask & (uint32_t{1} << slot)) &&
-        (!input.issuePacket.valid || slot != robSlot(next_tag)))
+        !(allocatedMask & (uint32_t{1} << slot)))
       CPUstate.ROBModule.ROBqueue[slot].isCommitReady = true;
   }
   // ROB squash

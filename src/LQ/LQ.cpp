@@ -100,7 +100,29 @@ auto LQ::getIsUnsigned(int index) const -> bool {
 
 auto LQ::getNBytes(int index) const -> int { return LQqueue[index].nBytes; }
 
-int LQ::LoadDetect() const {
+LoadAddressBypass LQ::addressBypass(const AGU &agu, const SQ &sq,
+                                  const SquashInfo &squash, bool enabled) const {
+  LoadAddressBypass event{};
+  if (enabled && !agu.isEmpty() && !isStoreMem(agu.headMemIndex())) {
+    const auto index = memSlot(agu.headMemIndex());
+    const auto tag = agu.headRobTag();
+    if (matchesAddress(index, tag) &&
+        (!squash.needSquash || ROB::isOlder(tag, squash.SquashTag))) {
+      event = {true, index, tag, agu.headValue(),
+               sq.replyToLoadRequest(agu.headValue(), getNBytes(index), tag).valid};
+    }
+  }
+  return event;
+}
+
+uint32_t LQ::requestAddress(int index, const LoadAddressBypass &event) const {
+  if (!isAddressReady(index) && event.valid && event.index == index &&
+      matchesAddress(index, event.robTag))
+    return event.address;
+  return getAddress(index);
+}
+
+int LQ::LoadDetect(const LoadAddressBypass &event) const {
   if (head == tail)
     return 0xFFFFFFFF;
   int UnloadIndex = 0;
@@ -109,7 +131,10 @@ int LQ::LoadDetect() const {
     uint8_t cur = (head + k) & LQ_MASK;
     if (!isActive(cur) || foundUnload)
       continue;
-    if (LQqueue[cur].isAddressReady &&
+    const bool earlyAddress = event.valid && event.index == cur &&
+        event.robTag == LQqueue[cur].robTag &&
+        !(!LQqueue[cur].isCDBBroadcast && event.forwarded);
+    if ((LQqueue[cur].isAddressReady || earlyAddress) &&
         LQqueue[cur].valueState == ValueState::NOTREADY) {
       foundUnload = true;
       UnloadIndex = cur;
@@ -137,6 +162,43 @@ int LQ::CDBDetect() const {
   return detectedIndex;
 }
 
+bool LQ::notifyMatches(const StoreNotify &notify, int index) const {
+  const auto &row = LQqueue[index];
+  return notify.valid && isActive(index) && row.isAddressReady &&
+      row.address == notify.addr && row.nBytes == notify.nBytes &&
+      ROB::isOlder(notify.storeTag, row.robTag) &&
+      !(notify.foundKnownSame && ROB::isOlder(notify.knownSameAddressOldestTag, row.robTag)) &&
+      !(notify.foundUnknown && ROB::isOlder(notify.unknownOldestTag, row.robTag));
+}
+
+LoadResultCandidate LQ::resultCandidate(const LQInput &input) const {
+  LoadResultCandidate result{};
+  const int buffered = CDBDetect();
+  if (buffered >= 0)
+    result = {true, uint8_t(buffered), getRobTag(buffered), uint32_t(getValue(buffered))};
+  const auto &response = input.loadResp;
+  const auto index = memSlot(response.memIndex);
+  const auto &row = LQqueue[index];
+  // C: only an authenticated outstanding OLD row may broadcast its late reply.
+  if (response.valid && matchesAddress(index, response.robTag) &&
+      row.valueState == ValueState::FETCHING && !row.isCDBBroadcast &&
+      (!input.squashDetect.needSquash || ROB::isOlder(response.robTag, input.squashDetect.SquashTag))) {
+    bool forwardPriority = notifyMatches(input.storeAddrNotify, index);
+    for (int lane = 0; lane < STORERS_CAP; ++lane)
+      forwardPriority |= notifyMatches(input.storeNotifies[lane], index);
+    const auto event = addressBypass(input.AGUModule, input.SQModule,
+                                     input.squashDetect, input.executeEnabled);
+    if (event.valid && event.index == index) forwardPriority = event.forwarded;
+    if (!forwardPriority && (!result.valid || ROB::isOlder(row.robTag, result.robTag) ||
+        (row.robTag == result.robTag && index < result.index)))
+      result = {true, index, row.robTag,
+                extendLoad(uint32_t(response.value), row.nBytes, row.isUnsigned)};
+  }
+  if (result.valid && input.squashDetect.needSquash &&
+      !ROB::isOlder(result.robTag, input.squashDetect.SquashTag)) result.valid = false;
+  return result;
+}
+
 uint32_t LQ::applyStoreForward(const StoreNotify &notify,
                                systemState &CPUstate) const {
   uint32_t forwarded = 0;
@@ -144,7 +206,8 @@ uint32_t LQ::applyStoreForward(const StoreNotify &notify,
     uint8_t i = (head + k) & LQ_MASK;
     if (!isActive(i))
       break;
-    if (!LQqueue[i].isAddressReady)
+    if (!LQqueue[i].isAddressReady || LQqueue[i].valueState == ValueState::READY ||
+        LQqueue[i].isCDBBroadcast)
       continue;
     if (LQqueue[i].address != notify.addr || LQqueue[i].nBytes != notify.nBytes)
       continue;
@@ -166,7 +229,6 @@ uint32_t LQ::applyStoreForward(const StoreNotify &notify,
 
 void LQ::tick(const LQInput &input, systemState &CPUstate) {
   uint32_t forwarded = 0; // Comb flag only: forwarding wins over a late reply.
-  const auto &p = input.issuePacket;
   // store-forward broadcasts from SQ (data-ready events pre-computed in comb)
   for (int i = 0; i < STORERS_CAP; ++i)
     if (input.storeNotifies[i].valid)
@@ -186,7 +248,8 @@ void LQ::tick(const LQInput &input, systemState &CPUstate) {
       writeAddress(value, index, CPUstate);
       auto reply = input.SQModule.replyToLoadRequest(
           value, LQqueue[index].nBytes, aguRobTag);
-      if (reply.valid) {
+      if (reply.valid && LQqueue[index].valueState != ValueState::READY &&
+          !LQqueue[index].isCDBBroadcast) {
         writeValue(reply.value, index, LQqueue[index].nBytes,
                    !LQqueue[index].isUnsigned, CPUstate);
         forwarded |= 1u << index;
@@ -226,8 +289,19 @@ void LQ::tick(const LQInput &input, systemState &CPUstate) {
   }
   // Allocation owns the last write to an old inactive tail slot; a late
   // response for its previous occupant cannot initialize the new load.
-  if (p.valid && p.isLoad)
-    pushLoad(p.robTag, p.nBytes, p.isUnsigned, CPUstate);
+  unsigned allocated = 0;
+  for (unsigned lane = 0; lane < ISSUE_WIDTH; ++lane) {
+    const auto &p = input.issuePacket.lanes[lane];
+    if (lane < input.issuePacket.count && p.isLoad) {
+      const auto slot = (tail + allocated) & LQ_MASK;
+      CPUstate.LQModule.LQqueue[slot] = {};
+      CPUstate.LQModule.LQqueue[slot].robTag = p.robTag;
+      CPUstate.LQModule.LQqueue[slot].nBytes = p.nBytes;
+      CPUstate.LQModule.LQqueue[slot].isUnsigned = p.isUnsigned;
+      ++allocated;
+    }
+  }
+  if (allocated != 0) CPUstate.LQModule.tail = (tail + allocated) & LQ_SEQ_MASK;
   // flush on squash
   if (input.squashDetect.needSquash &&
       input.ROBModule.matchesTag(input.squashDetect.SquashTag))

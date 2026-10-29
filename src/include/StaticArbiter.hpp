@@ -31,7 +31,7 @@ public:
                                const BRU &bru, const MUL &mul, const DIV &div,
                                const PRF &prf, const SquashInfo &squash,
                                const mulCDB &mulGrant, const divCDB &divGrant,
-                               bool divOutReady);
+                                bool divOutReady, const OperandWriteback &ports = {});
 };
 
 // Named MemArbiter (was MemRequestArbiter) to match the template tree file
@@ -40,7 +40,8 @@ class MemArbiter {
 public:
   static MemDispatchDecision arbitrate(const LQ &LQ, const SQ &SQ,
                                        const ROB &rob, const DCache &dcache,
-                                       const SquashInfo &squash);
+                                       const SquashInfo &squash,
+                                       const LoadAddressBypass &address = {});
 };
 
 struct IssuePacket {
@@ -73,6 +74,11 @@ struct IssuePacket {
   bool isUnsigned = false;
   uint32_t pc = 0;
 };
+// Comb-only accepted prefix, shared by every allocation consumer.
+struct IssueGroup {
+  unsigned count = 0;
+  std::array<IssuePacket, ISSUE_WIDTH> lanes{};
+};
 struct DecodeUnit;
 struct RAT;
 struct PRF;
@@ -85,6 +91,7 @@ struct IssueArbiterInput {
   const LQ &LQModule;
   const SQ &SQModule;
   SquashInfo squashDetect;
+  DispatchBus dispatchBus;
   IssueArbiterInput(const DecodeUnit &DecodeUnitModule, const ROB &ROBModule,
                     const RSUnit &RSModule, const RAT &RATModule,
                     const PRF &PRFModule, const LQ &LQModule, const SQ &SQModule)
@@ -114,4 +121,5 @@ private:
 
 public:
   static IssuePacket build(const IssueArbiterInput &);
+  static IssueGroup buildPrefix(const IssueArbiterInput &);
 };

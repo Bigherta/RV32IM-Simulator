@@ -14,7 +14,7 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
                                        const SquashInfo &squash,
                                        const mulCDB &mulGrant,
                                        const divCDB &divGrant,
-                                       bool divOutReady) {
+                                        bool divOutReady, const OperandWriteback &ports) {
   DispatchBus dispatch;
   // ALU channel: oldest operand-ready integerRS entry (I-extension ALU ops).
   // The ALU holds a single result slot that is released in the same cycle it is
@@ -35,8 +35,8 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
     uint8_t bestTag = 0;
     for (int i = 0; i < INTEGERRS_CAP; ++i) {
       const auto &rs_ = rs.integerRS[i];
-      if (!rs_.free && prf.isOperandReady(rs_.src1) &&
-          prf.isOperandReady(rs_.src2)) {
+      if (!rs_.free && prf.isOperandReady(rs_.src1, ports) &&
+          prf.isOperandReady(rs_.src2, ports)) {
         auto tag = rs_.robTag;
         if (!foundAny || ROB::isOlder(tag, bestTag)) {
           foundAny = true;
@@ -123,8 +123,8 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
     RSType bestType = RSType::Load;
     for (int i = 0; i < LOADRS_CAP; ++i) {
       const auto &rs_ = rs.loadRS[i];
-      if (!rs_.free && prf.isOperandReady(rs_.src1) &&
-          prf.isOperandReady(rs_.src2)) {
+      if (!rs_.free && prf.isOperandReady(rs_.src1, ports) &&
+          prf.isOperandReady(rs_.src2, ports)) {
         auto tag = rs_.robTag;
         if (!foundAny || ROB::isOlder(tag, bestTag)) {
           foundAny = true;
@@ -162,8 +162,8 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
     uint8_t bestTag = 0;
     for (int i = 0; i < BRANCHRS_CAP; ++i) {
       const auto &rs_ = rs.branchRS[i];
-      if (!rs_.free && prf.isOperandReady(rs_.src1) &&
-          prf.isOperandReady(rs_.src2)) {
+      if (!rs_.free && prf.isOperandReady(rs_.src1, ports) &&
+          prf.isOperandReady(rs_.src2, ports)) {
         auto tag = rs_.robTag;
         if (!foundAny || ROB::isOlder(tag, bestTag)) {
           foundAny = true;
@@ -185,7 +185,8 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
 
 MemDispatchDecision MemArbiter::arbitrate(const LQ &LQ, const SQ &SQ,
                                           const ROB &rob, const DCache &dcache,
-                                          const SquashInfo &squash) {
+                                        const SquashInfo &squash,
+                                        const LoadAddressBypass &address) {
   MemDispatchDecision memDecision{};
   if (!dcache.isRequestFull() && !SQ.isEmpty()) {
     auto storeTag = SQ.headRobTag();
@@ -205,13 +206,13 @@ MemDispatchDecision MemArbiter::arbitrate(const LQ &LQ, const SQ &SQ,
     }
   }
   if (!memDecision.valid) {
-    auto loadIndex = LQ.LoadDetect();
+    auto loadIndex = LQ.LoadDetect(address);
     if (loadIndex != 0xFFFFFFFF && !dcache.isRequestFull()) {
-      auto loadAddr = LQ.getAddress(loadIndex);
+      auto loadAddr = LQ.requestAddress(loadIndex, address);
       auto loadTag = LQ.getRobTag(loadIndex);
       if (SQ.canSendLoadToCache(loadAddr, LQ.getNBytes(loadIndex), loadTag)) {
         MemRequest newRequest{};
-        newRequest.address = LQ.getAddress(loadIndex);
+        newRequest.address = loadAddr;
         newRequest.isSigned = !LQ.getIsUnsigned(loadIndex);
         newRequest.nBytes = LQ.getNBytes(loadIndex);
         newRequest.op = Operation::Load;
@@ -248,7 +249,7 @@ IssuePacket IssueArbiter::issue_IntegerRS(const IssueArbiterInput &input,
   if (input.ROBModule.isFull()) {
     return p;
   }
-  int integerSlot = input.RSModule.tryAllocInteger();
+  int integerSlot = input.RSModule.tryAllocInteger(input.dispatchBus.alu);
   if (integerSlot < 0) {
     return p;
   }
@@ -391,7 +392,7 @@ IssuePacket IssueArbiter::issue_UandJ(const IssueArbiterInput &input,
   if (input.ROBModule.isFull()) {
     return p;
   }
-  int integerSlot = input.RSModule.tryAllocInteger();
+  int integerSlot = input.RSModule.tryAllocInteger(input.dispatchBus.alu);
   if (integerSlot < 0) {
     return p;
   }
@@ -440,7 +441,7 @@ IssuePacket IssueArbiter::issue_B(const IssueArbiterInput &input,
   if (input.ROBModule.isFull()) {
     return p;
   }
-  int branchSlot = input.RSModule.tryAllocBranch();
+  int branchSlot = input.RSModule.tryAllocBranch(input.dispatchBus.bru);
   if (branchSlot < 0) {
     return p;
   }
@@ -471,7 +472,10 @@ IssuePacket IssueArbiter::issue_Load(const IssueArbiterInput &input,
   if (input.ROBModule.isFull() || input.LQModule.isFull()) {
     return p;
   }
+  const auto &release = input.dispatchBus.agu;
   int loadSlot = input.RSModule.tryAllocLoad();
+  if (loadSlot < 0 && release.valid && release.rsType == RSType::Load)
+    loadSlot = release.rsIndex;
   if (loadSlot < 0) {
     return p;
   }
@@ -811,4 +815,143 @@ IssuePacket IssueArbiter::build(const IssueArbiterInput &input) {
   }
   }
   return issuePacket;
+}
+
+IssueGroup IssueArbiter::buildPrefix(const IssueArbiterInput &input) {
+  IssueGroup group{};
+  if constexpr (ISSUE_WIDTH == 1) {
+    group.lanes[0] = build(input);
+    group.count = unsigned(group.lanes[0].valid);
+  } else {
+    // Only small resource masks/cursors and accepted event payloads are folded.
+    // No RAT/ROB/PRF/LSQ next-state image or retirement-credit bypass.
+    std::array<uint32_t, 7> free{}, reuse{};
+    const auto &rs = input.RSModule;
+    for (int row = 0; row < INTEGERRS_CAP; ++row) if (rs.integerRS[row].free) free[0] |= 1u << row;
+    for (int row = 0; row < MULTIPLYRS_CAP; ++row) if (rs.multiplyRS[row].free) free[1] |= 1u << row;
+    for (int row = 0; row < DIVIDERS_CAP; ++row) if (rs.divideRS[row].free) free[2] |= 1u << row;
+    for (int row = 0; row < BRANCHRS_CAP; ++row) if (rs.branchRS[row].free) free[3] |= 1u << row;
+    for (int row = 0; row < LOADRS_CAP; ++row) if (rs.loadRS[row].free) free[4] |= 1u << row;
+    for (int row = 0; row < STORERS_CAP; ++row) {
+      if (rs.storeAddressRS[row].free) free[5] |= 1u << row;
+      if (rs.storeValueRS[row].free) free[6] |= 1u << row;
+    }
+    const auto &dispatch = input.dispatchBus;
+    if (dispatch.alu.valid) reuse[0] = 1u << dispatch.alu.rsIndex;
+    if (dispatch.bru.valid) reuse[3] = 1u << dispatch.bru.rsIndex;
+    if (dispatch.agu.valid && dispatch.agu.rsType == RSType::Load) reuse[4] = 1u << dispatch.agu.rsIndex;
+    if constexpr (ISSUE_WIDTH == 4)
+      for (unsigned pool = 0; pool < 7; ++pool) free[pool] |= reuse[pool];
+    unsigned loads = 0, stores = 0, physical = 0;
+    const unsigned robUsed = (input.ROBModule.getNextTag() - input.ROBModule.getHead()) & ROB_TAG_MASK;
+    PrfSeq phyHead = input.PRFModule.getHeadSeq();
+    const unsigned phyCredits = input.PRFModule.freeCount();
+    const unsigned loadCredits = LQ_CAP - input.LQModule.count();
+    const unsigned storeCredits = SQ_CAP - input.SQModule.count();
+    RobTag tag = input.ROBModule.getNextTag();
+    bool open = !input.squashDetect.needSquash && !input.ROBModule.isTrapCommitted();
+    for (unsigned lane = 0; lane < ISSUE_WIDTH; ++lane) {
+      if (open && lane < input.DecodeUnitModule.count()) {
+        const auto &u = input.DecodeUnitModule.entryAt(lane);
+        UopView inst{u.type, u.opcode, u.funct3, u.funct7, u.rd, u.rs1, u.rs2,
+                     u.imm, u.pc, u.isHalt, u.allocDest, u.predictedPC, u.ckptId};
+        const Operation op = decodeOp(inst);
+        const bool halt = u.isHalt;
+        const bool invalid = u.type == RISC_V::RV_INVALID;
+        const bool load = u.type == RISC_V::I && u.opcode == 3;
+        const bool store = u.type == RISC_V::S;
+        const bool branch = u.type == RISC_V::B;
+        const bool upper = u.type == RISC_V::U || u.type == RISC_V::J;
+        const bool multiply = u.type == RISC_V::M && u.funct3 < 4;
+        const bool divide = u.type == RISC_V::M && u.funct3 >= 4;
+        const int pool = halt || invalid ? -1 : multiply ? 1 : divide ? 2 :
+                         branch ? 3 : load ? 4 : store ? 5 : 0;
+        const bool writes = !halt && !invalid && !store && !branch && u.allocDest && u.rd != 0;
+        std::array<int, 7> slots{};
+        bool can = lane < ROB_CAP - robUsed && (!writes || physical < phyCredits) &&
+                   (!load || loads < loadCredits) && (!store || stores < storeCredits);
+        for (unsigned which = 0; which < 7; ++which) {
+          slots[which] = -1;
+          const uint32_t mask = free[which] ? free[which] : reuse[which];
+          for (unsigned row = 0; row < 32; ++row)
+            if (slots[which] < 0 && (mask & (1u << row))) slots[which] = row;
+        }
+        if (pool >= 0) can &= slots[pool] >= 0;
+        if (store) can &= slots[6] >= 0;
+        if (u.type == RISC_V::M) can &= op != Operation::OP_INVALID;
+        open = can && !halt;
+        if (can) {
+          auto &p = group.lanes[lane];
+          p.valid = true;
+          p.robTag = tag;
+          p.allocDest = writes;
+          p.phy = writes ? input.PRFModule.getFreeListSlot(phyHead) : InvalidPhy;
+          p.isLoad = load; p.isStore = store; p.isHalt = halt;
+          p.isControl = !halt && (u.type == RISC_V::J || (u.type == RISC_V::I && u.opcode == 0x67));
+          p.pc = u.pc;
+          auto source = [&](unsigned reg) {
+            Operand value = resolveSrc(input, reg);
+            if constexpr (ISSUE_WIDTH == 4)
+              if (input.PRFModule.isOperandReady(value))
+                value = {InvalidPhy, input.PRFModule.getOperandValue(value)};
+            for (unsigned older = 0; older < lane; ++older) {
+              const auto &prior = group.lanes[older];
+              if (prior.allocDest && reg != 0 && reg == unsigned(prior.robEntry.dest)) {
+                value = {prior.phy, 0};
+                if constexpr (ISSUE_WIDTH == 4)
+                  if (prior.isControl) value = {InvalidPhy, int32_t(prior.pc + 4u)};
+              }
+            }
+            return value;
+          };
+          const Operand s1 = source(u.rs1), s2 = source(u.rs2);
+          Operand left = s1, right = s2;
+          if (upper) left = {InvalidPhy, (u.type == RISC_V::J || u.opcode == 0x17) ? int32_t(u.pc) : 0};
+          if (upper || load || store || (pool == 0 && u.type != RISC_V::R)) right = {InvalidPhy, u.imm};
+          auto payload = [&](auto &row) {
+            row.free = false; row.op = op; row.robTag = tag;
+            row.src1 = left; row.src2 = right;
+          };
+          if (pool == 0) { p.hasInteger = true; p.integerSlot = slots[0]; payload(p.integerRS); }
+          if (multiply) { p.hasMultiply = true; p.multiplySlot = slots[1]; payload(p.multiplyRS); }
+          if (divide) { p.hasDivide = true; p.divideSlot = slots[2]; payload(p.divideRS); }
+          if (branch) { p.hasBranch = true; p.branchSlot = slots[3]; payload(p.branchRS); p.branchRS.imm = u.imm; p.branchRS.pc = u.pc; }
+          if (load) { p.hasLoad = true; p.loadSlot = slots[4]; payload(p.loadRS); p.loadRS.memIndex = (input.LQModule.getTail() + loads) & LQ_MASK; }
+          if (store) {
+            p.hasStore = true; p.storeAddrSlot = slots[5]; p.storeValueSlot = slots[6];
+            payload(p.storeAddrRS);
+            p.storeAddrRS.memIndex = MEM_STORE_BIT | ((input.SQModule.getTail() + stores) & SQ_MASK);
+            p.storeValueRS.free = false; p.storeValueRS.robTag = tag;
+            p.storeValueRS.data = s2; p.storeValueRS.memIndex = p.storeAddrRS.memIndex;
+          }
+          if (load || store) {
+            p.nBytes = (u.funct3 & 3) == 0 ? 1 : (u.funct3 & 3) == 1 ? 2 : 4;
+            p.isUnsigned = load && (u.funct3 & 4);
+          }
+          auto &entry = p.robEntry;
+          entry.type = p.isControl ? ROBType::LINK : store ? ROBType::STORE : branch ? ROBType::BRANCH : ROBType::REGISTER;
+          entry.dest = writes || halt ? u.rd : 0;
+          entry.pc = u.pc; entry.predictedPC = u.predictedPC; entry.ckptId = u.ckptId;
+          entry.halt = halt; entry.exception = invalid; entry.isCommitReady = halt || invalid;
+          entry.isIndirect = p.isControl && u.type == RISC_V::I;
+          entry.isCall = p.isControl && (u.rd == 1 || u.rd == 5);
+          entry.isRet = entry.isIndirect && (u.rs1 == 1 || u.rs1 == 5);
+          entry.newPhy = p.phy;
+          entry.oldPhy = writes ? input.RATModule.readRAT(u.rd) : InvalidPhy;
+          for (unsigned older = 0; older < lane; ++older)
+            if (writes && group.lanes[older].allocDest && group.lanes[older].robEntry.dest == u.rd)
+              entry.oldPhy = group.lanes[older].phy;
+          loads += load; stores += store;
+          entry.lqTailSnapshot = (input.LQModule.getTail() + loads) & LQ_SEQ_MASK;
+          entry.sqTailSnapshot = (input.SQModule.getTail() + stores) & SQ_SEQ_MASK;
+          if (writes) { ++physical; phyHead = prfSeqNext(phyHead); }
+          if (pool >= 0) { free[pool] &= ~(1u << slots[pool]); reuse[pool] &= ~(1u << slots[pool]); }
+          if (store) { free[6] &= ~(1u << slots[6]); reuse[6] &= ~(1u << slots[6]); }
+          tag = robNextTag(tag);
+          ++group.count;
+        }
+      } else open = false;
+    }
+  }
+  return group;
 }

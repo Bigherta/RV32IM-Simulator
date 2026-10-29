@@ -45,8 +45,12 @@ void RAT::tick(const RATInput &input, systemState &CPUstate) {
     for (int i = 0; i < REGISTER_CAP; ++i)
       CPUstate.RATModule.specRAT[i] = i == 0 ? 0 : restored[i];
     CPUstate.RATModule.replayOpen = open;
-  } else if (!input.squashDetect.needSquash && input.issuePacket.valid && input.issuePacket.allocDest) {
-    CPUstate.RATModule.specRAT[input.issuePacket.robEntry.dest] = input.issuePacket.phy;
+  } else if (!input.squashDetect.needSquash) {
+    for (unsigned lane = 0; lane < ISSUE_WIDTH; ++lane) {
+      const auto &p = input.issuePacket.lanes[lane];
+      if (lane < input.issuePacket.count && p.allocDest)
+        CPUstate.RATModule.specRAT[p.robEntry.dest] = p.phy;
+    }
   }
   uint32_t committedValid = archValid;
   for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane) {

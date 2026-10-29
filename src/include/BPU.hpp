@@ -7,6 +7,12 @@
 struct BRU;
 struct ROB;
 struct systemState;
+constexpr unsigned LOCAL_HISTORY_BITS = 1;
+constexpr unsigned LOCAL_HISTORY_MASK = (1u << LOCAL_HISTORY_BITS) - 1u;
+struct DirectionContext {
+  uint8_t localHistory = 0;
+  bool localPrediction = false, globalPrediction = false;
+};
 // BP update arbitration input: both table-training sources (BRU branch results
 // and CDB JAL/JALR transfers) converge to this single point so that the two
 // update calls keep a fixed order (BRU candidate first) regardless of stage
@@ -18,21 +24,24 @@ struct BPUInput {
   aluCDB cdbOut;
   SquashInfo squashDetect;
   FetchDecision fetchDecision;
-  FetchTypeInfo fetchInfo;
+  std::array<DirectionContext, FETCH_WIDTH> fetchContexts{};
+  uint8_t resolvedLocalHistory = 0;
+  std::array<FetchTypeInfo, FETCH_WIDTH> fetchInfo{};
   RecoveryStep recovery;
   std::array<RecoveryRasEntry, RECOVERY_WIDTH> replay{};
   BPUInput(const BRU &bru, const ROB &rob) : BRUModule(bru), ROBModule(rob) {}
 };
-// Tournament direction predictor: direct-PC local counters, gshare global
-// counters, and a gshare-indexed chooser. All tables use the tightened 256-row
-// capacity; counter value 1 is weakly not-taken and 2 is weakly taken.
+// Tournament: resolved local history selects 3-bit local pattern counters;
+// gshare global counters compete through a PC-indexed chooser (both 2-bit).
+// All tables have 256 rows; local/global/chooser reset weakly NT (3/1/1).
 struct DirectionPred {
+  uint8_t localHistory[BHT_CAP] = {};
   uint8_t localPHT[BHT_CAP] = {};
   uint8_t globalPHT[BHT_CAP] = {};
   uint8_t selector[SELECTOR_CAP] = {};
   uint8_t GHR = 0;
   DirectionPred() {
-    std::memset(localPHT, 1, sizeof(localPHT));
+    std::memset(localPHT, 3, sizeof(localPHT));
     std::memset(globalPHT, 1, sizeof(globalPHT));
     std::memset(selector, 1, sizeof(selector));
   }
@@ -60,12 +69,14 @@ private:
     bool taken = false;
     uint32_t target = 0;
     uint8_t ghr = 0;
+    DirectionContext context;
     bool cond = true;
     bool isRet = false;
   };
   DirectionPred dir;
   TargetPred tgt;
   uint8_t GHRCheckpoint[CKPT_CAP] = {};
+  DirectionContext predictionContext[CKPT_CAP]{};
   uint8_t nextCkptId = 0;
   uint64_t branchTotal = 0;
   uint64_t branchCorrect = 0;
@@ -81,7 +92,9 @@ private:
   uint64_t jalrTotal = 0;
   uint64_t jalrCorrect = 0;
 
-  void update(uint32_t pc, bool taken, uint32_t target, uint8_t ghr, systemState &CPUstate) const;
+  void update(uint32_t pc, bool taken, uint32_t target, uint8_t ghr,
+              const DirectionContext &context, uint8_t resolvedHistory,
+              systemState &CPUstate) const;
   void updateJump(uint32_t pc, uint32_t target, bool isRet, systemState &CPUstate) const;
   void shiftGHR(bool taken, systemState &CPUstate) const;
 public:
@@ -94,6 +107,7 @@ public:
   uint64_t getJalrTotal() const { return jalrTotal; }
   uint64_t getJalrCorrect() const { return jalrCorrect; }
   PredictInfo predict(uint32_t pc) const;
+  DirectionContext contextAt(uint32_t pc) const;
 
   uint8_t snapshotCheckPoint() const;
   void recoverCheckPoint(const uint8_t, systemState &CPUstate) const;

@@ -9,6 +9,7 @@ struct BRUInput {
   const RSUnit &RSModule;
   const PRF &PRFModule;
   DispatchInfo dispatch;
+  OperandWriteback operandWriteback;
   BRUInput(const RSUnit &rs, const PRF &prf)
       : RSModule(rs), PRFModule(prf) {}
 };

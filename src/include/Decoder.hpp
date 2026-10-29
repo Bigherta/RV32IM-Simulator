@@ -11,6 +11,7 @@ public:
 };
 
 class UopQueue {
+  friend class DecodeUnit;
 private:
   Uop uopQueueEntries[IQ_CAP];
   uint8_t head = 0;
@@ -19,6 +20,11 @@ private:
 public:
   bool isEmpty() const;
   bool isFull() const;
+  unsigned count() const { return (tail - head) & IQ_SEQ_MASK; }
+  const Uop &entryAt(unsigned lane) const {
+    return uopQueueEntries[(head + lane) & (IQ_CAP - 1)];
+  }
+  void pushPrefix(const InstructBuffer &fq, unsigned count, systemState &CPUstate) const;
   void push(Uop inst, systemState &CPUstate) const;
   RISC_V headType() const { return uopQueueEntries[head & (IQ_CAP - 1)].type; }
   int headOpcode() const { return uopQueueEntries[head & (IQ_CAP - 1)].opcode; }
@@ -38,12 +44,13 @@ public:
   void pop(systemState &CPUstate) const;
   void clear(systemState &CPUstate) const;
 };
-struct IssuePacket;
+struct IssueGroup;
 struct DecodeInput {
   SquashInfo squashDetect;
+  unsigned decodeCount = 0;
   const InstructBuffer &FQModule;
-  const IssuePacket &issuePacket;
-  DecodeInput(const InstructBuffer &fq, const IssuePacket &pkt)
+  const IssueGroup &issuePacket;
+  DecodeInput(const InstructBuffer &fq, const IssueGroup &pkt)
       : FQModule(fq), issuePacket(pkt) {}
 };
 struct systemState;
@@ -59,6 +66,11 @@ public:
   void tick(const DecodeInput &input, systemState &CPUstate);
   bool isEmpty() const { return iq.isEmpty(); }
   bool isFull() const { return iq.isFull(); }
+  unsigned count() const { return iq.count(); }
+  const Uop &entryAt(unsigned lane) const { return iq.entryAt(lane); }
+  unsigned pushCapacity(unsigned popped) const {
+    return IQ_CAP - iq.count() + popped;
+  }
   bool canAccept(bool willPop) const { return !isFull() || (willPop && !isEmpty()); }
   RISC_V headType() const { return iq.headType(); }
   int headOpcode() const { return iq.headOpcode(); }

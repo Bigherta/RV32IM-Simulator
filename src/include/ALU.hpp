@@ -8,6 +8,7 @@ struct ALUInput {
   const RSUnit &RSModule;
   const PRF &PRFModule;
   aluCDB cdbOutput;
+  OperandWriteback operandWriteback;
   DispatchInfo dispatch;
   ALUInput(const RSUnit &rs, const PRF &prf) : RSModule(rs), PRFModule(prf) {}
 };

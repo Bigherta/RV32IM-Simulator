@@ -10,7 +10,7 @@ struct ROB;
 struct DMEM;
 struct LQ;
 struct PRF;
-struct IssuePacket;
+struct IssueGroup;
 static_assert(ROB_CAP <= 32, "Store completion bitmap fits its carrier");
 using StoreCompletionMask = std::conditional_t<(ROB_CAP <= 16), uint16_t, uint32_t>;
 struct StoreCompletion {
@@ -35,10 +35,10 @@ struct SQInput {
   const RSUnit &RSModule;
   const PRF &PRFModule;
   const ROB &ROBModule;
-  const IssuePacket &issuePacket;
+  const IssueGroup &issuePacket;
   MemDispatchDecision decision;
   SQInput(const AGU &agu, const RSUnit &rs, const PRF &prf, const ROB &rob,
-          const IssuePacket &pkt)
+          const IssueGroup &pkt)
       : AGUModule(agu), RSModule(rs), PRFModule(prf), ROBModule(rob),
         issuePacket(pkt) {}
 };
@@ -77,6 +77,7 @@ public:
   SQ() { std::memset(this, 0, sizeof(*this)); }
   bool isEmpty() const;
   bool isFull() const;
+  unsigned count() const { return (tail - head) & SQ_SEQ_MASK; }
   bool isActive(uint8_t index) const;
   bool matchesAddress(uint8_t index, RobTag tag) const {
     return isActive(index) && getRobTag(index) == tag;

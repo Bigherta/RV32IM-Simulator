@@ -59,6 +59,7 @@ struct systemState {
 class CPU {
 private:
   void clock(); // Commit all module updates from the same old snapshot.
+  bool frontendCanRun() const;
   systemState CPUstate;
   RSUnit RSModule;
   RAT RATModule;
@@ -95,7 +96,7 @@ private:
   lqCDB cdbOfLQ;
   mulCDB cdbOfMul;
   divCDB cdbOfDiv;
-  IssuePacket issuePacket;
+  IssueGroup issuePacket;
   AGUInput aguInput{RSModule, PRFModule};
   ALUInput aluInput{RSModule, PRFModule};
   MULInput mulInput{RSModule, PRFModule};

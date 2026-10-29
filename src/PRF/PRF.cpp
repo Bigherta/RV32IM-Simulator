@@ -101,15 +101,18 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
     }
   } else if (!input.squashDetect.needSquash) {
     // 6. if not, distribute a free PRF to the logic register
-    if (input.issuePacket.valid) {
-      if (input.issuePacket.allocDest) {
-        auto headphy = pop(CPUstate);
-        assert(headphy == input.issuePacket.phy);
-        if (input.issuePacket.isControl) {
-          write(input.issuePacket.phy, input.issuePacket.pc + 4, CPUstate);
-        }
+    PrfSeq allocatedHead = headSeq;
+    for (unsigned lane = 0; lane < ISSUE_WIDTH; ++lane) {
+      const auto &p = input.issuePacket.lanes[lane];
+      if (lane < input.issuePacket.count && p.allocDest) {
+        const auto phy = freeList[prfSlot(allocatedHead)];
+        assert(phy != InvalidPhy && phy == p.phy);
+        allocatedHead = prfSeqNext(allocatedHead);
+        CPUstate.PRFModule.PhysicalRegs[phy].ready = false;
+        if (p.isControl) write(phy, p.pc + 4u, CPUstate);
       }
     }
+    if (allocatedHead != headSeq) CPUstate.PRFModule.headSeq = allocatedHead;
   }
   // 7. release the old physical register
   for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane) {

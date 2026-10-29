@@ -28,7 +28,7 @@ struct ROBEntry {
   int newPhy = InvalidPhy; // InvalidPhy = instruction allocates no destination
   int oldPhy = InvalidPhy; // InvalidPhy = no mapping to free on commit
 };
-struct IssuePacket;
+struct IssueGroup;
 struct ROBInput {
   CommitPlan commits;
   SquashInfo squashDetect;
@@ -36,8 +36,8 @@ struct ROBInput {
   sharedCDB cdbOfShared;
   const BRU &BRUModule;
   StoreCompletion storeCompletion;
-  const IssuePacket &issuePacket;
-  ROBInput(const BRU &bru, const IssuePacket &pkt)
+  const IssueGroup &issuePacket;
+  ROBInput(const BRU &bru, const IssueGroup &pkt)
       : BRUModule(bru), issuePacket(pkt) {}
 };
 class ROB {
