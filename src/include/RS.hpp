@@ -42,14 +42,14 @@ struct BranchReservationStation : public ReservationStation {
   BranchReservationStation(Operation type) : ReservationStation(type) {}
 };
 struct PRF;
-struct IssuePacket;
+struct IssueGroup;
 struct systemState;
 struct RSInput {
   SquashInfo squashDetect;
   DispatchBus dispatchBus;
-  const IssuePacket &issuePacket;
+  const IssueGroup &issuePacket;
   const PRF &PRFModule;
-  RSInput(const IssuePacket &pkt, const PRF &prf)
+  RSInput(const IssueGroup &pkt, const PRF &prf)
       : issuePacket(pkt), PRFModule(prf) {}
 };
 class RSUnit {
@@ -62,13 +62,13 @@ public:
   StoreAddressRS storeAddressRS[STORERS_CAP];
   StoreValueReservationStation storeValueRS[STORERS_CAP];
   BranchReservationStation branchRS[BRANCHRS_CAP];
-  int tryAllocInteger() const;
+   int tryAllocInteger(const DispatchInfo &release = {}) const;
   int tryAllocMultiply() const;
   int tryAllocDivide() const;
   int tryAllocLoad() const;
   int tryAllocStoreAddress() const;
   int tryAllocStoreValue() const;
-  int tryAllocBranch() const;
+   int tryAllocBranch(const DispatchInfo &release = {}) const;
   void tick(const RSInput &, systemState &);
 };
 #endif // RS_HPP

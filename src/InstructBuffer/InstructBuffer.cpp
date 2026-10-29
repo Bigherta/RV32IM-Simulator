@@ -57,19 +57,30 @@ void InstructBuffer::clear(systemState &CPUstate) const {
 }
 
 void InstructBuffer::tick(const FQInput &input, systemState &CPUstate) {
-  CPUstate.FQModule.pushCache = {0, 0, 0};
+  CPUstate.FQModule.pushCache = {};
   if (input.squashDetect.needSquash) {
     clear(CPUstate);
     return;
   }
   if (input.returnAccepted) {
     assert(input.ICacheModule.isReturnReady());
-    uint32_t raw = input.ICacheModule.returnRaw();
     uint32_t pc = input.ICacheModule.returnPC();
     uint32_t predPC = input.ICacheModule.returnPredictPC();
-    CPUstate.FQModule.pushCache = {true, raw, pc};
-    push(raw, pc, predPC, input.ICacheModule.returnCkptId(), CPUstate);
+    const unsigned lanes = input.ICacheModule.returnCount();
+    const auto cid = input.ICacheModule.returnCkptId();
+    assert(canAccept(lanes, input.decodeCount));
+    for (unsigned lane = 0; lane < FETCH_WIDTH; ++lane) {
+      if (lane < lanes) {
+        const uint32_t lanePC = pc + (lane << 2);
+        const auto raw = input.ICacheModule.returnRaw(lane);
+        CPUstate.FQModule.InstructBufferEntries[(tail + lane) & (FQ_CAP - 1)] =
+            {raw, int(lanePC), int32_t(lane + 1 < lanes ? lanePC + 4u : predPC), uint8_t((cid + lane) & (CKPT_CAP - 1))};
+        CPUstate.FQModule.pushCache[lane] = {true, raw, lanePC};
+      }
+    }
+    CPUstate.FQModule.tail = (tail + lanes) & FQ_SEQ_MASK;
   }
-  if (!isEmpty() && input.DecodeUnitModule.canAccept(input.issueValid))
-    pop(CPUstate);
+  assert(input.decodeCount <= count() && input.decodeCount <= DECODE_WIDTH);
+  if (input.decodeCount != 0)
+    CPUstate.FQModule.head = (head + input.decodeCount) & FQ_SEQ_MASK;
 }

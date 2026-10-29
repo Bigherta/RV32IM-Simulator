@@ -150,8 +150,8 @@ void ALU::tick(const ALUInput &input, systemState &CPUstate) {
     const bool keep = !input.squashDetect.needSquash ||
                       ROB::isOlder(input.dispatch.robTag, input.squashDetect.SquashTag);
     push(
-        static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
-        static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
+        static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1, input.operandWriteback)),
+        static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2, input.operandWriteback)),
         rs.op, input.dispatch.robTag, isControlOp(rs.op), keep, input, CPUstate);
   }
 }

@@ -10,15 +10,15 @@ struct OperandInfo {
   int32_t value;
   int phyRegIndex;
 };
-struct IssuePacket;
+struct IssueGroup;
 struct RATInput {
   CommitPlan commits;
   const ROB &ROBModule;
-  const IssuePacket &issuePacket;
+  const IssueGroup &issuePacket;
   SquashInfo squashDetect;
   RecoveryStep recovery;
   std::array<RecoveryNarrowEntry, RECOVERY_WIDTH> replay{};
-  RATInput(const ROB &rob, const IssuePacket &pkt)
+  RATInput(const ROB &rob, const IssueGroup &pkt)
       : ROBModule(rob), issuePacket(pkt) {}
 };
 

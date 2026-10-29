@@ -1,44 +1,214 @@
 # Benchmarks
 
-## 当前共同golden：双提交＋四拍恢复（2026-10-20）
+## 当前两软件golden：主树同步模板生产版（2026-10-29）
 
-保持单取指/单发射、两路CDB、固定四拍恢复和全部存储参数。两软件Release/断言四构建25例
-结果、退休和周期一致；主树对最终RTL的25例逐拍/独立ISA、8例冒烟和21例双提交定向均通过。
-单宽两软件25例严格保持下方旧golden。双提交改变资源释放/调度时刻，不保证每例加速；
-旧表完整保留，不修改课程镜像或预期答案。数据主机信用为8，外部Slave每通道16项、服务10拍。
+默认fetch/decode/issue/commit=1/1/1/2，Tournament预测时上下文、8 KiB D$、接受沿同步读及Load RS授权WB/离站复用。
+本轮两树Release优化＋断言普通入口25/25结果、独立课程退休数、init/core/drain/total精确相等，严格匹配模板原实测表。
+不继承历史RTL逐拍或PPA结论；多宽度验证和外部报告位置见[同步记录](tree-sync-20261029.md)。
 
 | case | result | cycles | retired | core | drain |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| correctness_add_to_100 | 5050 | 733 | 421 | 719 | 14 |
-| correctness_array_test1 | 123 | 757 | 131 | 743 | 14 |
-| correctness_array_test2 | 43 | 745 | 149 | 731 | 14 |
-| correctness_basicopt1 | 88 | 221630 | 142059 | 221616 | 14 |
-| correctness_bulgarian | 159 | 421372 | 265654 | 421358 | 14 |
-| correctness_expr | 136 | 1072 | 291 | 1058 | 14 |
-| correctness_gcd | 178 | 741 | 82 | 727 | 14 |
-| correctness_hanoi | 184 | 8407 | 3674 | 8393 | 14 |
-| correctness_lvalue2 | 175 | 390 | 53 | 376 | 14 |
-| correctness_magic | 216 | 789782 | 441938 | 789768 | 14 |
-| correctness_manyarguments | 40 | 494 | 37 | 480 | 14 |
-| correctness_multiarray | 115 | 3747 | 1543 | 3733 | 14 |
-| correctness_naive | 97 | 377 | 37 | 363 | 14 |
-| correctness_pi | 112 | 8413648 | 3117658 | 8413634 | 14 |
-| correctness_qsort | 81 | 1643752 | 1097111 | 1643738 | 14 |
-| correctness_queens | 144 | 549076 | 265167 | 549062 | 14 |
-| correctness_statement_test | 50 | 1914 | 546 | 1900 | 14 |
-| correctness_superloop | 134 | 660440 | 371607 | 660426 | 14 |
-| correctness_tak | 186 | 2113806 | 1221227 | 2113792 | 14 |
-| perf_median | 0 | 16363 | 6961 | 16349 | 14 |
-| perf_multiply | 0 | 30373 | 21722 | 30359 | 14 |
-| perf_qsort | 0 | 312137 | 139900 | 312123 | 14 |
-| perf_rsort | 0 | 330274 | 195719 | 330260 | 14 |
-| perf_towers | 0 | 10583 | 5278 | 10569 | 14 |
-| perf_vvadd | 0 | 6839 | 4524 | 6825 | 14 |
+| correctness_add_to_100 | 5050 | 641 | 421 | 627 | 14 |
+| correctness_array_test1 | 123 | 561 | 131 | 547 | 14 |
+| correctness_array_test2 | 43 | 592 | 149 | 578 | 14 |
+| correctness_basicopt1 | 88 | 178280 | 142059 | 178266 | 14 |
+| correctness_bulgarian | 159 | 364461 | 265654 | 364447 | 14 |
+| correctness_expr | 136 | 763 | 291 | 749 | 14 |
+| correctness_gcd | 178 | 519 | 82 | 505 | 14 |
+| correctness_hanoi | 184 | 6730 | 3674 | 6716 | 14 |
+| correctness_lvalue2 | 175 | 308 | 53 | 294 | 14 |
+| correctness_magic | 216 | 622715 | 441938 | 622701 | 14 |
+| correctness_manyarguments | 40 | 337 | 37 | 323 | 14 |
+| correctness_multiarray | 115 | 2663 | 1543 | 2649 | 14 |
+| correctness_naive | 97 | 286 | 37 | 272 | 14 |
+| correctness_pi | 112 | 7894549 | 3117658 | 7894535 | 14 |
+| correctness_qsort | 81 | 1432131 | 1097111 | 1432117 | 14 |
+| correctness_queens | 144 | 400694 | 265167 | 400680 | 14 |
+| correctness_statement_test | 50 | 1376 | 546 | 1362 | 14 |
+| correctness_superloop | 134 | 516685 | 371607 | 516671 | 14 |
+| correctness_tak | 186 | 1769880 | 1221227 | 1769866 | 14 |
+| perf_median | 0 | 12103 | 6961 | 12089 | 14 |
+| perf_multiply | 0 | 27847 | 21722 | 27833 | 14 |
+| perf_qsort | 0 | 236748 | 139900 | 236734 | 14 |
+| perf_rsort | 0 | 246612 | 195719 | 246598 | 14 |
+| perf_towers | 0 | 8249 | 5278 | 8235 | 14 |
+| perf_vvadd | 0 | 6257 | 4524 | 6243 | 14 |
 
-全25例总cycles **15,539,452**、core **15,539,102**、drain **350**、retired **7,303,489**。
-六perf总cycles **706,569**、core **706,485**，几何IPC **0.546998574899**。
-total不含boot1拍，IPC只使用core；退出Store计入退休。相对单提交总周期减少2,503（约0.0161%），
-六perf总周期反而增加733；不据此推导普遍性能提升或Fmax收益。
+全25例cycles **13,731,987**、core **13,731,637**、drain **350**、retired **7,303,489**。
+六perf cycles **537,816**、core **537,732**、retired **374,104**，几何IPC **0.678879614277**。
+total不含boot1拍，退出Store计入退休，IPC分母为core；并非逐例加速，不推断硬件Fmax。
+
+## 历史：与RTL单取指档周期对齐（2026-10-24）
+
+默认单取指/单译码/单发射、双提交；Integer/Branch各4项，只对两池启用授权WB当拍派发与满站实际离站复用。
+I$请求4、AXIFetch4、BTB32、RAS8；恢复保留同步基线读和原存活ROB窗口重放，省略空beat，不再固定等待4拍。
+两软件新默认断言构建与真实RTL 1/1/2完成25/25结果、独立RTL退休ISA、退休数/core/total精确相等，8冒烟两软件同值同拍。vvadd/median/qsort已选关键事件在整个运行段逐拍一致；不是任意输入或全部内部状态等价证明。
+**本表是单取指档，不是RTL默认双取指档。** 双取指packet/独立CID/恢复期提前取指仍在外部候选验收。
+其他宽度/容量配置须分别验收，不能套用此表；旧表完整保留，不改课程镜像或预期答案。见[RS记录](../../sync/RS-RTL-TO-SW-20261024.md)。
+
+| 模式 | case | result | cycles | retired | core | drain |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 旧默认 | correctness_add_to_100 | 5050 | 627 | 421 | 613 | 14 |
+| 旧默认 | correctness_array_test1 | 123 | 575 | 131 | 561 | 14 |
+| 旧默认 | correctness_array_test2 | 43 | 601 | 149 | 587 | 14 |
+| 旧默认 | correctness_basicopt1 | 88 | 179550 | 142059 | 179536 | 14 |
+| 旧默认 | correctness_bulgarian | 159 | 360465 | 265654 | 360451 | 14 |
+| 旧默认 | correctness_expr | 136 | 755 | 291 | 741 | 14 |
+| 旧默认 | correctness_gcd | 178 | 521 | 82 | 507 | 14 |
+| 旧默认 | correctness_hanoi | 184 | 6636 | 3674 | 6622 | 14 |
+| 旧默认 | correctness_lvalue2 | 175 | 304 | 53 | 290 | 14 |
+| 旧默认 | correctness_magic | 216 | 640892 | 441938 | 640878 | 14 |
+| 旧默认 | correctness_manyarguments | 40 | 338 | 37 | 324 | 14 |
+| 旧默认 | correctness_multiarray | 115 | 2702 | 1543 | 2688 | 14 |
+| 旧默认 | correctness_naive | 97 | 285 | 37 | 271 | 14 |
+| 旧默认 | correctness_pi | 112 | 8073254 | 3117658 | 8073240 | 14 |
+| 旧默认 | correctness_qsort | 81 | 1444225 | 1097111 | 1444211 | 14 |
+| 旧默认 | correctness_queens | 144 | 428982 | 265167 | 428968 | 14 |
+| 旧默认 | correctness_statement_test | 50 | 1371 | 546 | 1357 | 14 |
+| 旧默认 | correctness_superloop | 134 | 540407 | 371607 | 540393 | 14 |
+| 旧默认 | correctness_tak | 186 | 1753718 | 1221227 | 1753704 | 14 |
+| 旧默认 | perf_median | 0 | 12846 | 6961 | 12832 | 14 |
+| 旧默认 | perf_multiply | 0 | 27792 | 21722 | 27778 | 14 |
+| 旧默认 | perf_qsort | 0 | 252993 | 139900 | 252979 | 14 |
+| 旧默认 | perf_rsort | 0 | 298097 | 195719 | 298083 | 14 |
+| 旧默认 | perf_towers | 0 | 8619 | 5278 | 8605 | 14 |
+| 旧默认 | perf_vvadd | 0 | 6126 | 4524 | 6112 | 14 |
+
+全25例总cycles **14,042,681**、core **14,042,331**、drain **350**、retired **7,303,489**。
+六perf总cycles **606,473**、core **606,389**，几何IPC **0.641865180802**。
+total不含boot1拍，IPC只使用core；退出Store计入退休。收益为RS容量、WB旁路和复用的组合，不是单变量贡献，也不能推导硬件Fmax。
+
+## 历史：RS＋Load A/B/C，取指8信用/BTB64/RAS16/固定四拍恢复（2026-10-24）
+
+| 模式 | case | result | cycles | retired | core | drain |
+|---|---|---:|---:|---:|---:|---:|
+| ABC旧容量 | correctness_add_to_100 | 5050 | 729 | 421 | 715 | 14 |
+| ABC旧容量 | correctness_array_test1 | 123 | 717 | 131 | 703 | 14 |
+| ABC旧容量 | correctness_array_test2 | 43 | 696 | 149 | 682 | 14 |
+| ABC旧容量 | correctness_basicopt1 | 88 | 180106 | 142059 | 180092 | 14 |
+| ABC旧容量 | correctness_bulgarian | 159 | 375834 | 265654 | 375820 | 14 |
+| ABC旧容量 | correctness_expr | 136 | 918 | 291 | 904 | 14 |
+| ABC旧容量 | correctness_gcd | 178 | 726 | 82 | 712 | 14 |
+| ABC旧容量 | correctness_hanoi | 184 | 7997 | 3674 | 7983 | 14 |
+| ABC旧容量 | correctness_lvalue2 | 175 | 378 | 53 | 364 | 14 |
+| ABC旧容量 | correctness_magic | 216 | 702109 | 441938 | 702095 | 14 |
+| ABC旧容量 | correctness_manyarguments | 40 | 489 | 37 | 475 | 14 |
+| ABC旧容量 | correctness_multiarray | 115 | 3103 | 1543 | 3089 | 14 |
+| ABC旧容量 | correctness_naive | 97 | 365 | 37 | 351 | 14 |
+| ABC旧容量 | correctness_pi | 112 | 8074093 | 3117658 | 8074079 | 14 |
+| ABC旧容量 | correctness_qsort | 81 | 1471962 | 1097111 | 1471948 | 14 |
+| ABC旧容量 | correctness_queens | 144 | 467629 | 265167 | 467615 | 14 |
+| ABC旧容量 | correctness_statement_test | 50 | 1760 | 546 | 1746 | 14 |
+| ABC旧容量 | correctness_superloop | 134 | 612718 | 371607 | 612704 | 14 |
+| ABC旧容量 | correctness_tak | 186 | 1932285 | 1221227 | 1932271 | 14 |
+| ABC旧容量 | perf_median | 0 | 14106 | 6961 | 14092 | 14 |
+| ABC旧容量 | perf_multiply | 0 | 30101 | 21722 | 30087 | 14 |
+| ABC旧容量 | perf_qsort | 0 | 277627 | 139900 | 277613 | 14 |
+| ABC旧容量 | perf_rsort | 0 | 298895 | 195719 | 298881 | 14 |
+| ABC旧容量 | perf_towers | 0 | 9664 | 5278 | 9650 | 14 |
+| ABC旧容量 | perf_vvadd | 0 | 6214 | 4524 | 6200 | 14 |
+
+原25例total14,471,221、retired7,303,489；六perf core636,523、几何IPC0.600667659268。
+
+## 历史：RS＋Load A，B/C前（2026-10-24）
+
+| 模式 | case | result | cycles | retired | core | drain |
+|---|---|---:|---:|---:|---:|---:|
+| Load A | correctness_add_to_100 | 5050 | 731 | 421 | 717 | 14 |
+| Load A | correctness_array_test1 | 123 | 722 | 131 | 708 | 14 |
+| Load A | correctness_array_test2 | 43 | 706 | 149 | 692 | 14 |
+| Load A | correctness_basicopt1 | 88 | 182610 | 142059 | 182596 | 14 |
+| Load A | correctness_bulgarian | 159 | 376824 | 265654 | 376810 | 14 |
+| Load A | correctness_expr | 136 | 922 | 291 | 908 | 14 |
+| Load A | correctness_gcd | 178 | 727 | 82 | 713 | 14 |
+| Load A | correctness_hanoi | 184 | 7919 | 3674 | 7905 | 14 |
+| Load A | correctness_lvalue2 | 175 | 388 | 53 | 374 | 14 |
+| Load A | correctness_magic | 216 | 721077 | 441938 | 721063 | 14 |
+| Load A | correctness_manyarguments | 40 | 491 | 37 | 477 | 14 |
+| Load A | correctness_multiarray | 115 | 3226 | 1543 | 3212 | 14 |
+| Load A | correctness_naive | 97 | 372 | 37 | 358 | 14 |
+| Load A | correctness_pi | 112 | 8130750 | 3117658 | 8130736 | 14 |
+| Load A | correctness_qsort | 81 | 1500504 | 1097111 | 1500490 | 14 |
+| Load A | correctness_queens | 144 | 490720 | 265167 | 490706 | 14 |
+| Load A | correctness_statement_test | 50 | 1788 | 546 | 1774 | 14 |
+| Load A | correctness_superloop | 134 | 612725 | 371607 | 612711 | 14 |
+| Load A | correctness_tak | 186 | 1935336 | 1221227 | 1935322 | 14 |
+| Load A | perf_median | 0 | 14775 | 6961 | 14761 | 14 |
+| Load A | perf_multiply | 0 | 30147 | 21722 | 30133 | 14 |
+| Load A | perf_qsort | 0 | 294541 | 139900 | 294527 | 14 |
+| Load A | perf_rsort | 0 | 302888 | 195719 | 302874 | 14 |
+| Load A | perf_towers | 0 | 10165 | 5278 | 10151 | 14 |
+| Load A | perf_vvadd | 0 | 6439 | 4524 | 6425 | 14 |
+
+原25例total14,627,493、retired7,303,489；六perf core658,871、几何IPC0.580338190880。
+
+## 历史：RS同步后、Load A前（2026-10-24）
+
+单取/单译码/双提交、Integer4/Branch4；旧表完整保留，不参与活动golden解析。
+
+| 模式 | case | result | cycles | retired | core | drain |
+|---|---|---:|---:|---:|---:|---:|
+| RS基线 | correctness_add_to_100 | 5050 | 731 | 421 | 717 | 14 |
+| RS基线 | correctness_array_test1 | 123 | 722 | 131 | 708 | 14 |
+| RS基线 | correctness_array_test2 | 43 | 706 | 149 | 692 | 14 |
+| RS基线 | correctness_basicopt1 | 88 | 182610 | 142059 | 182596 | 14 |
+| RS基线 | correctness_bulgarian | 159 | 376893 | 265654 | 376879 | 14 |
+| RS基线 | correctness_expr | 136 | 922 | 291 | 908 | 14 |
+| RS基线 | correctness_gcd | 178 | 727 | 82 | 713 | 14 |
+| RS基线 | correctness_hanoi | 184 | 8127 | 3674 | 8113 | 14 |
+| RS基线 | correctness_lvalue2 | 175 | 388 | 53 | 374 | 14 |
+| RS基线 | correctness_magic | 216 | 721551 | 441938 | 721537 | 14 |
+| RS基线 | correctness_manyarguments | 40 | 491 | 37 | 477 | 14 |
+| RS基线 | correctness_multiarray | 115 | 3226 | 1543 | 3212 | 14 |
+| RS基线 | correctness_naive | 97 | 372 | 37 | 358 | 14 |
+| RS基线 | correctness_pi | 112 | 8130750 | 3117658 | 8130736 | 14 |
+| RS基线 | correctness_qsort | 81 | 1500741 | 1097111 | 1500727 | 14 |
+| RS基线 | correctness_queens | 144 | 499680 | 265167 | 499666 | 14 |
+| RS基线 | correctness_statement_test | 50 | 1790 | 546 | 1776 | 14 |
+| RS基线 | correctness_superloop | 134 | 612725 | 371607 | 612711 | 14 |
+| RS基线 | correctness_tak | 186 | 1964471 | 1221227 | 1964457 | 14 |
+| RS基线 | perf_median | 0 | 15206 | 6961 | 15192 | 14 |
+| RS基线 | perf_multiply | 0 | 30172 | 21722 | 30158 | 14 |
+| RS基线 | perf_qsort | 0 | 296365 | 139900 | 296351 | 14 |
+| RS基线 | perf_rsort | 0 | 304156 | 195719 | 304142 | 14 |
+| RS基线 | perf_towers | 0 | 10445 | 5278 | 10431 | 14 |
+| RS基线 | perf_vvadd | 0 | 6583 | 4524 | 6569 | 14 |
+
+原25例total14,670,550、retired7,303,489；六perf core662,843、几何IPC0.571761321554。
+
+## 历史：RS同步前双提交＋四拍恢复（2026-10-20）
+
+以下原表对应Integer/Branch各2项、无当拍WB派发/满站复用；完整保留供历史源码复现，模式列避免被当前golden解析器当作活动表。
+
+| 模式 | case | result | cycles | retired | core | drain |
+|---|---|---:|---:|---:|---:|---:|
+| 旧双提交 | correctness_add_to_100 | 5050 | 733 | 421 | 719 | 14 |
+| 旧双提交 | correctness_array_test1 | 123 | 757 | 131 | 743 | 14 |
+| 旧双提交 | correctness_array_test2 | 43 | 745 | 149 | 731 | 14 |
+| 旧双提交 | correctness_basicopt1 | 88 | 221630 | 142059 | 221616 | 14 |
+| 旧双提交 | correctness_bulgarian | 159 | 421372 | 265654 | 421358 | 14 |
+| 旧双提交 | correctness_expr | 136 | 1072 | 291 | 1058 | 14 |
+| 旧双提交 | correctness_gcd | 178 | 741 | 82 | 727 | 14 |
+| 旧双提交 | correctness_hanoi | 184 | 8407 | 3674 | 8393 | 14 |
+| 旧双提交 | correctness_lvalue2 | 175 | 390 | 53 | 376 | 14 |
+| 旧双提交 | correctness_magic | 216 | 789782 | 441938 | 789768 | 14 |
+| 旧双提交 | correctness_manyarguments | 40 | 494 | 37 | 480 | 14 |
+| 旧双提交 | correctness_multiarray | 115 | 3747 | 1543 | 3733 | 14 |
+| 旧双提交 | correctness_naive | 97 | 377 | 37 | 363 | 14 |
+| 旧双提交 | correctness_pi | 112 | 8413648 | 3117658 | 8413634 | 14 |
+| 旧双提交 | correctness_qsort | 81 | 1643752 | 1097111 | 1643738 | 14 |
+| 旧双提交 | correctness_queens | 144 | 549076 | 265167 | 549062 | 14 |
+| 旧双提交 | correctness_statement_test | 50 | 1914 | 546 | 1900 | 14 |
+| 旧双提交 | correctness_superloop | 134 | 660440 | 371607 | 660426 | 14 |
+| 旧双提交 | correctness_tak | 186 | 2113806 | 1221227 | 2113792 | 14 |
+| 旧双提交 | perf_median | 0 | 16363 | 6961 | 16349 | 14 |
+| 旧双提交 | perf_multiply | 0 | 30373 | 21722 | 30359 | 14 |
+| 旧双提交 | perf_qsort | 0 | 312137 | 139900 | 312123 | 14 |
+| 旧双提交 | perf_rsort | 0 | 330274 | 195719 | 330260 | 14 |
+| 旧双提交 | perf_towers | 0 | 10583 | 5278 | 10569 | 14 |
+| 旧双提交 | perf_vvadd | 0 | 6839 | 4524 | 6825 | 14 |
+
+原25例total15,539,452、retired7,303,489；六perf total706,569、几何IPC0.546998574899。历史单提交表也只适用于当时RS/周期配置，不是新RS配置下COMMIT_WIDTH=1的golden。
 
 > **2026-10-17 单提交基线**：两软件已同步RTL的SRAM基线读＋固定四拍恢复，以及AXIData
 > word-bank共享payload、DCache局部地址/独立raw-victim缓冲。两软件Release/断言四构建25/25

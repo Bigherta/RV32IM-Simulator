@@ -233,9 +233,18 @@ bool SQ::isReadyToCommit(int index) const {
 
 void SQ::tick(const SQInput &input, systemState &CPUstate) {
   // issue apply: push the pre-built store entry
-  const auto &p = input.issuePacket;
-  if (p.valid && p.isStore)
-    pushStore(p.robTag, p.nBytes, CPUstate);
+  unsigned allocated = 0;
+  for (unsigned lane = 0; lane < ISSUE_WIDTH; ++lane) {
+    const auto &p = input.issuePacket.lanes[lane];
+    if (lane < input.issuePacket.count && p.isStore) {
+      const auto slot = (tail + allocated) & SQ_MASK;
+      CPUstate.SQModule.SQqueue[slot] = {};
+      CPUstate.SQModule.SQqueue[slot].robTag = p.robTag;
+      CPUstate.SQModule.SQqueue[slot].nBytes = p.nBytes;
+      ++allocated;
+    }
+  }
+  if (allocated != 0) CPUstate.SQModule.tail = (tail + allocated) & SQ_SEQ_MASK;
   // store value ready: write the value from the PRF (RS owns the slot,
   // it frees it in its own tick)
   for (int i = 0; i < STORERS_CAP; ++i) {

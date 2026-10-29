@@ -127,15 +127,15 @@ uint8_t DCache::selectVictim(uint32_t set) const {
 }
 
 uint32_t DCache::sramRaw(int slot, int way) const {
-  const auto &request = RequestBuffer[slot].request;
-  const unsigned bank = (request.address & DCACHE_OFFSET_MASK) >> 2;
+  (void)slot;
+  const unsigned bank = readOffset >> 2;
   uint32_t low = 0, high = 0;
   for (int lane = 0; lane < 4; ++lane) {
     low |= datas[way][bank].readLane(lane) << (lane << 3);
     if (bank + 1 < DCACHE_WORDS_PER_LINE)
       high |= datas[way][bank + 1].readLane(lane) << (lane << 3);
   }
-  return extractLoadWord(low, high, request.address, request.nBytes);
+  return extractLoadWord(low, high, readOffset, readBytes);
 }
 
 uint32_t DCache::memoryRaw(int slot, const AXIData &dmem) const {
@@ -151,6 +151,9 @@ void DCache::plan(DCacheInput &input) const {
   input.lookup = input.response = input.store = -1;
   input.mergeSlot = input.mergeMiss = input.allocate = input.fillMiss = input.writeAck = -1;
   input.fillBeat = input.fillFire = false;
+  input.acceptLookup = count == 0 && !readValid && input.decision.valid &&
+      input.decision.request.op == Operation::Load &&
+      input.decision.request.address != AXI_EXIT_ADDR;
   input.exitValid = false;
   input.exitValue = 0;
   input.loadResp = {};
@@ -243,21 +246,31 @@ void DCache::plan(DCacheInput &input) const {
 
   {
     uint8_t eligible = 0;
+    // RTL A: consume an OLD delivered Load hit and start the next SRAM read
+    // on the same edge. The result being delivered cannot be looked up twice.
+    const bool continueHit = readValid && way >= 0 && !input.fillBeat &&
+        RequestBuffer[readIndex].request.op == Operation::Load && input.response == readIndex;
+    uint8_t lookupActive = active;
+    if (!input.fillBeat && input.response >= 0)
+      lookupActive &= static_cast<uint8_t>(~(1u << input.response));
+    const int lookupFirst = oldestRequest(lookupActive);
     bool anyMiss = false;
     for (int m = 0; m < DCACHE_MSHR_CAP; ++m) anyMiss = anyMiss || misses[m].valid;
     for (int slot = 0; slot < REQUEST_CAP; ++slot) {
       const auto &entry = RequestBuffer[slot];
-      if (!entry.active || entry.ready || entry.miss >= 0 || slot == input.mergeSlot ||
+      if (!entry.active || (readValid && readIndex == slot) ||
+          entry.ready || entry.miss >= 0 || slot == input.mergeSlot ||
           entry.request.address == AXI_EXIT_ADDR ||
           setLocked(entry.request.address) || storeHazard(slot, false)) continue;
       if (findMiss(entry.request.address & ~DCACHE_OFFSET_MASK) >= 0) continue;
       if (entry.request.op == Operation::Store && slot != first) continue;
       if (entry.deferred && (slot != first || freeMiss() < 0)) continue;
-      if (!anyMiss && slot != first) continue;
+      if (!anyMiss && slot != first && slot != lookupFirst) continue;
       eligible |= static_cast<uint8_t>(1u << slot);
     }
     input.lookupCandidate = oldestRequest(eligible);
-    if (!readValid && !input.fillBeat && input.store < 0) input.lookup = input.lookupCandidate;
+    if ((!readValid || continueHit) && !input.fillBeat && input.store < 0)
+      input.lookup = input.lookupCandidate;
   }
 
   uint8_t readable = 0, writable = 0;
@@ -285,7 +298,9 @@ void DCache::plan(DCacheInput &input) const {
 
   auto &data = input.InputDCacheDataSRAMInput;
   auto &meta = input.InputDCacheMetadataSRAMInput;
-  const uint32_t lookupSet = (RequestBuffer[unsigned(input.lookupCandidate) & (REQUEST_CAP - 1)].request.address >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
+  const uint32_t lookupAddress = count == 0 ? input.decision.request.address :
+      RequestBuffer[unsigned(input.lookupCandidate) & (REQUEST_CAP - 1)].request.address;
+  const uint32_t lookupSet = (lookupAddress >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
   for (int w = 0; w < NUM_OF_DCACHE_WAYS; ++w) {
     meta[w].addr = lookupSet;
     for (int b = 0; b < DCACHE_WORDS_PER_LINE; ++b) data[w][b].addr = lookupSet;
@@ -339,8 +354,9 @@ void DCache::plan(DCacheInput &input) const {
     port.addr = set;
     port.writeMask[0] = true;
     port.writeData[0] = (request.address >> DCACHE_TAG_SHIFT) | DCACHE_META_DIRTY;
-  } else if (input.lookup >= 0) {
-    const uint32_t set = (RequestBuffer[input.lookup].request.address >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
+  } else if (input.lookup >= 0 || input.acceptLookup) {
+    const uint32_t address = input.acceptLookup ? input.decision.request.address : RequestBuffer[input.lookup].request.address;
+    const uint32_t set = (address >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
     for (int w = 0; w < NUM_OF_DCACHE_WAYS; ++w) {
       meta[w].enable = true;
       meta[w].addr = set;
@@ -485,14 +501,17 @@ void DCache::tick(const DCacheInput &input, systemState &CPUstate) {
         CPUstate.DCacheModule.validBits[set][w] = true;
     }
   }
-  CPUstate.DCacheModule.readValid = input.lookup >= 0;
-  if (input.lookup >= 0) {
-    const uint32_t set = (RequestBuffer[input.lookup].request.address >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
+  CPUstate.DCacheModule.readValid = input.lookup >= 0 || input.acceptLookup;
+  if (input.lookup >= 0 || input.acceptLookup) {
+    const auto &request = input.acceptLookup ? input.decision.request : RequestBuffer[input.lookup].request;
+    const uint32_t set = (request.address >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
     uint8_t mask = 0;
     for (int w = 0; w < NUM_OF_DCACHE_WAYS; ++w)
       if (validBits[set][w]) mask |= static_cast<uint8_t>(1u << w);
-    CPUstate.DCacheModule.readIndex = input.lookup;
+    CPUstate.DCacheModule.readIndex = input.acceptLookup ? allocation : input.lookup;
     CPUstate.DCacheModule.readWayMask = mask;
+    CPUstate.DCacheModule.readOffset = request.address & DCACHE_OFFSET_MASK;
+    CPUstate.DCacheModule.readBytes = request.nBytes;
   }
   if (allocation >= 0) CPUstate.DCacheModule.cursor = (allocation + 1) & (REQUEST_CAP - 1);
   CPUstate.DCacheModule.count = count + unsigned(input.decision.valid) - std::popcount(released);

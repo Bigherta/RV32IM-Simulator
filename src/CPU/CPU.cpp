@@ -53,6 +53,17 @@ FetchTypeInfo scanJump(const struct lastPush &lp) {
 
 CPU::CPU(const Memory &mem) : CPUstate(mem) {}
 
+bool CPU::frontendCanRun() const {
+  const uint32_t pc = FetchUnitModule.getPC();
+  bool safe = !recovery.active;
+  if (!safe && FETCH_WIDTH >= 2 && !legacyHaltEnabled && ICacheModule.hit(pc)) {
+    safe = true;
+    for (unsigned lane = 0; lane < FETCH_WIDTH; ++lane)
+      if (ICacheModule.firstControl(pc + (lane << 2))) safe = false;
+  }
+  return !exitCommitted && safe;
+}
+
 void CPU::comb() {
   memcpy(&RSModule, &CPUstate.RSModule, sizeof(RSModule));
   memcpy(&RATModule, &CPUstate.RATModule, sizeof(RATModule));
@@ -84,13 +95,73 @@ void CPU::comb() {
   squashDetect = CPUstate.flushArbiter.arbitResult();
   if (recovery.active || exitCommitted) squashDetect.needSquash = false;
   squashDetect.pauseCommit = recovery.active || squashDetect.needSquash;
+  // Load request/response and Store forwarding are functions of OLD LSQ/AGU,
+  // independent of Issue and WB grants. Resolve them before the CDB cone.
+  lqInput.squashDetect = sqInput.squashDetect = squashDetect;
+  lqInput.executeEnabled = !recovery.active && !exitCommitted;
+  const auto loadAddress = LQModule.addressBypass(
+      AGUModule, SQModule, squashDetect, !recovery.active && !exitCommitted);
+  auto memDispatch = MemArbiter::arbitrate(LQModule, SQModule, ROBModule,
+                                          DCacheModule, squashDetect, loadAddress);
+  if (exitCommitted && (memDispatch.request.op != Operation::Store || SQModule.isEmpty() ||
+      !SQModule.isCommitted(SQModule.getHead() & SQ_MASK))) memDispatch.valid = false;
+  dcacheInput.decision = memDispatch;
+  dcacheInput.squashDetect = squashDetect;
+  lqInput.decision = sqInput.decision = memDispatch;
+  for (int i = 0; i < STORERS_CAP; ++i) {
+    lqInput.storeNotifies[i] = {};
+    if (!recovery.active && !exitCommitted && !RSModule.storeValueRS[i].free &&
+        PRFModule.isOperandReady(RSModule.storeValueRS[i].data)) {
+      const auto tag = RSModule.storeValueRS[i].robTag;
+      if (!squashDetect.needSquash || ROB::isOlder(tag, squashDetect.SquashTag))
+        lqInput.storeNotifies[i] = SQModule.planDataForward(
+            memSlot(RSModule.storeValueRS[i].memIndex),
+            PRFModule.getOperandValue(RSModule.storeValueRS[i].data));
+    }
+  }
+  lqInput.storeAddrNotify = {};
+  if (!recovery.active && !exitCommitted && !AGUModule.isEmpty() && isStoreMem(AGUModule.headMemIndex())) {
+    const auto tag = AGUModule.headRobTag();
+    if (!squashDetect.needSquash || ROB::isOlder(tag, squashDetect.SquashTag))
+      lqInput.storeAddrNotify = SQModule.planAddressForward(
+          memSlot(AGUModule.headMemIndex()), AGUModule.headValue(), tag);
+  }
+  DCacheModule.plan(dcacheInput);
+  lqInput.loadResp = dcacheInput.loadResp;
+  // Granted write ports and OLD dispatch precede allocation. Neither depends
+  // on the new IssuePacket; this is the RTL full-RS release/reallocate path.
+  cdbOfALU = aluCDB::build(ALUModule, squashDetect);
+  const auto loadResult = LQModule.resultCandidate(lqInput);
+  cdbOfLQ = {int32_t(loadResult.value), loadResult.robTag, loadResult.index, loadResult.valid};
+  cdbOfMul = mulCDB::build(MULModule, squashDetect);
+  cdbOfDiv = divCDB::build(DIVModule, squashDetect);
+  if (recovery.active) {
+    cdbOfALU.valid = false; cdbOfLQ.valid = false;
+    cdbOfMul.valid = false; cdbOfDiv.valid = false;
+  }
+  const auto cdbOfShared = sharedCDB::arbitrate(cdbOfMul, cdbOfDiv, cdbOfLQ);
+  OperandWriteback writePorts{};
+  if (cdbOfALU.valid && !cdbOfALU.isControl && ROBModule.matchesTag(cdbOfALU.robTag)) {
+    const auto phy = ROBModule.getNewPhy(robSlot(cdbOfALU.robTag));
+    writePorts[0] = {phy != InvalidPhy, uint8_t(phy), cdbOfALU.value};
+  }
+  if (cdbOfShared.valid && ROBModule.matchesTag(cdbOfShared.robTag)) {
+    const auto phy = ROBModule.getNewPhy(robSlot(cdbOfShared.robTag));
+    writePorts[1] = {phy != InvalidPhy, uint8_t(phy), cdbOfShared.value};
+  }
+  DispatchBus dispatchBus = DispatchArbiter::arbitrate(
+      RSModule, ALUModule, AGUModule, BRUModule, MULModule, DIVModule,
+      PRFModule, squashDetect, cdbOfMul, cdbOfDiv, cdbOfDiv.valid, writePorts);
+  if (recovery.active || exitCommitted) dispatchBus = {};
+  isarbInput.dispatchBus = dispatchBus;
+  aluInput.operandWriteback = bruInput.operandWriteback = aguInput.operandWriteback = writePorts;
   auto commits = ROBModule.planCommit(squashDetect, SQModule);
   if (!initialized || exitCommitted) commits = {};
   robInput.commits = ratInput.commits = prfInput.commits = lqInput.commits =
       sqInput.commits = bpuInput.commits = commits;
   isarbInput.squashDetect = squashDetect;
-  issuePacket = IssueArbiter::build(isarbInput);
-  if (exitCommitted || recovery.active) issuePacket.valid = false;
+  issuePacket = IssueArbiter::buildPrefix(isarbInput);
+  if (exitCommitted || recovery.active) issuePacket = {};
   ratInput.recovery = recovery;
   prfInput.recovery = recovery;
   bpuInput.recovery = recovery;
@@ -101,11 +172,17 @@ void CPU::comb() {
   sqInput.executeEnabled = !recovery.active;
   exitRetiring = commits.exits;
   sqInput.retireEnabled = !exitCommitted;
-  fqInput.issueValid = issuePacket.valid;
-  const bool fqPop = !recovery.active && !squashDetect.needSquash && !FQModule.isEmpty() &&
-                     DecodeUnitModule.canAccept(issuePacket.valid);
-  const bool fqReady = !squashDetect.needSquash && FQModule.canAccept(fqPop);
-  const bool popConsume = !recovery.active && fqReady && ICacheModule.isReturnReady() &&
+  fqInput.issueValid = issuePacket.count != 0;
+  unsigned decodeCount = FQModule.count();
+  const unsigned decodeCapacity = DecodeUnitModule.pushCapacity(issuePacket.count);
+  if (decodeCount > DECODE_WIDTH) decodeCount = DECODE_WIDTH;
+  if (decodeCount > decodeCapacity) decodeCount = decodeCapacity;
+  if (!frontendCanRun() || squashDetect.needSquash) decodeCount = 0;
+  fqInput.decodeCount = decodeInput.decodeCount = decodeCount;
+  const bool fqPop = decodeCount != 0;
+  const bool fqReady = !squashDetect.needSquash &&
+      FQModule.canAccept(ICacheModule.returnCount(), decodeCount);
+  const bool popConsume = frontendCanRun() && fqReady && ICacheModule.isReturnReady() &&
                           !FetchUnitModule.isHaltFetched();
   const bool haltSignal =
       FetchUnitModule.isHaltFetched() ||
@@ -122,8 +199,28 @@ void CPU::comb() {
   const bool memCanAccept = (!ICacheModule.isRequestFull() || popConsume) &&
                              (!AXIFetchModule.isRequestFull() || refillHit) &&
                             !readBlocked;
-  fetchDecision = FetchDecision::build(BPUModule, pc, squashDetect, haltSignal,
-                                         fqReady, memCanAccept && initialized && !exitCommitted && !recovery.active);
+   const bool canMulti = !legacyHaltEnabled && icacheHit;
+   const unsigned blockRemain = canMulti ? FETCH_WIDTH - ((pc >> 2) & (FETCH_WIDTH - 1)) : 1u;
+   unsigned fetchCount = 0;
+   bool open = true, hasControl = false;
+   for (unsigned lane = 0; lane < FETCH_WIDTH; ++lane) {
+     if (open && lane < blockRemain && FQModule.canAccept(lane + 1, decodeCount)) {
+       ++fetchCount;
+       hasControl = ICacheModule.firstControl(pc + (lane << 2));
+       if (hasControl) open = false;
+     } else open = false;
+   }
+   const bool predictEnabled = !canMulti || hasControl;
+   const uint32_t queryPC = hasControl ? pc + ((fetchCount - 1) << 2) : pc;
+   fetchDecision = FetchDecision::build(BPUModule, queryPC, squashDetect, haltSignal,
+       fetchCount != 0, memCanAccept && initialized && frontendCanRun());
+   fetchDecision.pc = pc;
+   fetchDecision.count = fetchDecision.valid ? fetchCount : 0;
+   fetchDecision.second = fetchDecision.count > 1;
+   if (!predictEnabled) {
+     fetchDecision.predictedPC = pc + (fetchCount << 2);
+     fetchDecision.shift = false;
+   }
   {
     fetchUnitInput.squashDetect = squashDetect;
     fetchUnitInput.fetchDecision = fetchDecision;
@@ -152,19 +249,10 @@ void CPU::comb() {
   fqInput.squashDetect = squashDetect;
   fqInput.returnAccepted = popConsume;
   bpuInput.fetchDecision = fetchDecision;
-  cdbOfALU = aluCDB::build(ALUModule, squashDetect);
-  cdbOfLQ = lqCDB::build(LQModule, squashDetect);
-  cdbOfMul = mulCDB::build(MULModule, squashDetect);
-  cdbOfDiv = divCDB::build(DIVModule, squashDetect);
-  if (recovery.active) {
-    cdbOfALU.valid = false; cdbOfLQ.valid = false;
-    cdbOfMul.valid = false; cdbOfDiv.valid = false;
-  }
-  const auto cdbOfShared = sharedCDB::arbitrate(cdbOfMul, cdbOfDiv, cdbOfLQ);
-  DispatchBus dispatchBus = DispatchArbiter::arbitrate(
-      RSModule, ALUModule, AGUModule, BRUModule, MULModule, DIVModule,
-      PRFModule, squashDetect, cdbOfMul, cdbOfDiv, cdbOfDiv.valid);
-  if (recovery.active) dispatchBus = {};
+  // Sample new prediction-context array reads in comb from the old BPU.
+  for (unsigned lane = 0; lane < FETCH_WIDTH; ++lane)
+    bpuInput.fetchContexts[lane] = BPUModule.contextAt(fetchDecision.pc + (lane << 2));
+  bpuInput.resolvedLocalHistory = BPUModule.contextAt(BRUModule.headPCFrom()).localHistory;
   aguInput.squashDetect = squashDetect;
   aluInput.squashDetect = squashDetect;
   aluInput.cdbOutput = cdbOfALU;
@@ -182,41 +270,6 @@ void CPU::comb() {
   decodeInput.squashDetect = squashDetect;
   lqInput.squashDetect = squashDetect;
   sqInput.squashDetect = squashDetect;
-  auto memDispatch = MemArbiter::arbitrate(LQModule, SQModule, ROBModule,
-                                            DCacheModule, squashDetect);
-  if (exitCommitted && (memDispatch.request.op != Operation::Store || SQModule.isEmpty() ||
-      !SQModule.isCommitted(SQModule.getHead() & SQ_MASK))) memDispatch.valid = false;
-  dcacheInput.decision = memDispatch;
-  dcacheInput.squashDetect = squashDetect;
-  lqInput.decision = memDispatch;
-  sqInput.decision = memDispatch;
-  // store value-ready broadcast (data event): scan ready storeValueRS entries
-  // against the SQ snapshot (store address must already be known)
-  for (int i = 0; i < STORERS_CAP; ++i) {
-    lqInput.storeNotifies[i] = StoreNotify{};
-    if (!recovery.active && !RSModule.storeValueRS[i].free &&
-        PRFModule.isOperandReady(RSModule.storeValueRS[i].data)) {
-      auto tag = RSModule.storeValueRS[i].robTag;
-      if (!squashDetect.needSquash ||
-          (squashDetect.needSquash &&
-           ROB::isOlder(tag, squashDetect.SquashTag))) {
-        lqInput.storeNotifies[i] = SQModule.planDataForward(
-            memSlot(RSModule.storeValueRS[i].memIndex),
-            PRFModule.getOperandValue(RSModule.storeValueRS[i].data));
-      }
-    }
-  }
-  // store address-ready broadcast (address event): AGU head is a store
-  lqInput.storeAddrNotify = StoreNotify{};
-  if (!recovery.active && !AGUModule.isEmpty() && isStoreMem(AGUModule.headMemIndex())) {
-    auto aguRobTag = AGUModule.headRobTag();
-    if (!squashDetect.needSquash ||
-        (squashDetect.needSquash &&
-         ROB::isOlder(aguRobTag, squashDetect.SquashTag))) {
-      lqInput.storeAddrNotify = SQModule.planAddressForward(
-          memSlot(AGUModule.headMemIndex()), AGUModule.headValue(), aguRobTag);
-    }
-  }
   rsInput.squashDetect = squashDetect;
   robInput.squashDetect = squashDetect;
   robInput.storeCompletion = SQModule.completionBitmap();
@@ -231,7 +284,8 @@ void CPU::comb() {
   bruInput.squashDetect = squashDetect;
   bpuInput.squashDetect = squashDetect;
   bpuInput.cdbOut = cdbOfALU;
-  bpuInput.fetchInfo = scanJump(FQModule.getLastPush());
+  for (unsigned lane = 0; lane < FETCH_WIDTH; ++lane)
+    bpuInput.fetchInfo[lane] = scanJump(FQModule.getLastPush(lane));
   lqInput.cdbOutput = cdbOfLQ;
   // SRAM combination logic
   icacheDataInput.enable = icacheInput.lineReturn.valid || fetchDecision.valid;
@@ -245,11 +299,8 @@ void CPU::comb() {
     icacheDataInput.writeData[i] = icacheInput.lineReturn.data[i];
     icacheDataInput.writeMask[i] = true;
   }
-  // D$ owns miss/response/SRAM arbitration. These are the exact same accepted
-  // line events consumed by DMEM; Load completion still enters the old LQ/CDB
-  // pipeline and never bypasses into a dependent dispatch in this clock.
-  DCacheModule.plan(dcacheInput);
-  lqInput.loadResp = dcacheInput.loadResp;
+  // D$ was planned before the CDB cone; the same captured events drive SRAM,
+  // transport consumption, registered LQ capture and the late-response bypass.
   axiFetchInput.squash = squashDetect.needSquash;
   axiFetchInput.fetchValid = imemInput.fetchDecision.valid;
   axiFetchInput.fetchPC = imemInput.fetchDecision.pc;
@@ -281,7 +332,8 @@ void CPU::clock() {
       for (unsigned lane = 0; lane < RECOVERY_WIDTH; ++lane) next = robNextTag(next);
       CPUstate.recovery.nextTag = next;
       CPUstate.recovery.offset = recovery.offset + RECOVERY_WIDTH;
-      if (recovery.beat == RECOVERY_BEATS - 1) CPUstate.recovery.active = false;
+      if (unsigned(recovery.offset) + RECOVERY_WIDTH >= recovery.liveCount)
+        CPUstate.recovery.active = false;
       else CPUstate.recovery.beat = recovery.beat + 1;
     }
   }
@@ -296,10 +348,13 @@ void CPU::clock() {
    LQModule.tick(lqInput, CPUstate);
    PRFModule.tick(prfInput, CPUstate);
    BPUModule.tick(bpuInput, CPUstate);
-   RATModule.tick(ratInput, CPUstate);
-   if (!recovery.active) {
-  FetchUnitModule.tick(fetchUnitInput, CPUstate);
-  FQModule.tick(fqInput, CPUstate);
+    RATModule.tick(ratInput, CPUstate);
+    if (frontendCanRun()) {
+      FetchUnitModule.tick(fetchUnitInput, CPUstate);
+      FQModule.tick(fqInput, CPUstate);
+      DecodeUnitModule.tick(decodeInput, CPUstate);
+    }
+    if (!recovery.active) {
   ROBModule.tick(robInput, CPUstate);
   ALUModule.tick(aluInput, CPUstate);
   MULModule.tick(mulInput, CPUstate);
@@ -308,7 +363,6 @@ void CPU::clock() {
   BRUModule.tick(bruInput, CPUstate);
   RSModule.tick(rsInput, CPUstate);
   flushArbiter.tick(flarbInput, CPUstate);
-  DecodeUnitModule.tick(decodeInput, CPUstate);
    }
   }
   if (exitRetiring) CPUstate.exitCommitted = true;

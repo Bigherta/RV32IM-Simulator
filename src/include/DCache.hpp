@@ -44,6 +44,7 @@ struct DCacheInput {
   int8_t writeAck = -1;
   bool fillBeat = false;
   bool fillFire = false;
+  bool acceptLookup = false;
   bool exitValid = false;
   uint32_t exitValue = 0;
   uint32_t readHitRaw = 0; // One synchronous read result, shared by all consumers.
@@ -78,6 +79,7 @@ class DCache {
   uint8_t cursor = 0;
   uint8_t readIndex = 0;
   uint8_t readWayMask = 0;
+  uint8_t readOffset = 0, readBytes = 0;
   bool readValid = false;
   uint64_t hitCount = 0;
   uint64_t missCount = 0;

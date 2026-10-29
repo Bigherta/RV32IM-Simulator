@@ -10,11 +10,40 @@ template <uint32_t N> consteval int log2Pow2() {
 }
 
 using RobTag = uint8_t;
+#ifndef CPU_ISSUE_WIDTH
+#ifdef CPU_RENAME_WIDTH
+#define CPU_ISSUE_WIDTH CPU_RENAME_WIDTH
+#else
+#define CPU_ISSUE_WIDTH 1
+#endif
+#endif
+#ifndef CPU_RENAME_WIDTH
+#define CPU_RENAME_WIDTH CPU_ISSUE_WIDTH
+#endif
+static_assert(CPU_ISSUE_WIDTH == CPU_RENAME_WIDTH, "conflicting issue/rename widths");
+constexpr unsigned ISSUE_WIDTH = CPU_ISSUE_WIDTH;
+static_assert(ISSUE_WIDTH == 1 || ISSUE_WIDTH == 2 || ISSUE_WIDTH == 4);
+#ifndef CPU_FETCH_WIDTH
+#define CPU_FETCH_WIDTH 1
+#endif
+constexpr unsigned FETCH_WIDTH = CPU_FETCH_WIDTH;
+static_assert(FETCH_WIDTH == 1 || FETCH_WIDTH == 2 || FETCH_WIDTH == 4);
+#ifndef CPU_DECODE_WIDTH
+#define CPU_DECODE_WIDTH 1
+#endif
+constexpr unsigned DECODE_WIDTH = CPU_DECODE_WIDTH;
+static_assert(DECODE_WIDTH == 1 || DECODE_WIDTH == 2 || DECODE_WIDTH == 4);
+#ifndef CPU_FQ_ENTRIES
+#define CPU_FQ_ENTRIES (CPU_FETCH_WIDTH << 1)
+#endif
+#ifndef CPU_IQ_ENTRIES
+#define CPU_IQ_ENTRIES (CPU_DECODE_WIDTH << 1)
+#endif
 #ifndef CPU_COMMIT_WIDTH
 #define CPU_COMMIT_WIDTH 2
 #endif
 constexpr unsigned COMMIT_WIDTH = CPU_COMMIT_WIDTH;
-static_assert(COMMIT_WIDTH >= 1 && COMMIT_WIDTH <= 2);
+static_assert(COMMIT_WIDTH == 1 || COMMIT_WIDTH == 2 || COMMIT_WIDTH == 4);
 // Accepted, head-ordered retirement prefix, computed only from old state.
 struct CommitPlan {
   unsigned count = 0;
@@ -30,12 +59,18 @@ struct CommitPlan {
 // Host configuration, set once before constructing the CPU. Course AXI images
 // execute ADDI a0,x0,255 normally; only archived images opt into the old marker.
 inline bool legacyHaltEnabled = false;
-constexpr int INTEGERRS_CAP = 2;
+#ifndef CPU_INT_RS_ENTRIES
+#define CPU_INT_RS_ENTRIES 4
+#endif
+#ifndef CPU_BRANCH_RS_ENTRIES
+#define CPU_BRANCH_RS_ENTRIES 4
+#endif
+constexpr int INTEGERRS_CAP = CPU_INT_RS_ENTRIES;
 constexpr int MULTIPLYRS_CAP = 1;
 constexpr int DIVIDERS_CAP = 1;
 constexpr int STORERS_CAP = 2;
 constexpr int LOADRS_CAP = 2;
-constexpr int BRANCHRS_CAP = 2;
+constexpr int BRANCHRS_CAP = CPU_BRANCH_RS_ENTRIES;
 constexpr int LQ_CAP = 8;
 constexpr int SQ_CAP = 8;
 constexpr int LQ_MASK = LQ_CAP - 1;
@@ -46,7 +81,7 @@ constexpr int MEMQ_SCAN_WINDOW = SQ_CAP < 8 ? SQ_CAP : 8;
 constexpr uint8_t MEM_STORE_BIT = 0x40;
 inline bool isStoreMem(uint8_t m) { return (m & MEM_STORE_BIT) != 0; }
 inline uint8_t memSlot(uint8_t m) { return m & 0x3F; }
-constexpr uint32_t ROB_CAP = 16;
+constexpr uint32_t ROB_CAP = ISSUE_WIDTH == 4 ? 32 : 16;
 // Packed tag = {1-bit epoch, slot field}. The slot field holds 0..ROB_CAP-1,
 // so its width is bit_width(ROB_CAP-1); the extra top bit is the epoch.
 // ROB_CAP is not required to be a power of two: invalid slot codes between
@@ -69,8 +104,8 @@ inline constexpr uint8_t robNextTag(RobTag tag) {
 static_assert(ROB_CAP >= 2, "ROB needs at least two slots for age ordering");
 static_assert(ROB_TAG_WIDTH <= 8,
               "RobTag is uint8_t: packed tag must fit in 8 bits");
-constexpr int FQ_CAP = 2;
-constexpr int IQ_CAP = 2;
+constexpr int FQ_CAP = CPU_FQ_ENTRIES;
+constexpr int IQ_CAP = CPU_IQ_ENTRIES;
 constexpr int FQ_SEQ_MASK = (FQ_CAP << 1) - 1;
 constexpr int IQ_SEQ_MASK = (IQ_CAP << 1) - 1;
 constexpr int REGISTER_CAP = 32;
@@ -83,7 +118,11 @@ constexpr int ALU_CAP = 1;
 constexpr int MUL_CAP = 1; // Final register of the three-stage elastic MUL.
 constexpr int AGU_CAP = 1;
 constexpr int BRU_CAP = 4;
-constexpr int BTB_CAP = 64;
+#ifndef CPU_BTB_ENTRIES
+#define CPU_BTB_ENTRIES 32
+#endif
+constexpr int BTB_CAP = CPU_BTB_ENTRIES;
+static_assert(BTB_CAP >= 2 && BTB_CAP <= 64 && std::has_single_bit(uint32_t(BTB_CAP)));
 constexpr int BHT_CAP = 1 << 8;
 constexpr int SELECTOR_CAP = 1 << 8;
 constexpr int CONDSEEN_CAP = 1 << 9; // "this PC is a conditional" filter
@@ -97,7 +136,10 @@ static_assert((1 << GHR_WIDTH) >= BHT_CAP &&
                   (1 << GHR_WIDTH) >= SELECTOR_CAP,
               "GHR must cover the direction-table index width");
 constexpr uint16_t HISTORY_MASK = (1u << GHR_WIDTH) - 1;
-constexpr int RAS_CAP = 16;
+#ifndef CPU_RAS_ENTRIES
+#define CPU_RAS_ENTRIES 8
+#endif
+constexpr int RAS_CAP = CPU_RAS_ENTRIES;
 static_assert(RAS_CAP > 0 && RAS_CAP <= 0xFF,
               "RAS top is an 8-bit non-wrapping depth");
 constexpr uint8_t PRF_CAP = ROB_CAP + REGISTER_CAP;
@@ -146,11 +188,11 @@ static_assert(prfSeqDistance(static_cast<PrfSeq>(PRF_CAP - 1),
 static_assert(prfSeqDistance(0,
                              static_cast<PrfSeq>(1 << PRF_INDEX_WIDTH)) ==
               PRF_CAP);
-static_assert(INTEGERRS_CAP > 0 && (INTEGERRS_CAP & (INTEGERRS_CAP - 1)) == 0);
+static_assert(INTEGERRS_CAP > 0 && INTEGERRS_CAP <= 16);
 static_assert(MULTIPLYRS_CAP > 0 &&
               (MULTIPLYRS_CAP & (MULTIPLYRS_CAP - 1)) == 0);
 static_assert(DIVIDERS_CAP > 0 && (DIVIDERS_CAP & (DIVIDERS_CAP - 1)) == 0);
-static_assert(BRANCHRS_CAP > 0 && (BRANCHRS_CAP & (BRANCHRS_CAP - 1)) == 0);
+static_assert(BRANCHRS_CAP > 0 && BRANCHRS_CAP <= 4);
 static_assert(LQ_CAP >= 2 && LQ_CAP <= 64 && (LQ_CAP & LQ_MASK) == 0);
 static_assert(SQ_CAP >= 2 && SQ_CAP <= 64 && (SQ_CAP & SQ_MASK) == 0);
 static_assert(MEMQ_SCAN_WINDOW <= SQ_CAP);
@@ -169,8 +211,19 @@ static_assert(ROB_CAP < (static_cast<uint32_t>(PRF_CAP) << 1),
 // always in 1..PRF_CAP-1 and 0 is unambiguous. Guarded by asserts in PRF::pop,
 // PRF::push, RAT mapping writers and IssueArbiter::resolveSrc.
 inline constexpr int InvalidPhy = 0;
-constexpr int IMEM_CAP = 8; // AXIFetch: one line per ICache request credit
-constexpr int CKPT_CAP = 32;
+// Only granted, identity-qualified physical write ports may bypass OLD PRF.
+// Port zero wins a duplicate match; ready OLD values and P0 constants win WB.
+struct OperandWritePort {
+  bool valid = false;
+  uint8_t tag = 0;
+  int32_t value = 0;
+};
+using OperandWriteback = std::array<OperandWritePort, 2>;
+#ifndef CPU_AXI_FETCH_ENTRIES
+#define CPU_AXI_FETCH_ENTRIES 4
+#endif
+constexpr int IMEM_CAP = CPU_AXI_FETCH_ENTRIES;
+constexpr int CKPT_CAP = ISSUE_WIDTH == 4 ? 64 : 32;
 constexpr unsigned RECOVERY_BEATS = 4;
 constexpr unsigned RECOVERY_WIDTH = (ROB_CAP + 3u) >> 2;
 struct RecoveryStep {
@@ -226,8 +279,8 @@ constexpr int ICACHE_WORD_BITS = ICACHE_WORDS_PER_LINE > 1
 static_assert(ICACHE_TAG_WIDTH > 0 && ICACHE_TAG_WIDTH <= RV32_WORD_BITS,
               "ICache address split must leave a valid tag width");
 
-constexpr int DCACHE_BLOCK_CAP = 32; // bytes per line; 64 sets x 2 ways = 4 KiB
-constexpr int NUM_OF_DCACHE_SETS = 64;
+constexpr int DCACHE_BLOCK_CAP = 32; // bytes per line; 128 sets x 2 ways = 8 KiB
+constexpr int NUM_OF_DCACHE_SETS = 128;
 constexpr int NUM_OF_DCACHE_WAYS = 2;
 constexpr int DCACHE_MSHR_CAP = 4;
 // Set associativity with tree-PLRU replacement. Single-way builds keep the
@@ -305,6 +358,11 @@ constexpr uint32_t DCACHE_META_DIRTY = 1u << DCACHE_TAG_WIDTH;
 constexpr uint32_t DCACHE_META_TAG_MASK = DCACHE_META_DIRTY - 1u;
 
 constexpr int REQUEST_CAP = 8;
+#ifndef CPU_FETCH_REQUEST_ENTRIES
+#define CPU_FETCH_REQUEST_ENTRIES (CPU_FETCH_WIDTH == 4 ? 2 : (4 >> (CPU_FETCH_WIDTH - 1)))
+#endif
+constexpr int FETCH_REQUEST_CAP = CPU_FETCH_REQUEST_ENTRIES;
+static_assert(FETCH_REQUEST_CAP >= 2 && FETCH_REQUEST_CAP <= 8 && std::has_single_bit(uint32_t(FETCH_REQUEST_CAP)));
 // One shared DMEM FIFO: reads + writes together occupy at most 16 slots.
 // Up to one of each can enter per clock; the final old credit goes to writes.
 // All admitted transactions advance independently, like IMEM.
@@ -318,7 +376,7 @@ static_assert(DCACHE_MSHR_CAP > 0 && DCACHE_MSHR_CAP <= 8 &&
                   std::has_single_bit(static_cast<uint32_t>(REQUEST_CAP)),
               "DCache request/MSHR masks must fit their small carriers");
 constexpr int CKPT_LIVE_MAX =
-    ROB_CAP + REQUEST_CAP + FQ_CAP + IQ_CAP;
+    ROB_CAP + (FETCH_REQUEST_CAP << log2Pow2<FETCH_WIDTH>()) + FQ_CAP + IQ_CAP;
 static_assert(CKPT_CAP > 0 && (CKPT_CAP & (CKPT_CAP - 1)) == 0,
               "checkpoint wrap uses &(CKPT_CAP-1)");
 static_assert(CKPT_CAP >= CKPT_LIVE_MAX,
@@ -330,7 +388,7 @@ constexpr int AXI_DEPTH = 16; // External Slave channels; not master line credit
 constexpr int AXI_DATA_CAP = 8;
 constexpr int AXI_ORDER_CAP = 16; // Preserve the RTL's 4-bit order-ring indices.
 static_assert(AXI_DATA_CAP >= (DCACHE_MSHR_CAP << 1));
-static_assert(IMEM_CAP == REQUEST_CAP);
+static_assert(IMEM_CAP >= FETCH_REQUEST_CAP && IMEM_CAP <= 8 && std::has_single_bit(uint32_t(IMEM_CAP)));
 constexpr int AXI_LATENCY = 10;
 constexpr uint32_t AXI_EXIT_ADDR = 0x80000000u;
 constexpr uint32_t AXI_RAM_BYTES = 256u << 20;
@@ -561,6 +619,8 @@ class PRF;
 struct BPU;
 struct FetchDecision {
   bool valid = false;
+  bool second = false;
+  unsigned count = 0;
   uint32_t pc = 0;
   int32_t predictedPC = 0;
   bool shift = false;

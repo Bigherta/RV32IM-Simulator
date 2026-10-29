@@ -1,11 +1,11 @@
 #include "../include/RS.hpp"
 #include "../include/CPU.hpp"
 #include "common.hpp"
-int RSUnit::tryAllocInteger() const {
+int RSUnit::tryAllocInteger(const DispatchInfo &release) const {
   for (int i = 0; i < INTEGERRS_CAP; i++)
     if (integerRS[i].free)
       return i;
-  return -1;
+  return release.valid ? release.rsIndex : -1;
 }
 int RSUnit::tryAllocLoad() const {
   for (int i = 0; i < LOADRS_CAP; i++)
@@ -25,11 +25,11 @@ int RSUnit::tryAllocStoreValue() const {
       return i;
   return -1;
 }
-int RSUnit::tryAllocBranch() const {
+int RSUnit::tryAllocBranch(const DispatchInfo &release) const {
   for (int i = 0; i < BRANCHRS_CAP; i++)
     if (branchRS[i].free)
       return i;
-  return -1;
+  return release.valid ? release.rsIndex : -1;
 }
 int RSUnit::tryAllocMultiply() const {
   for (int i = 0; i < MULTIPLYRS_CAP; i++)
@@ -44,23 +44,6 @@ int RSUnit::tryAllocDivide() const {
   return -1;
 }
 void RSUnit::tick(const RSInput &input, systemState &CPUstate) {
-  const auto &p = input.issuePacket;
-  if (p.valid) {
-    if (p.hasInteger) {
-      CPUstate.RSModule.integerRS[p.integerSlot] = p.integerRS;
-    } else if (p.hasMultiply) {
-      CPUstate.RSModule.multiplyRS[p.multiplySlot] = p.multiplyRS;
-    } else if (p.hasDivide) {
-      CPUstate.RSModule.divideRS[p.divideSlot] = p.divideRS;
-    } else if (p.hasLoad) {
-      CPUstate.RSModule.loadRS[p.loadSlot] = p.loadRS;
-    } else if (p.hasStore) {
-      CPUstate.RSModule.storeAddressRS[p.storeAddrSlot] = p.storeAddrRS;
-      CPUstate.RSModule.storeValueRS[p.storeValueSlot] = p.storeValueRS;
-    } else if (p.hasBranch) {
-      CPUstate.RSModule.branchRS[p.branchSlot] = p.branchRS;
-    }
-  }
   if (input.dispatchBus.alu.valid) {
     int idx = input.dispatchBus.alu.rsIndex;
     CPUstate.RSModule.integerRS[idx].free = true;
@@ -137,5 +120,26 @@ void RSUnit::tick(const RSInput &input, systemState &CPUstate) {
         CPUstate.RSModule.storeValueRS[i].free = true;
       }
     }
+  }
+  // Allocation has final priority over release. Integer/Branch/Load pools
+  // may reuse only the OLD slot actually accepted by its execution unit.
+  for (unsigned lane = 0; lane < ISSUE_WIDTH; ++lane) {
+   const auto &p = input.issuePacket.lanes[lane];
+   if (lane < input.issuePacket.count) {
+    if (p.hasInteger) {
+      CPUstate.RSModule.integerRS[p.integerSlot] = p.integerRS;
+    } else if (p.hasMultiply) {
+      CPUstate.RSModule.multiplyRS[p.multiplySlot] = p.multiplyRS;
+    } else if (p.hasDivide) {
+      CPUstate.RSModule.divideRS[p.divideSlot] = p.divideRS;
+    } else if (p.hasLoad) {
+      CPUstate.RSModule.loadRS[p.loadSlot] = p.loadRS;
+    } else if (p.hasStore) {
+      CPUstate.RSModule.storeAddressRS[p.storeAddrSlot] = p.storeAddrRS;
+      CPUstate.RSModule.storeValueRS[p.storeValueSlot] = p.storeValueRS;
+    } else if (p.hasBranch) {
+      CPUstate.RSModule.branchRS[p.branchSlot] = p.branchRS;
+    }
+   }
   }
 }

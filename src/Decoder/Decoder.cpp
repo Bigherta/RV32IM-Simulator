@@ -106,6 +106,23 @@ void UopQueue::push(Uop inst, systemState &CPUstate) const {
   CPUstate.DecodeUnitModule.iq.uopQueueEntries[tail & (IQ_CAP - 1)] = inst;
   CPUstate.DecodeUnitModule.iq.tail = (tail + 1) & IQ_SEQ_MASK;
 }
+void UopQueue::pushPrefix(const InstructBuffer &fq, unsigned count,
+                          systemState &CPUstate) const {
+  // Read only the old FQ and old tail; the target is never a next-state source.
+  for (unsigned lane = 0; lane < DECODE_WIDTH; ++lane) {
+    if (lane < count) {
+      const auto &entry = fq.entry(lane);
+      Uop uop = Decoder::decode(static_cast<int32_t>(entry.raw));
+      uop.pc = entry.pc;
+      uop.predictedPC = entry.predictedPC;
+      uop.ckptId = entry.ckptId;
+      uop.isHalt = legacyHaltEnabled && entry.raw == 0x0ff00513;
+      CPUstate.DecodeUnitModule.iq.uopQueueEntries[(tail + lane) & (IQ_CAP - 1)] = uop;
+    }
+  }
+  if (count != 0)
+    CPUstate.DecodeUnitModule.iq.tail = (tail + count) & IQ_SEQ_MASK;
+}
 void UopQueue::pop(systemState &CPUstate) const {
   CPUstate.DecodeUnitModule.iq.head = (head + 1) & IQ_SEQ_MASK;
 }
@@ -119,16 +136,7 @@ void DecodeUnit::tick(const DecodeInput &input, systemState &CPUstate) {
     clear(CPUstate);
     return;
   }
-  if (input.issuePacket.valid && !isEmpty())
-    pop(CPUstate);
-  if (input.FQModule.isEmpty() || !canAccept(input.issuePacket.valid)) {
-    return;
-  }
-  auto raw = input.FQModule.headRaw();
-  Uop uop = Decoder::decode(static_cast<int32_t>(raw));
-  uop.pc = input.FQModule.headpc();
-  uop.predictedPC = input.FQModule.headPredictedPC();
-  uop.ckptId = input.FQModule.headCkptId();
-  uop.isHalt = legacyHaltEnabled && (raw == 0x0ff00513);
-  push(uop, CPUstate);
+  if (input.issuePacket.count != 0)
+    CPUstate.DecodeUnitModule.iq.head = (iq.head + input.issuePacket.count) & IQ_SEQ_MASK;
+  iq.pushPrefix(input.FQModule, input.decodeCount, CPUstate);
 }

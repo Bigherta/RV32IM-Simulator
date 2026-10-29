@@ -8,7 +8,22 @@ struct AGU;
 struct RSUnit;
 struct ROB;
 struct DMEM;
-struct IssuePacket;
+struct IssueGroup;
+// Combinational OLD AGU result for an already-reserved live LQ row.
+// Not a new address stage and never an allocation-to-request bypass.
+struct LoadAddressBypass {
+  bool valid = false;
+  uint8_t index = 0;
+  RobTag robTag = 0;
+  uint32_t address = 0;
+  bool forwarded = false;
+};
+struct LoadResultCandidate {
+  bool valid = false;
+  uint8_t index = 0;
+  RobTag robTag = 0;
+  uint32_t value = 0;
+};
 struct LQEntry {
   RobTag robTag;
   uint32_t address;
@@ -25,14 +40,14 @@ struct LQInput {
   SquashInfo squashDetect;
   const AGU &AGUModule;
   const ROB &ROBModule;
-  const IssuePacket &issuePacket;
+  const IssueGroup &issuePacket;
   const SQ &SQModule;
   lqCDB cdbOutput;
   LoadResponse loadResp;
   MemDispatchDecision decision;
   StoreNotify storeNotifies[STORERS_CAP];
   StoreNotify storeAddrNotify;
-  LQInput(const AGU &agu, const ROB &rob, const SQ &sq, const IssuePacket &pkt)
+  LQInput(const AGU &agu, const ROB &rob, const SQ &sq, const IssueGroup &pkt)
       : AGUModule(agu), ROBModule(rob), issuePacket(pkt), SQModule(sq) {}
 };
 class LQ {
@@ -52,13 +67,15 @@ private:
   void setValueState(int index, ValueState state, systemState &CPUstate) const;
   void setCDBBroadcast(int index, systemState &CPUstate) const;
   uint32_t applyStoreForward(const StoreNotify &notify,
-                             systemState &CPUstate) const;
+                              systemState &CPUstate) const;
+  bool notifyMatches(const StoreNotify &notify, int index) const;
   void flush(uint8_t tailSnapshot, systemState &CPUstate) const;
 
 public:
   LQ() { std::memset(this, 0, sizeof(*this)); }
   bool isEmpty() const;
   bool isFull() const;
+  unsigned count() const { return (tail - head) & LQ_SEQ_MASK; }
   bool isActive(uint8_t index) const;
   bool matchesAddress(uint8_t index, RobTag tag) const {
     return isActive(index) && getRobTag(index) == tag;
@@ -79,6 +96,10 @@ public:
   auto getNBytes(int index) const -> int;
   bool isAddressReady(int index) const { return LQqueue[index].isAddressReady; }
   int CDBDetect() const;
-  int LoadDetect() const;
+  LoadResultCandidate resultCandidate(const LQInput &input) const;
+  LoadAddressBypass addressBypass(const AGU &agu, const SQ &sq,
+                                 const SquashInfo &squash, bool enabled) const;
+  uint32_t requestAddress(int index, const LoadAddressBypass &event = {}) const;
+  int LoadDetect(const LoadAddressBypass &event = {}) const;
   void tick(const LQInput &, systemState &);
 };

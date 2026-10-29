@@ -12,6 +12,7 @@ FetchDecision FetchDecision::build(const BPU &bp, uint32_t pc,
   if (!squash.needSquash && !haltFetched && fqCanAccept && memCanAccept) {
     auto prediction = bp.predict(pc);
     fdec.valid = true;
+    fdec.count = 1;
     fdec.pc = pc;
     fdec.predictedPC = prediction.taken ? prediction.predictPC : pc + 4;
     if (prediction.btbHit) {
@@ -35,12 +36,12 @@ FetchDecision FetchDecision::build(const BPU &bp, uint32_t pc,
 
 PredictInfo BPU::predict(uint32_t pc) const {
   const uint32_t p2 = static_cast<uint32_t>(pc) >> 2;
-  const uint32_t localIndex = p2 & (BHT_CAP - 1);
+  const uint32_t localIndex = ((p2 << LOCAL_HISTORY_BITS) | dir.localHistory[p2 & (BHT_CAP - 1)]) & (BHT_CAP - 1);
   const uint32_t globalIndex = (p2 ^ dir.GHR) & (BHT_CAP - 1);
-  const uint32_t selectorIndex = (p2 ^ dir.GHR) & (SELECTOR_CAP - 1);
+  const uint32_t selectorIndex = p2 & (SELECTOR_CAP - 1);
   const bool useGlobal = dir.selector[selectorIndex] >= 2;
   const bool directionTaken = useGlobal ? dir.globalPHT[globalIndex] >= 2
-                                        : dir.localPHT[localIndex] >= 2;
+                                        : dir.localPHT[localIndex] >= 4;
   const auto BTB_index = p2 & (BTB_CAP - 1);
   bool btbHit = tgt.BTB[BTB_index].valid &&
                 tgt.BTB[BTB_index].actualPC == static_cast<uint32_t>(pc);
@@ -76,18 +77,29 @@ PredictInfo BPU::predict(uint32_t pc) const {
   return out;
 }
 
-void BPU::update(uint32_t pc, bool taken, uint32_t target, uint8_t ghr, systemState &CPUstate) const {
+DirectionContext BPU::contextAt(uint32_t pc) const {
+  const uint32_t p2 = pc >> 2;
+  const auto history = dir.localHistory[p2 & (BHT_CAP - 1)];
+  return {history,
+          dir.localPHT[((p2 << LOCAL_HISTORY_BITS) | history) & (BHT_CAP - 1)] >= 4,
+          dir.globalPHT[(p2 ^ dir.GHR) & (BHT_CAP - 1)] >= 2};
+}
+
+void BPU::update(uint32_t pc, bool taken, uint32_t target, uint8_t ghr,
+                 const DirectionContext &context, uint8_t resolvedHistory,
+                 systemState &CPUstate) const {
   const uint32_t p2 = static_cast<uint32_t>(pc) >> 2;
-  const uint32_t localIndex = p2 & (BHT_CAP - 1);
+  const uint32_t historyIndex = p2 & (BHT_CAP - 1);
+  const uint32_t localIndex = ((p2 << LOCAL_HISTORY_BITS) | context.localHistory) & (BHT_CAP - 1);
   const uint32_t globalIndex = (p2 ^ ghr) & (BHT_CAP - 1);
-  const uint32_t selectorIndex = (p2 ^ ghr) & (SELECTOR_CAP - 1);
-  const bool localPred = dir.localPHT[localIndex] >= 2;
-  const bool globalPred = dir.globalPHT[globalIndex] >= 2;
+  const uint32_t selectorIndex = p2 & (SELECTOR_CAP - 1);
+  const bool localPred = context.localPrediction;
+  const bool globalPred = context.globalPrediction;
 
   auto local = dir.localPHT[localIndex];
   auto global = dir.globalPHT[globalIndex];
   if (taken) {
-    if (local < 3)
+    if (local < 7)
       ++local;
     if (global < 3)
       ++global;
@@ -110,6 +122,8 @@ void BPU::update(uint32_t pc, bool taken, uint32_t target, uint8_t ghr, systemSt
   CPUstate.BPUModule.dir.localPHT[localIndex] = local;
   CPUstate.BPUModule.dir.globalPHT[globalIndex] = global;
   CPUstate.BPUModule.dir.selector[selectorIndex] = choice;
+  CPUstate.BPUModule.dir.localHistory[historyIndex] =
+      ((resolvedHistory << 1) | unsigned(taken)) & LOCAL_HISTORY_MASK;
   CPUstate.BPUModule.tgt.condSeen[p2 & (CONDSEEN_CAP - 1)] = true;
 
   // BTB train on taken conditional
@@ -175,6 +189,7 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
       bru.target = static_cast<uint32_t>(pcResult);
       const uint8_t cid = input.ROBModule.getCkptId(robSlot(brRobTag));
       bru.ghr = GHRCheckpoint[cid];
+      bru.context = predictionContext[cid];
     }
   }
   const auto &cdbOut = input.cdbOut;
@@ -214,7 +229,7 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
 
   auto apply = [&](const Cand &c) {
     if (c.cond)
-      update(c.pc, c.taken, c.target, c.ghr, CPUstate);
+      update(c.pc, c.taken, c.target, c.ghr, c.context, input.resolvedLocalHistory, CPUstate);
     else
       updateJump(c.pc, c.target, c.isRet, CPUstate);
   };
@@ -225,21 +240,29 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
 
   const auto &fd = input.fetchDecision;
   if (fd.valid) {
-    CPUstate.BPUModule.GHRCheckpoint[fd.ckptId] = snapshotCheckPoint();
+    for (unsigned lane = 0; lane < FETCH_WIDTH; ++lane) {
+      if (lane < fd.count) {
+        const unsigned cid = (fd.ckptId + lane) & (CKPT_CAP - 1);
+        CPUstate.BPUModule.GHRCheckpoint[cid] = snapshotCheckPoint();
+        CPUstate.BPUModule.predictionContext[cid] = input.fetchContexts[lane];
+      }
+    }
     if (fd.shift)
       shiftGHR(fd.shiftValue, CPUstate);
-    CPUstate.BPUModule.nextCkptId = (fd.ckptId + 1) & (CKPT_CAP - 1);
+    CPUstate.BPUModule.nextCkptId = (fd.ckptId + fd.count) & (CKPT_CAP - 1);
   }
   // Pre-decode scanner: RAS maintenance keyed on decoded instruction type
   // (routed from the FQ push of the PREVIOUS cycle), never on BTB hits.
   // A pop-push overwrites the old top even though depth can be unchanged.
   // Squash reconstructs CONTENTS from the old architectural stack and live
   // ROB prefix; a depth-only checkpoint cannot undo that overwrite.
-  const auto &fi = input.fetchInfo;
-  if (!input.recovery.active && fi.valid) {
+  unsigned specTop = tgt.specTopOfRAS;
+  bool trainedFetch = false;
+  for (unsigned lane = 0; lane < FETCH_WIDTH; ++lane) {
+   const auto &fi = input.fetchInfo[lane];
+   if (!input.recovery.active && fi.valid) {
     const uint32_t returnAddress = fi.pc + 4;
     if (!input.squashDetect.needSquash && (fi.isCall || fi.isRet)) {
-      auto specTop = tgt.specTopOfRAS;
       if (fi.isRet && specTop > 0) --specTop;
       if (fi.isCall && specTop < RAS_CAP) {
         CPUstate.BPUModule.tgt.specRAS[specTop] = returnAddress;
@@ -251,6 +274,7 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
     // encoding, so direct calls become perfectly predicted from their second
     // encounter without waiting for a resolve. Write only target fields;
     // conditions and indices come from the snapshot and input.
+    if (!trainedFetch) {
     const auto BTB_index = (fi.pc >> 2) & (BTB_CAP - 1);
     CPUstate.BPUModule.tgt.BTB[BTB_index].actualPC = fi.pc;
     CPUstate.BPUModule.tgt.BTB[BTB_index].valid = true;
@@ -258,6 +282,9 @@ void BPU::tick(const BPUInput &input, systemState &CPUstate) {
     CPUstate.BPUModule.tgt.BTB[BTB_index].isRet = fi.isRet;
     if (fi.jalTargetValid && !fi.isRet)
       CPUstate.BPUModule.tgt.BTB[BTB_index].target = fi.jalTarget;
+    trainedFetch = true;
+    }
+   }
   }
 
   // The committed wide word is single port: the redirect edge reads it,

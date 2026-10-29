@@ -2,21 +2,21 @@
 #include "ROB.hpp"
 #include "common.hpp"
 #include <cstdint>
-struct IssuePacket;
+struct IssueGroup;
 struct PRFEntry {
   int32_t value;
   bool ready;
 };
 struct PRFInput {
   CommitPlan commits;
-  const IssuePacket &issuePacket;
+  const IssueGroup &issuePacket;
   SquashInfo squashDetect;
   RecoveryStep recovery;
   std::array<RecoveryNarrowEntry, RECOVERY_WIDTH> replay{};
   aluCDB cdbOfALU;
   sharedCDB cdbOfShared;
   const ROB &ROBModule;
-  PRFInput(const ROB &rob, const IssuePacket &pkt)
+  PRFInput(const ROB &rob, const IssueGroup &pkt)
       : ROBModule(rob), issuePacket(pkt) {}
 };
 struct systemState;
@@ -34,6 +34,7 @@ public:
   PRF();
   bool isFreeListEmpty() const;
   PrfSeq getHeadSeq() const;
+  unsigned freeCount() const { return prfSeqDistance(headSeq, tailSeq); }
   uint8_t getFreeListSlot(PrfSeq seq) const { return freeList[prfSlot(seq)]; }
   bool isReady(int index) const;
   int32_t getValue(int index) const;
@@ -47,6 +48,19 @@ public:
   }
   int32_t getOperandValue(const Operand &op) const {
     return op.tag == InvalidPhy ? op.imm : getValue(op.tag);
+  }
+  bool isOperandReady(const Operand &op, const OperandWriteback &ports) const {
+    bool ready = isOperandReady(op);
+    for (const auto &port : ports)
+      ready |= op.tag != InvalidPhy && port.valid && port.tag == op.tag;
+    return ready;
+  }
+  int32_t getOperandValue(const Operand &op, const OperandWriteback &ports) const {
+    if (isOperandReady(op)) return getOperandValue(op);
+    for (const auto &port : ports)
+      if (port.valid && port.tag == op.tag && op.tag != InvalidPhy)
+        return port.value;
+    return getOperandValue(op);
   }
   void tick(const PRFInput &, systemState &);
 };
