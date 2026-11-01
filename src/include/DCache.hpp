@@ -44,6 +44,9 @@ struct DCacheInput {
   int8_t writeAck = -1;
   bool fillBeat = false;
   bool fillFire = false;
+  bool wordReturn = false;
+  uint8_t wordCapture = 0;
+  int8_t wordMiss = -1;
   bool acceptLookup = false;
   bool exitValid = false;
   uint32_t exitValue = 0;
@@ -97,6 +100,7 @@ class DCache {
   uint8_t selectVictim(uint32_t set) const;
   uint32_t sramRaw(int slot, int way) const;
   uint32_t memoryRaw(int slot, const AXIData &dmem) const;
+  uint32_t wordRaw(int slot, uint32_t data) const;
   uint32_t victimAddress(int miss) const;
 
 public:

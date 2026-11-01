@@ -159,7 +159,8 @@ AXIMaster AXIData::port() const {
   AXIMaster out{};
   const int rd = readIssue(), aw = writeIssue(true), wd = writeIssue(false);
   out.arValid = rd >= 0;
-  if (rd >= 0) out.arAddr = readEntry(rd).address + (readEntry(rd).issued << 2);
+  if (rd >= 0) out.arAddr = readEntry(rd).address +
+      (((readEntry(rd).startWord + readEntry(rd).issued) & (DCACHE_WORDS_PER_LINE - 1)) << 2);
   out.awValid = aw >= 0;
   if (aw >= 0) out.awAddr = writeEntry(aw).address + (writeEntry(aw).issued << 2);
   out.wValid = wd >= 0;
@@ -210,11 +211,14 @@ void AXIData::tick(const AXIDataInput &in, systemState &next) const {
   if (in.bus.rValid) {
     const int s = readCollect();
     assert(s >= 0 && in.bus.rResp == 0);
-    next.AXIDataModule.payload[readOrder[s]][readEntry(s).collected] = in.bus.rData;
+    const auto &entry = readEntry(s);
+    const uint8_t word = (entry.startWord + entry.collected) & (DCACHE_WORDS_PER_LINE - 1);
+    next.AXIDataModule.payload[readOrder[s]][word] = in.bus.rData;
+    next.AXIDataModule.wordResponse = {true, entry.address + (uint32_t(word) << 2), in.bus.rData, entry.transaction};
     next.AXIDataModule.entries[readOrder[s]].collected = readEntry(s).collected + 1;
     if (readEntry(s).collected + 1 == DCACHE_WORDS_PER_LINE)
       next.AXIDataModule.rr = (rr + 1) & 31;
-  }
+  } else next.AXIDataModule.wordResponse.valid = false;
   if (in.bus.bValid) {
     const int s = writeCollect();
     assert(s >= 0 && in.bus.bResp == 0);
@@ -227,6 +231,7 @@ void AXIData::tick(const AXIDataInput &in, systemState &next) const {
     next.AXIDataModule.readOrder[s] = readSlot;
     next.AXIDataModule.entries[readSlot].address = in.request.read.address;
     next.AXIDataModule.entries[readSlot].transaction = in.request.read.transaction;
+    next.AXIDataModule.entries[readSlot].startWord = in.request.read.startWord;
     next.AXIDataModule.entries[readSlot].issued = 0;
     next.AXIDataModule.entries[readSlot].collected = 0;
     next.AXIDataModule.rt = (rt + 1) & 31;

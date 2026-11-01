@@ -64,7 +64,7 @@ public:
 
 struct AXIDataEntry {
   uint32_t address = 0;
-  uint8_t transaction = 0, issued = 0, collected = 0, w = 0;
+  uint8_t transaction = 0, issued = 0, collected = 0, w = 0, startWord = 0;
   bool mmio = false;
 };
 struct AXIDataInput {
@@ -86,6 +86,7 @@ class AXIData {
   uint8_t rh = 0, rn = 0, wh = 0, wn = 0;
   // Epoch cursors retain the RTL's 16-row order ring, independently of credits.
   uint8_t rt = 0, wt = 0, ra = 0, rr = 0, wa = 0, wd = 0, wb = 0;
+  MemWordReply wordResponse{}; // Registered accepted R beat; visible on the next cycle.
   int readIssue() const;
   int writeIssue(bool address) const;
   int readCollect() const;
@@ -100,6 +101,7 @@ public:
   bool isReplyReady() const;
   bool isWriteReplyReady() const;
   MemReply reply() const;
+  MemWordReply wordReply() const { return wordResponse; }
   MemWriteReply writeReply() const;
   bool exitReady() const { return rn == 0 && wn == 0; }
   AXIMaster port() const;

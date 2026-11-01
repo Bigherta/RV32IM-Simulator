@@ -56,10 +56,10 @@ CPU::CPU(const Memory &mem) : CPUstate(mem) {}
 bool CPU::frontendCanRun() const {
   const uint32_t pc = FetchUnitModule.getPC();
   bool safe = !recovery.active;
-  if (!safe && FETCH_WIDTH >= 2 && !legacyHaltEnabled && ICacheModule.hit(pc)) {
-    safe = true;
-    for (unsigned lane = 0; lane < FETCH_WIDTH; ++lane)
-      if (ICacheModule.firstControl(pc + (lane << 2))) safe = false;
+  if (!safe && FETCH_WIDTH == 2 && !legacyHaltEnabled && ICacheModule.hit(pc)) {
+    // Match the actual aligned packet: at PC[2]=1 there is no second lane.
+    // Scanning PC+4 unconditionally freezes on a control in the NEXT packet.
+    safe = !ICacheModule.firstControl(pc) && !ICacheModule.secondControl(pc);
   }
   return !exitCommitted && safe;
 }
@@ -96,7 +96,7 @@ void CPU::comb() {
   if (recovery.active || exitCommitted) squashDetect.needSquash = false;
   squashDetect.pauseCommit = recovery.active || squashDetect.needSquash;
   // Load request/response and Store forwarding are functions of OLD LSQ/AGU,
-  // independent of Issue and WB grants. Resolve them before the CDB cone.
+  // independent of Issue and shared WB grants. StoreValue uses early ALU only.
   lqInput.squashDetect = sqInput.squashDetect = squashDetect;
   lqInput.executeEnabled = !recovery.active && !exitCommitted;
   const auto loadAddress = LQModule.addressBypass(
@@ -108,17 +108,6 @@ void CPU::comb() {
   dcacheInput.decision = memDispatch;
   dcacheInput.squashDetect = squashDetect;
   lqInput.decision = sqInput.decision = memDispatch;
-  for (int i = 0; i < STORERS_CAP; ++i) {
-    lqInput.storeNotifies[i] = {};
-    if (!recovery.active && !exitCommitted && !RSModule.storeValueRS[i].free &&
-        PRFModule.isOperandReady(RSModule.storeValueRS[i].data)) {
-      const auto tag = RSModule.storeValueRS[i].robTag;
-      if (!squashDetect.needSquash || ROB::isOlder(tag, squashDetect.SquashTag))
-        lqInput.storeNotifies[i] = SQModule.planDataForward(
-            memSlot(RSModule.storeValueRS[i].memIndex),
-            PRFModule.getOperandValue(RSModule.storeValueRS[i].data));
-    }
-  }
   lqInput.storeAddrNotify = {};
   if (!recovery.active && !exitCommitted && !AGUModule.isEmpty() && isStoreMem(AGUModule.headMemIndex())) {
     const auto tag = AGUModule.headRobTag();
@@ -131,28 +120,59 @@ void CPU::comb() {
   // Granted write ports and OLD dispatch precede allocation. Neither depends
   // on the new IssuePacket; this is the RTL full-RS release/reallocate path.
   cdbOfALU = aluCDB::build(ALUModule, squashDetect);
+  cdbOfALUSecond = ALU_UNITS == 2 ? aluCDB::build(ALUModule, squashDetect, 1) : aluCDB{};
+  const bool secondControl = ALUModule.headIsControl(1) &&
+      (!ALUModule.headIsControl() || ROB::isOlder(ALUModule.headRobTag(1), ALUModule.headRobTag()));
+  cdbOfALU.valid &= ROBModule.matchesTag(cdbOfALU.robTag) && (!cdbOfALU.isControl || !secondControl);
+  cdbOfALUSecond.valid &= ROBModule.matchesTag(cdbOfALUSecond.robTag) && (!cdbOfALUSecond.isControl || secondControl);
+  OperandWriteback writePorts{};
+  for (unsigned unit = 0; unit < ALU_UNITS; ++unit) {
+    const auto &grant = unit == 0 ? cdbOfALU : cdbOfALUSecond;
+    if (!recovery.active && !exitCommitted && grant.valid && !grant.isControl) {
+      const auto phy = ROBModule.getNewPhy(robSlot(grant.robTag));
+      writePorts[unit] = {phy != InvalidPhy, uint8_t(phy), grant.value};
+    }
+  }
+  sqInput.storeValue = {};
+  for (int i = 0; i < STORERS_CAP; ++i) {
+    lqInput.storeNotifies[i] = {};
+    const auto &slot = RSModule.storeValueRS[i];
+    if (!recovery.active && !exitCommitted && !slot.free &&
+        (!squashDetect.needSquash || ROB::isOlder(slot.robTag, squashDetect.SquashTag)) &&
+        PRFModule.isOperandReady(slot.data, writePorts)) {
+      const auto value = PRFModule.getOperandValue(slot.data, writePorts);
+      sqInput.storeValue[i] = {true, value};
+      lqInput.storeNotifies[i] = SQModule.planDataForward(memSlot(slot.memIndex), value);
+    }
+  }
   const auto loadResult = LQModule.resultCandidate(lqInput);
   cdbOfLQ = {int32_t(loadResult.value), loadResult.robTag, loadResult.index, loadResult.valid};
   cdbOfMul = mulCDB::build(MULModule, squashDetect);
   cdbOfDiv = divCDB::build(DIVModule, squashDetect);
   if (recovery.active) {
-    cdbOfALU.valid = false; cdbOfLQ.valid = false;
+    cdbOfALU.valid = false; cdbOfALUSecond.valid = false; cdbOfLQ.valid = false;
     cdbOfMul.valid = false; cdbOfDiv.valid = false;
   }
   const auto cdbOfShared = sharedCDB::arbitrate(cdbOfMul, cdbOfDiv, cdbOfLQ);
-  OperandWriteback writePorts{};
-  if (cdbOfALU.valid && !cdbOfALU.isControl && ROBModule.matchesTag(cdbOfALU.robTag)) {
-    const auto phy = ROBModule.getNewPhy(robSlot(cdbOfALU.robTag));
-    writePorts[0] = {phy != InvalidPhy, uint8_t(phy), cdbOfALU.value};
+  const auto cdbControl = secondControl ? cdbOfALUSecond : cdbOfALU;
+  std::array<bool, ALU_UNITS> aluAccept{};
+  for (unsigned unit = 0; unit < ALU_UNITS; ++unit) {
+    const auto &grant = unit == 0 ? cdbOfALU : cdbOfALUSecond;
+    aluInput.popReady[unit] = !recovery.active && (grant.valid ||
+        (!ALUModule.isEmpty(unit) && !ROBModule.matchesTag(ALUModule.headRobTag(unit))));
+    const bool cancelled = !ALUModule.isEmpty(unit) && squashDetect.needSquash &&
+        !ROB::isOlder(ALUModule.headRobTag(unit), squashDetect.SquashTag);
+    aluAccept[unit] = ALUModule.isEmpty(unit) || aluInput.popReady[unit] || cancelled;
   }
   if (cdbOfShared.valid && ROBModule.matchesTag(cdbOfShared.robTag)) {
     const auto phy = ROBModule.getNewPhy(robSlot(cdbOfShared.robTag));
-    writePorts[1] = {phy != InvalidPhy, uint8_t(phy), cdbOfShared.value};
+    writePorts[ALU_CDB_PORTS] = {phy != InvalidPhy, uint8_t(phy), cdbOfShared.value};
   }
   DispatchBus dispatchBus = DispatchArbiter::arbitrate(
       RSModule, ALUModule, AGUModule, BRUModule, MULModule, DIVModule,
-      PRFModule, squashDetect, cdbOfMul, cdbOfDiv, cdbOfDiv.valid, writePorts);
+      PRFModule, squashDetect, cdbOfMul, cdbOfDiv, cdbOfDiv.valid, writePorts, aluAccept);
   if (recovery.active || exitCommitted) dispatchBus = {};
+  dispatchBus.storeValue = sqInput.storeValue;
   isarbInput.dispatchBus = dispatchBus;
   aluInput.operandWriteback = bruInput.operandWriteback = aguInput.operandWriteback = writePorts;
   auto commits = ROBModule.planCommit(squashDetect, SQModule);
@@ -204,7 +224,7 @@ void CPU::comb() {
    unsigned fetchCount = 0;
    bool open = true, hasControl = false;
    for (unsigned lane = 0; lane < FETCH_WIDTH; ++lane) {
-     if (open && lane < blockRemain && FQModule.canAccept(lane + 1, decodeCount)) {
+     if (open && lane < blockRemain) {
        ++fetchCount;
        hasControl = ICacheModule.firstControl(pc + (lane << 2));
        if (hasControl) open = false;
@@ -213,7 +233,7 @@ void CPU::comb() {
    const bool predictEnabled = !canMulti || hasControl;
    const uint32_t queryPC = hasControl ? pc + ((fetchCount - 1) << 2) : pc;
    fetchDecision = FetchDecision::build(BPUModule, queryPC, squashDetect, haltSignal,
-       fetchCount != 0, memCanAccept && initialized && frontendCanRun());
+        fqReady, memCanAccept && initialized && frontendCanRun());
    fetchDecision.pc = pc;
    fetchDecision.count = fetchDecision.valid ? fetchCount : 0;
    fetchDecision.second = fetchDecision.count > 1;
@@ -257,6 +277,7 @@ void CPU::comb() {
   aluInput.squashDetect = squashDetect;
   aluInput.cdbOutput = cdbOfALU;
   aluInput.dispatch = dispatchBus.alu;
+  aluInput.dispatchSecond = dispatchBus.aluSecond;
   mulInput.squashDetect = squashDetect;
   mulInput.cdbOutput = cdbOfMul;
   mulInput.dispatch = dispatchBus.mul;
@@ -274,16 +295,19 @@ void CPU::comb() {
   robInput.squashDetect = squashDetect;
   robInput.storeCompletion = SQModule.completionBitmap();
   robInput.cdbOfALU = cdbOfALU;
+  robInput.cdbOfALUSecond = cdbOfALUSecond;
   robInput.cdbOfShared = cdbOfShared;
   prfInput.squashDetect = squashDetect;
+  prfInput.freeze = exitCommitted;
   prfInput.cdbOfALU = cdbOfALU;
+  prfInput.cdbOfALUSecond = cdbOfALUSecond;
   prfInput.cdbOfShared = cdbOfShared;
   ratInput.squashDetect = squashDetect;
   flarbInput.squashDetect = squashDetect;
-  flarbInput.cdbOut = cdbOfALU;
+  flarbInput.cdbOut = cdbControl;
   bruInput.squashDetect = squashDetect;
   bpuInput.squashDetect = squashDetect;
-  bpuInput.cdbOut = cdbOfALU;
+  bpuInput.cdbOut = cdbControl;
   for (unsigned lane = 0; lane < FETCH_WIDTH; ++lane)
     bpuInput.fetchInfo[lane] = scanJump(FQModule.getLastPush(lane));
   lqInput.cdbOutput = cdbOfLQ;
@@ -342,11 +366,11 @@ void CPU::clock() {
   AXIBusModule.tick(axiBusInput, CPUstate);
   SlaveModule.tick(slaveInput, CPUstate);
   DCacheModule.tick(dcacheInput, CPUstate);
+  PRFModule.tick(prfInput, CPUstate);
   SQModule.tick(sqInput, CPUstate);
   if (!exitCommitted) {
    ICacheModule.tick(icacheInput, CPUstate);
    LQModule.tick(lqInput, CPUstate);
-   PRFModule.tick(prfInput, CPUstate);
    BPUModule.tick(bpuInput, CPUstate);
     RATModule.tick(ratInput, CPUstate);
     if (frontendCanRun()) {

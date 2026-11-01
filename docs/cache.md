@@ -1,5 +1,13 @@
 # Cache与AXI存储层次
 
+## 2026-11-01 当前生产合同（优先于下方历史）
+
+D$8 KiB/128组/2路/32 B、4 MSHR/8请求：Load不再因同组缺失一律停止探测，可命中其他way；deferred miss仍受组锁/旧信用控制，Store保持锁约束。匹配MSHR请求行的返回word可供owner提前返回，也可写入其他旧活动Load的raw/ready，检查Store风险及字内范围。请求行数据返回不等待脏victim写完成；victim保留、完整行安装及owner/MSHR释放仍受原完整事务条件约束。AXIData关键字起始轮转、接受沿寄存字、整行单拍填充保持。两树四构建原六项全匹配正式采用第17轮，见[基线与证据](hardware-baseline-prf-microbank.md)。
+
+**2026-10-31生产RTL软件移植（本页以下旧合同均为历史）**：两软件树现将AXIData读行从owner请求word开始轮转，接受R沿保存寄存字响应、按原word位置收集整行；D$在字响应有效且身份/脏行完成/冲突/字内范围合格时提前响应Load，完整行在同一拍填充所有word bank、安装metadata并释放owner。补齐 StoreValue 非控制 ALU 旁路及真实离站复用后，原六项答案、实际退休和课程总周期全部匹配正式采用RTL，见[验收](hardware-baseline-word-production.md)。专用入口`../../sync/check_current_production_software.py`使用正式采用记录；r01四项周期差报告保留为修正前证据。
+
+**2026-10-30当前合同**：双取指默认I$2包、AXIFetch4行；D$8 KiB、4 MSHR/8请求、AXIData8信用及Slave保持。未增加critical-word或访存口。仅原六perf验收，当前状态见[基线](hardware-baseline-fetch2.md)，不将软件计时当硬件PPA。
+
 **2026-10-29当前合同**：主树已同步模板生产版8 KiB D$及空闲Load接受沿同步读，未采用critical-word部分行返回。
 下面旧阶段的“主树保持4 KiB/未同步”仅为历史；当前验证见[同步记录](tree-sync-20261029.md)。
 

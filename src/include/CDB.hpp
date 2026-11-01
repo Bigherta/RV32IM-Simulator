@@ -12,7 +12,7 @@ struct aluCDB {
   uint8_t robTag = 0;
   bool isControl = false;
   bool valid = false;
-  static aluCDB build(const ALU &alu, const SquashInfo &squash);
+  static aluCDB build(const ALU &alu, const SquashInfo &squash, unsigned unit = 0);
 };
 struct mulCDB {
   int32_t value = 0;

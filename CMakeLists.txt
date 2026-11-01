@@ -38,7 +38,7 @@ target_include_directories(code PRIVATE src/include)
 
 # Empty cache values preserve existing compiler-flag builds. Width and queue
 # capacity are separate controls; compile-time assertions check their contract.
-foreach(setting CPU_FETCH_WIDTH CPU_DECODE_WIDTH CPU_ISSUE_WIDTH CPU_RENAME_WIDTH CPU_FQ_ENTRIES CPU_IQ_ENTRIES CPU_COMMIT_WIDTH CPU_INT_RS_ENTRIES CPU_BRANCH_RS_ENTRIES CPU_FETCH_REQUEST_ENTRIES CPU_AXI_FETCH_ENTRIES CPU_BTB_ENTRIES CPU_RAS_ENTRIES)
+foreach(setting CPU_FETCH_WIDTH CPU_DECODE_WIDTH CPU_ISSUE_WIDTH CPU_RENAME_WIDTH CPU_FQ_ENTRIES CPU_IQ_ENTRIES CPU_COMMIT_WIDTH CPU_INT_RS_ENTRIES CPU_BRANCH_RS_ENTRIES CPU_FETCH_REQUEST_ENTRIES CPU_AXI_FETCH_ENTRIES CPU_BTB_ENTRIES CPU_RAS_ENTRIES CPU_ALU_UNITS CPU_ALU_CDB_PORTS)
     set(${setting} "" CACHE STRING "Optional CPU compile-time ${setting}")
     if(NOT "${${setting}}" STREQUAL "")
         if(NOT "${${setting}}" MATCHES "^[1-9][0-9]*$")

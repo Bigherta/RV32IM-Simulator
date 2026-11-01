@@ -39,7 +39,9 @@ PredictInfo BPU::predict(uint32_t pc) const {
   const uint32_t localIndex = ((p2 << LOCAL_HISTORY_BITS) | dir.localHistory[p2 & (BHT_CAP - 1)]) & (BHT_CAP - 1);
   const uint32_t globalIndex = (p2 ^ dir.GHR) & (BHT_CAP - 1);
   const uint32_t selectorIndex = p2 & (SELECTOR_CAP - 1);
-  const bool useGlobal = dir.selector[selectorIndex] >= 2;
+  const bool useGlobal = dir.selector[selectorIndex] == 3 &&
+      ((dir.globalPHT[globalIndex] == 0 || dir.globalPHT[globalIndex] == 3) ||
+       (dir.localPHT[localIndex] == 3 || dir.localPHT[localIndex] == 4));
   const bool directionTaken = useGlobal ? dir.globalPHT[globalIndex] >= 2
                                         : dir.localPHT[localIndex] >= 4;
   const auto BTB_index = p2 & (BTB_CAP - 1);

@@ -7,7 +7,6 @@
 
 PRF::PRF() {
   for (int i = 0; i < PRF_CAP; ++i) {
-    PhysicalRegs[i].value = 0;
     PhysicalRegs[i].ready = false;
   }
   // P1-P31 are bound to x1-x31 at reset (RAT[x] = Px, committed init value 0).
@@ -23,17 +22,6 @@ PRF::PRF() {
     tailSeq = prfSeqNext(tailSeq);
   }
 }
-uint8_t PRF::pop(systemState &CPUstate) const {
-  if (isFreeListEmpty())
-    throw std::runtime_error("PRF free list underflow!");
-  uint8_t phy = freeList[prfSlot(headSeq)];
-  assert(phy !=
-         InvalidPhy); // P0-dead invariant: popped tags are real registers
-  CPUstate.PRFModule.headSeq = prfSeqNext(headSeq);
-  CPUstate.PRFModule.PhysicalRegs[phy].ready = false;
-  return phy;
-}
-
 void PRF::push(int index, PrfSeq &writeTail, systemState &CPUstate) const {
   assert(index != InvalidPhy); // P0-dead invariant: only real tags are recycled
   assert(prfSeqDistance(headSeq, writeTail) <
@@ -47,33 +35,39 @@ bool PRF::isFreeListEmpty() const { return headSeq == tailSeq; }
 
 PrfSeq PRF::getHeadSeq() const { return headSeq; }
 
-bool PRF::isReady(int index) const { return PhysicalRegs[index].ready; }
-int32_t PRF::getValue(int index) const { return PhysicalRegs[index].value; }
-void PRF::write(int index, int32_t value, systemState &CPUstate) const {
-  CPUstate.PRFModule.PhysicalRegs[index].ready = true;
-  CPUstate.PRFModule.PhysicalRegs[index].value = value;
+bool PRF::isReady(int index) const { return index == 0 || PhysicalRegs[index].ready; }
+int32_t PRF::getValue(int index) const {
+  uint32_t value = 0;
+  if (index != 0) {
+    if (PhysicalRegs[index].everWritten) value = payload[index - 1].readLane(0);
+    for (const auto &port : priorWrites)
+      if (port.valid && port.phy == index) value = port.value;
+  }
+  return static_cast<int32_t>(value);
 }
 
 void PRF::tick(const PRFInput &input, systemState &CPUstate) {
-  PrfSeq writeTail = tailSeq; // Multiple recycle writes share one local cursor.
-  // 1. cdb of alu wake up prf
-  if (input.cdbOfALU.valid &&
-      input.ROBModule.matchesTag(input.cdbOfALU.robTag)) {
-    if (!input.squashDetect.needSquash ||
-        ROB::isOlder(input.cdbOfALU.robTag, input.squashDetect.SquashTag)) {
-      auto robIdx = robSlot(input.cdbOfALU.robTag);
-      auto isControl = input.cdbOfALU.isControl;
-      if (!isControl) {
-        auto value = input.cdbOfALU.value;
-        int newPhy = input.ROBModule.getNewPhy(robIdx);
-        if (newPhy != InvalidPhy) {
-          write(newPhy, value, CPUstate);
-        }
-      }
+  std::array<PRFWriteRecord, PRF_VALUE_WRITERS> writes{};
+  std::array<bool, PRF_VALUE_WRITERS> ready{};
+  for (unsigned lane = 0; lane < ISSUE_WIDTH; ++lane) {
+    const auto &p = input.issuePacket.lanes[lane];
+    if (!input.freeze && !input.squashDetect.needSquash && !input.recovery.active &&
+        lane < input.issuePacket.count && p.allocDest && p.phy != InvalidPhy) {
+      writes[lane] = {true, p.phy, p.pc + 4u};
+      ready[lane] = p.isControl;
+    }
+  }
+  for (unsigned port = 0; port < ALU_CDB_PORTS; ++port) {
+    const auto &cdb = port == 0 ? input.cdbOfALU : input.cdbOfALUSecond;
+    if (cdb.valid && input.ROBModule.matchesTag(cdb.robTag) && !cdb.isControl &&
+        !input.freeze && (!input.squashDetect.needSquash || ROB::isOlder(cdb.robTag, input.squashDetect.SquashTag))) {
+      const auto phy = input.ROBModule.getNewPhy(robSlot(cdb.robTag));
+      writes[ISSUE_WIDTH + port] = {phy != InvalidPhy, phy, uint32_t(cdb.value)};
+      ready[ISSUE_WIDTH + port] = true;
     }
   }
   // 2. Shared MUL/DIV/LQ result: exactly one physical write port.
-  if (input.cdbOfShared.valid &&
+  if (!input.freeze && input.cdbOfShared.valid &&
       input.ROBModule.matchesTag(input.cdbOfShared.robTag)) {
     if (!input.squashDetect.needSquash ||
         ROB::isOlder(input.cdbOfShared.robTag, input.squashDetect.SquashTag)) {
@@ -81,12 +75,39 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
       auto value = input.cdbOfShared.value;
       int newPhy = input.ROBModule.getNewPhy(robIdx);
       if (newPhy != InvalidPhy) {
-        write(newPhy, value, CPUstate);
+        writes[PRF_VALUE_WRITERS - 1] = {true, uint8_t(newPhy), uint32_t(value)};
+        ready[PRF_VALUE_WRITERS - 1] = true;
       }
     }
   }
-  
-  // 5. if squash, recover the PRF state to the branch instruction
+  // One 1RW SRAM per real physical register. All idle banks read every edge,
+  // including freeze; previous-edge writes bridge the unavailable SRAM rdata.
+  for (unsigned writer = 0; writer < PRF_VALUE_WRITERS; ++writer) {
+    CPUstate.PRFModule.priorWrites[writer].valid = writes[writer].valid;
+    CPUstate.PRFModule.priorWrites[writer].phy = writes[writer].phy;
+    CPUstate.PRFModule.priorWrites[writer].value = writes[writer].value;
+  }
+  for (int bank = 0; bank < PRF_CAP - 1; ++bank) {
+    SRAM<1, 32>::Input port{};
+    port.enable = true;
+    port.writeMask[0] = true;
+    bool resultReady = false;
+    for (unsigned writer = 0; writer < PRF_VALUE_WRITERS; ++writer) {
+      if (writes[writer].valid && writes[writer].phy == bank + 1) {
+        port.writeEnable = true;
+        port.writeData[0] = writes[writer].value;
+        resultReady = ready[writer];
+      }
+    }
+    payload[bank].tick(port, CPUstate.PRFModule.payload[bank]);
+    if (port.writeEnable) {
+      CPUstate.PRFModule.PhysicalRegs[bank + 1].ready = resultReady;
+      CPUstate.PRFModule.PhysicalRegs[bank + 1].everWritten = true;
+    }
+  }
+  if (!input.freeze) {
+  PrfSeq writeTail = tailSeq; // Multiple recycle writes share one local cursor.
+  // Squash recycles young destinations without clearing their payloads.
   if (input.recovery.active) {
     RobTag tag = input.recovery.nextTag;
     for (unsigned lane = 0; lane < RECOVERY_WIDTH; ++lane) {
@@ -108,8 +129,6 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
         const auto phy = freeList[prfSlot(allocatedHead)];
         assert(phy != InvalidPhy && phy == p.phy);
         allocatedHead = prfSeqNext(allocatedHead);
-        CPUstate.PRFModule.PhysicalRegs[phy].ready = false;
-        if (p.isControl) write(phy, p.pc + 4u, CPUstate);
       }
     }
     if (allocatedHead != headSeq) CPUstate.PRFModule.headSeq = allocatedHead;
@@ -125,6 +144,7 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
       if (oldPhy != InvalidPhy)
         push(oldPhy, writeTail, CPUstate);
     }
+  }
   }
   }
 }

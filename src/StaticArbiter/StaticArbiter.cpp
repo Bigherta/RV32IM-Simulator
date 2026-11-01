@@ -14,7 +14,7 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
                                        const SquashInfo &squash,
                                        const mulCDB &mulGrant,
                                        const divCDB &divGrant,
-                                        bool divOutReady, const OperandWriteback &ports) {
+                                        bool divOutReady, const OperandWriteback &ports, const std::array<bool, ALU_UNITS> &aluAccept) {
   DispatchBus dispatch;
   // ALU channel: oldest operand-ready integerRS entry (I-extension ALU ops).
   // The ALU holds a single result slot that is released in the same cycle it is
@@ -22,37 +22,31 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
   // buffer can take a new op every cycle and dispatch is never capacity-blocked.
   // Stated explicitly rather than leaning on the (always-true) invariant that an
   // occupied slot drains, so the gate still exists as hardware would have it.
-  const bool aluCanAccept =
-      !alu.isFull() ||
-      (!alu.isEmpty() &&
-        (!squash.needSquash ||
-         ROB::isOlder(alu.headRobTag(), squash.SquashTag))) ||
-      (!alu.isEmpty() && squash.needSquash &&
-       !ROB::isOlder(alu.headRobTag(), squash.SquashTag));
-  if (aluCanAccept) {
-    bool foundAny = false;
-    int best = 0;
-    uint8_t bestTag = 0;
-    for (int i = 0; i < INTEGERRS_CAP; ++i) {
-      const auto &rs_ = rs.integerRS[i];
-      if (!rs_.free && prf.isOperandReady(rs_.src1, ports) &&
-          prf.isOperandReady(rs_.src2, ports)) {
-        auto tag = rs_.robTag;
-        if (!foundAny || ROB::isOlder(tag, bestTag)) {
-          foundAny = true;
-          best = i;
-          bestTag = tag;
-        }
-      }
-    }
-    if (foundAny) {
-      dispatch.alu.rsIndex = best;
-      dispatch.alu.robTag = bestTag;
-      dispatch.alu.valid = true;
-      if (squash.needSquash && !ROB::isOlder(bestTag, squash.SquashTag))
-        dispatch.alu.valid = false;
-    }
+  std::array<bool, INTEGERRS_CAP> ready{};
+  std::array<DispatchInfo, ALU_UNITS> ranked{};
+  for (unsigned row = 0; row < INTEGERRS_CAP; ++row) {
+    const auto &entry = rs.integerRS[row];
+    ready[row] = !entry.free && prf.isOperandReady(entry.src1, ports) && prf.isOperandReady(entry.src2, ports);
   }
+  for (unsigned row = 0; row < INTEGERRS_CAP; ++row) {
+    unsigned rank = 0;
+    for (unsigned peer = 0; peer < INTEGERRS_CAP; ++peer)
+      if (ready[peer] && peer != row &&
+          (ROB::isOlder(rs.integerRS[peer].robTag, rs.integerRS[row].robTag) ||
+           (rs.integerRS[peer].robTag == rs.integerRS[row].robTag && peer < row))) ++rank;
+    for (unsigned lane = 0; lane < ALU_UNITS; ++lane)
+      if (ready[row] && rank == lane) {
+        ranked[lane].rsIndex = row;
+        ranked[lane].robTag = rs.integerRS[row].robTag;
+        ranked[lane].valid = !squash.needSquash || ROB::isOlder(ranked[lane].robTag, squash.SquashTag);
+      }
+  }
+  unsigned candidate = 0;
+  for (unsigned unit = 0; unit < ALU_UNITS; ++unit)
+    if (aluAccept[unit] && candidate < ALU_UNITS) {
+      if (unit == 0) dispatch.alu = ranked[candidate]; else dispatch.aluSecond = ranked[candidate];
+      ++candidate;
+    }
   // MUL channel: oldest operand-ready multiplyRS entry. The dedicated
   // multiply RS decouples M-ops from the integer RS shared with ALU ops,
   // so a mul-heavy stream cannot starve I-extension ALU ops of RS slots.
@@ -522,6 +516,8 @@ IssuePacket IssueArbiter::issue_Store(const IssueArbiterInput &input,
   }
   int storeAddrSlot = input.RSModule.tryAllocStoreAddress();
   int storeValueSlot = input.RSModule.tryAllocStoreValue();
+  for (int row = 0; row < STORERS_CAP; ++row)
+    if (storeValueSlot < 0 && input.dispatchBus.storeValue[row].valid) storeValueSlot = row;
   if (storeAddrSlot < 0 || storeValueSlot < 0) {
     return p;
   }
@@ -837,7 +833,10 @@ IssueGroup IssueArbiter::buildPrefix(const IssueArbiterInput &input) {
       if (rs.storeValueRS[row].free) free[6] |= 1u << row;
     }
     const auto &dispatch = input.dispatchBus;
+    for (int row = 0; row < STORERS_CAP; ++row)
+      if (dispatch.storeValue[row].valid) reuse[6] |= 1u << row;
     if (dispatch.alu.valid) reuse[0] = 1u << dispatch.alu.rsIndex;
+    if (dispatch.aluSecond.valid) reuse[0] |= 1u << dispatch.aluSecond.rsIndex;
     if (dispatch.bru.valid) reuse[3] = 1u << dispatch.bru.rsIndex;
     if (dispatch.agu.valid && dispatch.agu.rsType == RSType::Load) reuse[4] = 1u << dispatch.agu.rsIndex;
     if constexpr (ISSUE_WIDTH == 4)

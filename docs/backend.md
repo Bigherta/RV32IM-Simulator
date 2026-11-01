@@ -1,5 +1,15 @@
 # 后端：重命名、执行、写回与恢复
 
+## 2026-11-01 当前生产合同（优先于下方历史）
+
+PRF64中P0恒零，P1–P63分别使用1×32单端口同步SRAM；无写bank持续读，7条上一拍写入记录覆盖写沿读数据空窗。四分配均写PC+4（包括未ready值），年轻分配优先，三WB按端口序号覆盖；ready/everWritten独立。退出冻结时仍推进SRAM读并清除有效写历史，读操作只看旧状态。主树24 ticks＋58 const writer helpers＋CPU clock及错bank/目标读取负向检查通过；模板嵌套SRAM每拍work一次并统一sync。
+
+默认2/4/4/4、双ALU/三CDB、单AGU、ROB32/PRF64/checkpoint64；原StoreValue非控制ALU授权旁路与实际离站复用保持，MUL RS未采用同拍复用。原六项411373拍完整PRF ready/value及374104条退休PC/周期三端一致，见[第17轮基线](hardware-baseline-prf-microbank.md)。
+
+**2026-10-31当前**：补齐生产 StoreValue 的非控制 ALU 授权结果当拍旁路及真实离站槽复用；SQ/LQ/RS/Issue 共用派发事件，新分配优先。共享 CDB 不进入 StoreValue 提前旁路。两树原六 perf 答案、退休、课程周期全部匹配正式采用 RTL，见[同步验收](hardware-baseline-word-production.md)。
+
+**2026-10-30当前合同**：默认2/4/4/4，双ALU独立CDB0/1、共享Load/MUL/DIV CDB2；ROB32/PRF64/checkpoint64。双整数离站槽均可同拍复用，三授权口供Integer/Branch/Load旁路；跳转单口只消费最老控制结果。当前限定六例验收见[基线](hardware-baseline-fetch2.md)，下方单ALU/两CDB默认描述为历史。
+
 **2026-10-29当前合同**：主树已同步模板生产版多路发射、BPU、8 KiB D$及Load RS授权WB/实际离站复用。
 两树均支持独立1/2/4宽度，默认1/1/1/2；本轮验证状态见[同步记录](tree-sync-20261029.md)。
 以下2026-10-27及更早阶段的“主树不变/仍单发射”仅为历史，不描述当前源码。

@@ -1,5 +1,13 @@
 # 访存：LQ/SQ、转发与退出
 
+## 2026-11-01 当前生产合同（优先于下方历史）
+
+已同步第17轮D$：在途缺失允许同组其他way的Load命中，其他旧Load可捕获匹配的返回word；请求行数据可在脏victim写回期间提前交付。捕获检查身份、字内范围及Store风险，owner/MSHR和整行安装仍等待完整事务条件。SQ/LQ、单AGU及StoreValue非控制ALU授权事件保持；退出Store退休冻结核心后PRF仍持续读SRAM并清写历史，已提交SQ/Cache/AXI继续完成MMIO退出。六项课程周期及退休三端一致，见[第17轮基线](hardware-baseline-prf-microbank.md)。
+
+**2026-10-31当前**：AXIData关键字先读/寄存字返回、D$整行单拍填充，以及 StoreValue 非控制 ALU 当拍旁路已同步。SQ捕获/LQ通知/RS释放/Issue复用共用同一派发事件；共享Load/MUL/DIV CDB不进入此提前路径。原六项答案、退休、课程周期全匹配，见[验收](hardware-baseline-word-production.md)。
+
+**2026-10-30当前合同**：默认2/4/4/4、双ALU/三WB，Load可使用三授权口；单AGU、LQ/SQ各8、原Store/退出协议不变。仅原六perf验收，计时区间与当前状态见[基线](hardware-baseline-fetch2.md)，下方旧默认为历史。
+
 **2026-10-29当前合同**：主树已同步模板生产版Load RS授权WB/实际离站复用、1/2/4路共同分配前缀及8 KiB D$。
 下面旧阶段“主树不变/仍单宽/未移植”仅为历史；当前验证见[同步记录](tree-sync-20261029.md)。
 
