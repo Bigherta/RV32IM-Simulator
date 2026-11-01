@@ -48,6 +48,8 @@ void RSUnit::tick(const RSInput &input, systemState &CPUstate) {
     int idx = input.dispatchBus.alu.rsIndex;
     CPUstate.RSModule.integerRS[idx].free = true;
   }
+  if (input.dispatchBus.aluSecond.valid)
+    CPUstate.RSModule.integerRS[input.dispatchBus.aluSecond.rsIndex].free = true;
   if (input.dispatchBus.mul.valid) {
     int idx = input.dispatchBus.mul.rsIndex;
     CPUstate.RSModule.multiplyRS[idx].free = true;
@@ -68,11 +70,9 @@ void RSUnit::tick(const RSInput &input, systemState &CPUstate) {
     int idx = input.dispatchBus.bru.rsIndex;
     CPUstate.RSModule.branchRS[idx].free = true;
   }
-  // store value ready: the value now lives in the PRF (or is a constant);
-  // once the operand is ready the RS slot can be released
+  // Release exactly the OLD lanes accepted by SQ, including early ALU data.
   for (int i = 0; i < STORERS_CAP; i++) {
-    if (!storeValueRS[i].free &&
-        input.PRFModule.isOperandReady(storeValueRS[i].data)) {
+    if (input.dispatchBus.storeValue[i].valid) {
       CPUstate.RSModule.storeValueRS[i].free = true;
     }
   }
@@ -121,7 +121,7 @@ void RSUnit::tick(const RSInput &input, systemState &CPUstate) {
       }
     }
   }
-  // Allocation has final priority over release. Integer/Branch/Load pools
+  // Allocation has final priority over release. Integer/Branch/Load/StoreValue pools
   // may reuse only the OLD slot actually accepted by its execution unit.
   for (unsigned lane = 0; lane < ISSUE_WIDTH; ++lane) {
    const auto &p = input.issuePacket.lanes[lane];

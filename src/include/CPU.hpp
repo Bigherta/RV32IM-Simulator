@@ -92,6 +92,7 @@ private:
   AXIBusInput axiBusInput{};
   AXIMaster slaveInput{};
   aluCDB cdbOfALU;
+  aluCDB cdbOfALUSecond;
   // Source-specific acknowledgements for the single shared CDB1.
   lqCDB cdbOfLQ;
   mulCDB cdbOfMul;

@@ -147,6 +147,14 @@ uint32_t DCache::memoryRaw(int slot, const AXIData &dmem) const {
   return raw;
 }
 
+uint32_t DCache::wordRaw(int slot, uint32_t data) const {
+  const auto &request = RequestBuffer[slot].request;
+  const uint32_t shifted = data >> ((request.address & 3u) << 3);
+  if (request.nBytes == 1) return shifted & 0xffu;
+  if (request.nBytes == 2) return shifted & 0xffffu;
+  return shifted;
+}
+
 void DCache::plan(DCacheInput &input) const {
   input.lookup = input.response = input.store = -1;
   input.mergeSlot = input.mergeMiss = input.allocate = input.fillMiss = input.writeAck = -1;
@@ -196,7 +204,34 @@ void DCache::plan(DCacheInput &input) const {
   const bool early = input.fillBeat &&
       RequestBuffer[fillOwner].request.op == Operation::Load &&
       !misses[input.fillMiss].responded;
+  const auto word = dmem.wordReply();
+  input.wordMiss = word.transaction;
+  const auto &wordMiss = misses[input.wordMiss];
+  const int wordOwner = wordMiss.owner;
+  const auto &wordRequest = RequestBuffer[wordOwner].request;
+  input.wordReturn = word.valid && !early && wordMiss.valid && wordMiss.readSent &&
+      !wordMiss.responded && RequestBuffer[wordOwner].active &&
+      wordRequest.op == Operation::Load && !storeHazard(wordOwner, false) &&
+      (word.address >> DCACHE_OFFSET_BITS) == (wordMiss.line >> DCACHE_OFFSET_BITS) &&
+      ((word.address & DCACHE_OFFSET_MASK) >> 2) ==
+          ((wordRequest.address & DCACHE_OFFSET_MASK) >> 2) &&
+      (wordRequest.address & 3u) + wordRequest.nBytes <= 4;
+  // Requested-line words do not depend on the retained dirty victim. Other
+  // old loads capture their matching beat, including arrivals after owner reply.
+  const bool captureValid = word.valid && wordMiss.valid && wordMiss.readSent &&
+      wordRequest.op == Operation::Load &&
+      (word.address >> DCACHE_OFFSET_BITS) == (wordMiss.line >> DCACHE_OFFSET_BITS);
+  input.wordCapture = 0;
+  for (int slot = 0; slot < REQUEST_CAP; ++slot) {
+    const auto &entry = RequestBuffer[slot];
+    if (captureValid && slot != wordOwner && entry.active && !entry.ready &&
+        entry.request.op == Operation::Load && !storeHazard(slot, true) &&
+        (entry.request.address >> 2) == (word.address >> 2) &&
+        (entry.request.address & 3u) + entry.request.nBytes <= 4)
+      input.wordCapture |= static_cast<uint8_t>(1u << slot);
+  }
   if (early) input.response = fillOwner;
+  else if (input.wordReturn) input.response = wordOwner;
   else {
     uint8_t ready = 0;
     for (int slot = 0; slot < REQUEST_CAP; ++slot)
@@ -209,6 +244,7 @@ void DCache::plan(DCacheInput &input) const {
   if (input.response >= 0) {
     const auto &entry = RequestBuffer[input.response];
     const uint32_t raw = early ? memoryRaw(input.response, dmem)
+        : input.wordReturn ? wordRaw(input.response, word.data)
         : (readValid && readIndex == input.response && way >= 0)
             ? input.readHitRaw : rawPayload[input.response];
     if (!entry.cancelled && (!input.squashDetect.needSquash ||
@@ -261,10 +297,11 @@ void DCache::plan(DCacheInput &input) const {
       if (!entry.active || (readValid && readIndex == slot) ||
           entry.ready || entry.miss >= 0 || slot == input.mergeSlot ||
           entry.request.address == AXI_EXIT_ADDR ||
-          setLocked(entry.request.address) || storeHazard(slot, false)) continue;
+           (entry.request.op == Operation::Store && setLocked(entry.request.address)) ||
+           storeHazard(slot, false)) continue;
       if (findMiss(entry.request.address & ~DCACHE_OFFSET_MASK) >= 0) continue;
       if (entry.request.op == Operation::Store && slot != first) continue;
-      if (entry.deferred && (slot != first || freeMiss() < 0)) continue;
+       if (entry.deferred && (slot != first || freeMiss() < 0 || setLocked(entry.request.address))) continue;
       if (!anyMiss && slot != first && slot != lookupFirst) continue;
       eligible |= static_cast<uint8_t>(1u << slot);
     }
@@ -287,6 +324,8 @@ void DCache::plan(DCacheInput &input) const {
     input.memoryRequest.readValid = true;
     input.memoryRequest.read.address = misses[read].line;
     input.memoryRequest.read.transaction = read;
+    input.memoryRequest.read.startWord =
+        (RequestBuffer[misses[read].owner].request.address & DCACHE_OFFSET_MASK) >> 2;
   }
   if (write >= 0 && dmem.canAcceptWrite()) {
     input.memoryRequest.writeValid = true;
@@ -380,7 +419,7 @@ void DCache::tick(const DCacheInput &input, systemState &CPUstate) {
   }
   const int fillOwner = input.fillMiss >= 0 ? misses[input.fillMiss].owner : -1;
   uint8_t released = 0;
-  if (input.response >= 0 && input.response != fillOwner)
+  if (input.response >= 0 && input.response != fillOwner && !input.wordReturn)
     released |= static_cast<uint8_t>(1u << input.response);
   if (input.store >= 0) released |= static_cast<uint8_t>(1u << input.store);
   if (input.fillFire) released |= static_cast<uint8_t>(1u << fillOwner);
@@ -414,7 +453,12 @@ void DCache::tick(const DCacheInput &input, systemState &CPUstate) {
         const bool mergedReady = firstFill &&
             RequestBuffer[fillOwner].request.op == Operation::Load &&
             entry.miss == input.fillMiss && slot != fillOwner;
-        if (mergedReady) {
+         if (input.wordCapture & (1u << slot)) {
+           CPUstate.DCacheModule.rawPayload[slot] = wordRaw(slot, input.DMEMModule.wordReply().data);
+           CPUstate.DCacheModule.RequestBuffer[slot].ready = true;
+           CPUstate.DCacheModule.RequestBuffer[slot].deferred = false;
+           CPUstate.DCacheModule.RequestBuffer[slot].miss = -1;
+         } else if (mergedReady) {
           CPUstate.DCacheModule.rawPayload[slot] = memoryRaw(slot, input.DMEMModule);
           CPUstate.DCacheModule.RequestBuffer[slot].ready = true;
           CPUstate.DCacheModule.RequestBuffer[slot].deferred = false;
@@ -429,7 +473,7 @@ void DCache::tick(const DCacheInput &input, systemState &CPUstate) {
             CPUstate.DCacheModule.RequestBuffer[slot].deferred = input.allocate < 0;
           }
         }
-        if (input.mergeSlot == slot) {
+         if (input.mergeSlot == slot && !(input.wordCapture & (1u << slot))) {
           CPUstate.DCacheModule.RequestBuffer[slot].miss = input.mergeMiss;
           CPUstate.DCacheModule.RequestBuffer[slot].deferred = false;
         }
@@ -480,6 +524,8 @@ void DCache::tick(const DCacheInput &input, systemState &CPUstate) {
       if (input.fillMiss == m && input.fillBeat)
         CPUstate.DCacheModule.misses[m].fillWord = misses[m].fillWord + DCACHE_FILL_WORDS_PER_BEAT;
       if (input.fillMiss == m && input.response == misses[m].owner)
+        CPUstate.DCacheModule.misses[m].responded = true;
+      if (input.wordReturn && input.wordMiss == m)
         CPUstate.DCacheModule.misses[m].responded = true;
     }
   }

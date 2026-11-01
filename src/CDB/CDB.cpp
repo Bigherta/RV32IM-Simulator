@@ -7,15 +7,15 @@
 #include "../include/common.hpp"
 #include <cstdint>
 
-aluCDB aluCDB::build(const ALU &alu, const SquashInfo &squash) {
+aluCDB aluCDB::build(const ALU &alu, const SquashInfo &squash, unsigned unit) {
   aluCDB alucdb{};
-  if (!alu.isEmpty()) {
-    uint8_t tag = alu.headRobTag();
+  if (!alu.isEmpty(unit)) {
+    uint8_t tag = alu.headRobTag(unit);
     if (!squash.needSquash || ROB::isOlder(tag, squash.SquashTag)) {
       alucdb.valid = true;
-      alucdb.value = static_cast<int32_t>(alu.headValue());
+      alucdb.value = static_cast<int32_t>(alu.headValue(unit));
       alucdb.robTag = tag;
-      alucdb.isControl = alu.headIsControl();
+      alucdb.isControl = alu.headIsControl(unit);
     }
   }
   return alucdb;

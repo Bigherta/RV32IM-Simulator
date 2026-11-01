@@ -31,7 +31,7 @@ public:
                                const BRU &bru, const MUL &mul, const DIV &div,
                                const PRF &prf, const SquashInfo &squash,
                                const mulCDB &mulGrant, const divCDB &divGrant,
-                                bool divOutReady, const OperandWriteback &ports = {});
+                                bool divOutReady, const OperandWriteback &ports, const std::array<bool, ALU_UNITS> &aluAccept);
 };
 
 // Named MemArbiter (was MemRequestArbiter) to match the template tree file

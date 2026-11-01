@@ -1,19 +1,28 @@
 #pragma once
 #include "ROB.hpp"
+#include "SRAM.hpp"
 #include "common.hpp"
 #include <cstdint>
 struct IssueGroup;
 struct PRFEntry {
-  int32_t value;
   bool ready;
+  bool everWritten = false;
+};
+constexpr unsigned PRF_VALUE_WRITERS = ISSUE_WIDTH + WRITEBACK_PORTS;
+struct PRFWriteRecord {
+  bool valid = false;
+  uint8_t phy = 0;
+  uint32_t value = 0;
 };
 struct PRFInput {
+  bool freeze = false;
   CommitPlan commits;
   const IssueGroup &issuePacket;
   SquashInfo squashDetect;
   RecoveryStep recovery;
   std::array<RecoveryNarrowEntry, RECOVERY_WIDTH> replay{};
   aluCDB cdbOfALU;
+  aluCDB cdbOfALUSecond;
   sharedCDB cdbOfShared;
   const ROB &ROBModule;
   PRFInput(const ROB &rob, const IssueGroup &pkt)
@@ -23,12 +32,12 @@ struct systemState;
 class PRF {
 private:
   PRFEntry PhysicalRegs[PRF_CAP];
+  SRAM<1, 32> payload[PRF_CAP - 1]; // P0 has no storage bank.
+  std::array<PRFWriteRecord, PRF_VALUE_WRITERS> priorWrites{};
   uint8_t freeList[PRF_CAP];
   PrfSeq headSeq = 0;
   PrfSeq tailSeq = 0;
-  uint8_t pop(systemState &CPUstate) const;
   void push(int index, PrfSeq &writeTail, systemState &CPUstate) const;
-  void write(int index, int32_t value, systemState &CPUstate) const;
 
 public:
   PRF();

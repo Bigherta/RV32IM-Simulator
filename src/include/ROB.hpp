@@ -33,6 +33,7 @@ struct ROBInput {
   CommitPlan commits;
   SquashInfo squashDetect;
   aluCDB cdbOfALU;
+  aluCDB cdbOfALUSecond;
   sharedCDB cdbOfShared;
   const BRU &BRUModule;
   StoreCompletion storeCompletion;

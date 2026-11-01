@@ -14,7 +14,7 @@ using RobTag = uint8_t;
 #ifdef CPU_RENAME_WIDTH
 #define CPU_ISSUE_WIDTH CPU_RENAME_WIDTH
 #else
-#define CPU_ISSUE_WIDTH 1
+#define CPU_ISSUE_WIDTH 4
 #endif
 #endif
 #ifndef CPU_RENAME_WIDTH
@@ -24,26 +24,38 @@ static_assert(CPU_ISSUE_WIDTH == CPU_RENAME_WIDTH, "conflicting issue/rename wid
 constexpr unsigned ISSUE_WIDTH = CPU_ISSUE_WIDTH;
 static_assert(ISSUE_WIDTH == 1 || ISSUE_WIDTH == 2 || ISSUE_WIDTH == 4);
 #ifndef CPU_FETCH_WIDTH
-#define CPU_FETCH_WIDTH 1
+#define CPU_FETCH_WIDTH 2
 #endif
 constexpr unsigned FETCH_WIDTH = CPU_FETCH_WIDTH;
 static_assert(FETCH_WIDTH == 1 || FETCH_WIDTH == 2 || FETCH_WIDTH == 4);
 #ifndef CPU_DECODE_WIDTH
-#define CPU_DECODE_WIDTH 1
+#define CPU_DECODE_WIDTH 4
 #endif
 constexpr unsigned DECODE_WIDTH = CPU_DECODE_WIDTH;
 static_assert(DECODE_WIDTH == 1 || DECODE_WIDTH == 2 || DECODE_WIDTH == 4);
 #ifndef CPU_FQ_ENTRIES
-#define CPU_FQ_ENTRIES (CPU_FETCH_WIDTH << 1)
+#define CPU_FQ_ENTRIES (CPU_DECODE_WIDTH << 1)
 #endif
 #ifndef CPU_IQ_ENTRIES
 #define CPU_IQ_ENTRIES (CPU_DECODE_WIDTH << 1)
 #endif
 #ifndef CPU_COMMIT_WIDTH
-#define CPU_COMMIT_WIDTH 2
+#define CPU_COMMIT_WIDTH 4
 #endif
 constexpr unsigned COMMIT_WIDTH = CPU_COMMIT_WIDTH;
 static_assert(COMMIT_WIDTH == 1 || COMMIT_WIDTH == 2 || COMMIT_WIDTH == 4);
+#ifndef CPU_ALU_UNITS
+#define CPU_ALU_UNITS 2
+#endif
+#ifndef CPU_ALU_CDB_PORTS
+#define CPU_ALU_CDB_PORTS 2
+#endif
+constexpr unsigned ALU_UNITS = CPU_ALU_UNITS;
+constexpr unsigned ALU_CDB_PORTS = CPU_ALU_CDB_PORTS;
+constexpr unsigned WRITEBACK_PORTS = ALU_CDB_PORTS + 1;
+static_assert(ALU_UNITS == 1 || ALU_UNITS == 2);
+static_assert(ALU_CDB_PORTS == ALU_UNITS, "Independent per-ALU CDB baseline");
+static_assert(ALU_UNITS != 2 || ISSUE_WIDTH == 4);
 // Accepted, head-ordered retirement prefix, computed only from old state.
 struct CommitPlan {
   unsigned count = 0;
@@ -218,7 +230,7 @@ struct OperandWritePort {
   uint8_t tag = 0;
   int32_t value = 0;
 };
-using OperandWriteback = std::array<OperandWritePort, 2>;
+using OperandWriteback = std::array<OperandWritePort, WRITEBACK_PORTS>;
 #ifndef CPU_AXI_FETCH_ENTRIES
 #define CPU_AXI_FETCH_ENTRIES 4
 #endif
@@ -334,14 +346,14 @@ constexpr int DCACHE_CAPACITY_BYTES = DCACHE_BLOCK_CAP <<
 constexpr int DCACHE_TAG_SHIFT = DCACHE_OFFSET_BITS + DCACHE_INDEX_BITS;
 constexpr int DCACHE_TAG_WIDTH = RV32_WORD_BITS - DCACHE_TAG_SHIFT;
 constexpr int DCACHE_LINE_BITS = DCACHE_BLOCK_CAP << 3;
-// Data array is banked by RV32 word. A refill beat writes two adjacent
-// 32-bit banks (64 bits); lookup still reads all banks in parallel.
+// Each word has its own SRAM bank; a completed AXI line fills all banks
+// together, as in the adopted production DCache.
 constexpr int DCACHE_WORDS_PER_LINE =
     DCACHE_BLOCK_CAP >> RV32_WORD_BYTE_BITS;
 constexpr int DCACHE_WORD_INDEX_BITS =
     DCACHE_WORDS_PER_LINE > 1
         ? std::bit_width(static_cast<uint32_t>(DCACHE_WORDS_PER_LINE - 1)) : 1;
-constexpr int DCACHE_FILL_WORDS_PER_BEAT = DCACHE_WORDS_PER_LINE > 1 ? 2 : 1;
+constexpr int DCACHE_FILL_WORDS_PER_BEAT = DCACHE_WORDS_PER_LINE;
 static_assert(DCACHE_WORDS_PER_LINE > 0 &&
                   std::has_single_bit(static_cast<uint32_t>(DCACHE_WORDS_PER_LINE)),
               "DCache line size must hold a whole number of RV32 words");
@@ -513,6 +525,7 @@ struct ReadRequest {
   int remainCycle = 0;
   uint32_t address = 0;
   uint8_t transaction = 0; // MSHR identity, held until the reply is consumed.
+  uint8_t startWord = 0;
 };
 struct WriteRequest {
   int remainCycle = 0;
@@ -531,6 +544,11 @@ struct DMEMRequest { // Two request intents compete for one shared queue's credi
 struct MemReply {
   uint8_t lineData[DCACHE_BLOCK_CAP] = {};
   uint32_t address = 0;
+  uint8_t transaction = 0;
+};
+struct MemWordReply {
+  bool valid = false;
+  uint32_t address = 0, data = 0;
   uint8_t transaction = 0;
 };
 struct MemWriteReply {
@@ -610,9 +628,16 @@ struct DispatchAGUInfo {
   uint8_t robTag = 0;
   RSType rsType = RSType::Integer;
 };
+struct StoreValueDispatch {
+  bool valid = false;
+  int32_t value = 0;
+};
+using StoreValueDispatches = std::array<StoreValueDispatch, STORERS_CAP>;
 struct DispatchBus {
+  DispatchInfo aluSecond;
   DispatchInfo alu, bru, mul, div;
   DispatchAGUInfo agu;
+  StoreValueDispatches storeValue{};
 };
 class ROB;
 class PRF;

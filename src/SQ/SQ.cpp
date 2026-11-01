@@ -245,17 +245,14 @@ void SQ::tick(const SQInput &input, systemState &CPUstate) {
     }
   }
   if (allocated != 0) CPUstate.SQModule.tail = (tail + allocated) & SQ_SEQ_MASK;
-  // store value ready: write the value from the PRF (RS owns the slot,
-  // it frees it in its own tick)
+  // The same accepted OLD StoreValue event releases RS and supplies LQ.
   for (int i = 0; i < STORERS_CAP; ++i) {
-    if (input.executeEnabled && !input.RSModule.storeValueRS[i].free &&
-        input.PRFModule.isOperandReady(input.RSModule.storeValueRS[i].data)) {
+    if (input.executeEnabled && input.storeValue[i].valid) {
       uint8_t SeqTag = input.RSModule.storeValueRS[i].robTag;
       if (!input.squashDetect.needSquash ||
           (input.squashDetect.needSquash &&
            ROB::isOlder(SeqTag, input.squashDetect.SquashTag))) {
-        writeValue(input.PRFModule.getOperandValue(
-                       input.RSModule.storeValueRS[i].data),
+        writeValue(input.storeValue[i].value,
                    memSlot(input.RSModule.storeValueRS[i].memIndex), CPUstate);
       }
     }

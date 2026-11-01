@@ -194,12 +194,9 @@ void ROB::tick(const ROBInput &input, systemState &CPUstate) {
       readySetMask |= oneHot;
   }
   // CDB set ROB ready (dual)
-  if (input.cdbOfALU.valid) {
-    if (!input.squashDetect.needSquash ||
-        ROB::isOlder(input.cdbOfALU.robTag, input.squashDetect.SquashTag)) {
-      markReady(input.cdbOfALU.robTag);
-    }
-  }
+  for (const auto &cdb : {input.cdbOfALU, input.cdbOfALUSecond})
+    if (cdb.valid && (!input.squashDetect.needSquash || ROB::isOlder(cdb.robTag, input.squashDetect.SquashTag)))
+      markReady(cdb.robTag);
   if (input.cdbOfShared.valid) {
     if (!input.squashDetect.needSquash ||
         ROB::isOlder(input.cdbOfShared.robTag, input.squashDetect.SquashTag)) {

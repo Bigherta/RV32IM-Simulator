@@ -27,6 +27,7 @@ struct SQEntry {
   bool isCommitted = false;
 };
 struct SQInput {
+  StoreValueDispatches storeValue{};
   CommitPlan commits;
   bool retireEnabled = true;
   bool executeEnabled = true;

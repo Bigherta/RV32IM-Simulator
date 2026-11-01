@@ -1,10 +1,6 @@
-# Benchmarks
+# 课程用例与历史黄金表
 
-## 当前两软件golden：主树同步模板生产版（2026-10-29）
-
-默认fetch/decode/issue/commit=1/1/1/2，Tournament预测时上下文、8 KiB D$、接受沿同步读及Load RS授权WB/离站复用。
-本轮两树Release优化＋断言普通入口25/25结果、独立课程退休数、init/core/drain/total精确相等，严格匹配模板原实测表。
-不继承历史RTL逐拍或PPA结论；多宽度验证和外部报告位置见[同步记录](tree-sync-20261029.md)。
+下表为旧默认配置的黄金数据。不用它校验本提交的四路分配周期，各项指标只适用于表中对应版本。
 
 | case | result | cycles | retired | core | drain |
 | --- | ---: | ---: | ---: | ---: | ---: |
