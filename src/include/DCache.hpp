@@ -37,6 +37,9 @@ struct DCacheInput {
   int8_t lookupCandidate = -1;
   int8_t response = -1;
   int8_t store = -1;
+  int8_t hitLocationTrain = -1;
+  bool storeHintFire = false;
+  uint8_t storeHintWay = 0;
   int8_t mergeSlot = -1;
   int8_t mergeMiss = -1;
   int8_t allocate = -1;
@@ -71,6 +74,11 @@ class DCache {
   SRAM<NUM_OF_DCACHE_SETS, DCACHE_META_BITS> metadata[NUM_OF_DCACHE_WAYS];
   bool validBits[NUM_OF_DCACHE_SETS][NUM_OF_DCACHE_WAYS]{};
   uint8_t plru[NUM_OF_DCACHE_SETS]{};
+  // Two exact locations learned from synchronous Load hits; no data payload.
+  bool hitLocationValid[4]{};
+  uint32_t hitLocationLine[4]{};
+  uint8_t hitLocationWay[4]{};
+  uint8_t hitLocationVictim = 0;
   DCachePark RequestBuffer[REQUEST_CAP]{};
   DCacheMiss misses[DCACHE_MSHR_CAP]{};
   uint32_t rawPayload[REQUEST_CAP]{};

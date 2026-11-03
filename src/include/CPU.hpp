@@ -60,6 +60,7 @@ class CPU {
 private:
   void clock(); // Commit all module updates from the same old snapshot.
   bool frontendCanRun() const;
+  bool frontendResponseCanRun() const;
   systemState CPUstate;
   RSUnit RSModule;
   RAT RATModule;

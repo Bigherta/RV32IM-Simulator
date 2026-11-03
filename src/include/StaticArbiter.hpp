@@ -90,6 +90,8 @@ struct IssueArbiterInput {
   const PRF &PRFModule;
   const LQ &LQModule;
   const SQ &SQModule;
+  const InstructBuffer *wholeGroupFQ = nullptr;
+  unsigned wholeGroupCount = 0;
   SquashInfo squashDetect;
   DispatchBus dispatchBus;
   IssueArbiterInput(const DecodeUnit &DecodeUnitModule, const ROB &ROBModule,

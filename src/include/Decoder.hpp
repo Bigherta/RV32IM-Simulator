@@ -48,6 +48,7 @@ struct IssueGroup;
 struct DecodeInput {
   SquashInfo squashDetect;
   unsigned decodeCount = 0;
+  bool bypassIQPop = false;
   const InstructBuffer &FQModule;
   const IssueGroup &issuePacket;
   DecodeInput(const InstructBuffer &fq, const IssueGroup &pkt)

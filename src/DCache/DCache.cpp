@@ -159,9 +159,7 @@ void DCache::plan(DCacheInput &input) const {
   input.lookup = input.response = input.store = -1;
   input.mergeSlot = input.mergeMiss = input.allocate = input.fillMiss = input.writeAck = -1;
   input.fillBeat = input.fillFire = false;
-  input.acceptLookup = count == 0 && !readValid && input.decision.valid &&
-      input.decision.request.op == Operation::Load &&
-      input.decision.request.address != AXI_EXIT_ADDR;
+  input.acceptLookup = false;
   input.exitValid = false;
   input.exitValue = 0;
   input.loadResp = {};
@@ -173,6 +171,25 @@ void DCache::plan(DCacheInput &input) const {
   const int first = oldestRequest(active);
   const int way = hitWay();
   input.readHitRaw = readValid && way >= 0 ? sramRaw(readIndex, way) : 0;
+  input.hitLocationTrain = -1;
+  if (readValid && way >= 0 && RequestBuffer[readIndex].request.op == Operation::Load) {
+    uint8_t selected = hitLocationVictim;
+    // Lowest invalid row first, then cyclic replacement after training.
+    for (int h = 3; h >= 0; --h)
+      if (!hitLocationValid[h]) selected = h;
+    for (int h = 0; h < 4; ++h)
+      if (hitLocationValid[h] && hitLocationLine[h] ==
+          (RequestBuffer[readIndex].request.address >> DCACHE_OFFSET_BITS)) selected = h;
+    input.hitLocationTrain = selected;
+  }
+  bool storeHintMatch = false;
+  input.storeHintWay = 0;
+  for (int h = 0; h < 4; ++h)
+    if (first >= 0 && hitLocationValid[h] && hitLocationLine[h] ==
+        (RequestBuffer[first].request.address >> DCACHE_OFFSET_BITS)) {
+      storeHintMatch = true;
+      input.storeHintWay = hitLocationWay[h];
+    }
   if (first >= 0 && RequestBuffer[first].request.address == AXI_EXIT_ADDR &&
       RequestBuffer[first].request.op == Operation::Store && dmem.exitReady()) {
     assert(RequestBuffer[first].request.nBytes == 4);
@@ -252,9 +269,17 @@ void DCache::plan(DCacheInput &input) const {
       input.loadResp = {true, entry.request.memIndex, entry.request.robTag, int32_t(raw)};
   }
 
+  input.storeHintFire = !input.fillBeat && first >= 0 &&
+      RequestBuffer[first].request.op == Operation::Store &&
+      RequestBuffer[first].request.address != AXI_EXIT_ADDR &&
+      !RequestBuffer[first].ready && RequestBuffer[first].miss < 0 &&
+      !RequestBuffer[first].deferred && storeHintMatch &&
+      !setLocked(RequestBuffer[first].request.address) &&
+      (!readValid || (way >= 0 && RequestBuffer[readIndex].request.op == Operation::Load &&
+                     input.response == readIndex));
   if (!input.fillBeat && first >= 0 && RequestBuffer[first].request.op == Operation::Store &&
       !setLocked(RequestBuffer[first].request.address) &&
-      (RequestBuffer[first].ready || (readValid && readIndex == first && way >= 0)))
+      (input.storeHintFire || RequestBuffer[first].ready || (readValid && readIndex == first && way >= 0)))
     input.store = first;
 
   // Classify only real synchronous lookup results. A deferred miss rechecks
@@ -310,6 +335,27 @@ void DCache::plan(DCacheInput &input) const {
       input.lookup = input.lookupCandidate;
   }
 
+  // An accepted Load can use an otherwise idle synchronous read edge while
+  // older requests remain queued. Every old Store is checked conservatively
+  // by line; exit MMIO and locked sets cannot be bypassed on this path.
+  bool queuedStoreConflict = false;
+  for (int slot = 0; slot < REQUEST_CAP; ++slot) {
+    const auto &entry = RequestBuffer[slot];
+    if (entry.active && entry.request.op == Operation::Store &&
+        ((entry.request.address >> DCACHE_OFFSET_BITS) ==
+             (input.decision.request.address >> DCACHE_OFFSET_BITS) ||
+         entry.request.address == AXI_EXIT_ADDR)) queuedStoreConflict = true;
+  }
+  const bool readEdgeAvailable = !readValid ||
+      (way >= 0 && RequestBuffer[readIndex].request.op == Operation::Load &&
+       input.response == readIndex);
+  input.acceptLookup = input.decision.valid && count < REQUEST_CAP &&
+      !queuedStoreConflict && readEdgeAvailable && input.lookup < 0 &&
+      !input.fillBeat && input.store < 0 &&
+      input.decision.request.op == Operation::Load &&
+      input.decision.request.address != AXI_EXIT_ADDR &&
+      !setLocked(input.decision.request.address);
+
   uint8_t readable = 0, writable = 0;
   for (int m = 0; m < DCACHE_MSHR_CAP; ++m) {
     if (misses[m].valid) {
@@ -337,7 +383,7 @@ void DCache::plan(DCacheInput &input) const {
 
   auto &data = input.InputDCacheDataSRAMInput;
   auto &meta = input.InputDCacheMetadataSRAMInput;
-  const uint32_t lookupAddress = count == 0 ? input.decision.request.address :
+  const uint32_t lookupAddress = input.acceptLookup ? input.decision.request.address :
       RequestBuffer[unsigned(input.lookupCandidate) & (REQUEST_CAP - 1)].request.address;
   const uint32_t lookupSet = (lookupAddress >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
   for (int w = 0; w < NUM_OF_DCACHE_WAYS; ++w) {
@@ -376,7 +422,8 @@ void DCache::plan(DCacheInput &input) const {
   } else if (input.store >= 0) {
     const auto &entry = RequestBuffer[input.store];
     const auto &request = entry.request;
-    const int w = readValid && readIndex == input.store && way >= 0 ? way : entry.way;
+    const int w = input.storeHintFire ? input.storeHintWay :
+        readValid && readIndex == input.store && way >= 0 ? way : entry.way;
     const uint32_t set = (request.address >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK;
     for (int byte = 0; byte < 4; ++byte) {
       if (byte < request.nBytes && request.address + byte < MEM_SIZE) {
@@ -431,6 +478,18 @@ void DCache::tick(const DCacheInput &input, systemState &CPUstate) {
   const uint32_t readSet = readValid
       ? (RequestBuffer[readIndex].request.address >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK : 0;
   const uint8_t victimWay = readValid && hit < 0 ? selectVictim(readSet) : 0;
+
+  for (int h = 0; h < 4; ++h) {
+    if (input.hitLocationTrain == h) {
+      CPUstate.DCacheModule.hitLocationValid[h] = true;
+      CPUstate.DCacheModule.hitLocationLine[h] = RequestBuffer[readIndex].request.address >> DCACHE_OFFSET_BITS;
+      CPUstate.DCacheModule.hitLocationWay[h] = hit;
+    } else if (input.allocate >= 0 && (hitLocationLine[h] & DCACHE_INDEX_MASK) == readSet) {
+      CPUstate.DCacheModule.hitLocationValid[h] = false;
+    }
+  }
+  if (input.hitLocationTrain >= 0)
+    CPUstate.DCacheModule.hitLocationVictim = (input.hitLocationTrain + 1) & 3;
 
   for (int slot = 0; slot < REQUEST_CAP; ++slot) {
     if (slot == allocation) {
@@ -536,6 +595,8 @@ void DCache::tick(const DCacheInput &input, systemState &CPUstate) {
   for (int set = 0; set < NUM_OF_DCACHE_SETS; ++set) {
     if (input.fillFire && set == int((misses[input.fillMiss].line >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK))
       CPUstate.DCacheModule.plru[set] = dcachePlruTouch(plru[set], misses[input.fillMiss].way);
+    else if (input.storeHintFire && set == int((RequestBuffer[input.store].request.address >> DCACHE_OFFSET_BITS) & DCACHE_INDEX_MASK))
+      CPUstate.DCacheModule.plru[set] = dcachePlruTouch(plru[set], input.storeHintWay);
     else if (readValid && hit >= 0 && set == int(readSet))
       CPUstate.DCacheModule.plru[set] = dcachePlruTouch(plru[set], hit);
     for (int w = 0; w < NUM_OF_DCACHE_WAYS; ++w) {

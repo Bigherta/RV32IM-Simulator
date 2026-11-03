@@ -183,7 +183,7 @@ LoadResultCandidate LQ::resultCandidate(const LQInput &input) const {
   if (response.valid && matchesAddress(index, response.robTag) &&
       row.valueState == ValueState::FETCHING && !row.isCDBBroadcast &&
       (!input.squashDetect.needSquash || ROB::isOlder(response.robTag, input.squashDetect.SquashTag))) {
-    bool forwardPriority = notifyMatches(input.storeAddrNotify, index);
+    bool forwardPriority = false;
     for (int lane = 0; lane < STORERS_CAP; ++lane)
       forwardPriority |= notifyMatches(input.storeNotifies[lane], index);
     const auto event = addressBypass(input.AGUModule, input.SQModule,
@@ -233,8 +233,6 @@ void LQ::tick(const LQInput &input, systemState &CPUstate) {
   for (int i = 0; i < STORERS_CAP; ++i)
     if (input.storeNotifies[i].valid)
       forwarded |= applyStoreForward(input.storeNotifies[i], CPUstate);
-  if (input.storeAddrNotify.valid)
-    forwarded |= applyStoreForward(input.storeAddrNotify, CPUstate);
   // AGU: load address ready -> write address + query SQ for forwarding
   if (input.executeEnabled && !input.AGUModule.isEmpty() &&
       !isStoreMem(input.AGUModule.headMemIndex())) {

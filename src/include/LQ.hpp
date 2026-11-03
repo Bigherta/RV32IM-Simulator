@@ -46,7 +46,6 @@ struct LQInput {
   LoadResponse loadResp;
   MemDispatchDecision decision;
   StoreNotify storeNotifies[STORERS_CAP];
-  StoreNotify storeAddrNotify;
   LQInput(const AGU &agu, const ROB &rob, const SQ &sq, const IssueGroup &pkt)
       : AGUModule(agu), ROBModule(rob), issuePacket(pkt), SQModule(sq) {}
 };
