@@ -71,7 +71,10 @@ public:
     return hit(pc) && ((requestBlocks[(pc >> ICACHE_OFFSET_BITS) & ICACHE_INDEX_MASK].controlMask >>
                        ((pc >> 2) & ICACHE_WORD_INDEX_MASK)) & 1u);
   }
-  bool secondControl(uint32_t pc) const { return !(pc & 4u) && firstControl(pc | 4u); }
+  bool secondControl(uint32_t pc) const {
+    return ((pc >> 2) & ICACHE_WORD_INDEX_MASK) != ICACHE_WORD_INDEX_MASK &&
+           firstControl(pc + 4u);
+  }
   static bool refillHit(uint32_t pc, const LineReturn &refill) {
     return refill.valid && (pc & ~ICACHE_OFFSET_MASK) == refill.lineAddr;
   }

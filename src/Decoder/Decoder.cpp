@@ -136,7 +136,7 @@ void DecodeUnit::tick(const DecodeInput &input, systemState &CPUstate) {
     clear(CPUstate);
     return;
   }
-  if (input.issuePacket.count != 0)
+  if (input.issuePacket.count != 0 && !input.bypassIQPop)
     CPUstate.DecodeUnitModule.iq.head = (iq.head + input.issuePacket.count) & IQ_SEQ_MASK;
   iq.pushPrefix(input.FQModule, input.decodeCount, CPUstate);
 }

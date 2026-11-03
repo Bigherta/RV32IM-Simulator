@@ -57,11 +57,24 @@ bool CPU::frontendCanRun() const {
   const uint32_t pc = FetchUnitModule.getPC();
   bool safe = !recovery.active;
   if (!safe && FETCH_WIDTH == 2 && !legacyHaltEnabled && ICacheModule.hit(pc)) {
-    // Match the actual aligned packet: at PC[2]=1 there is no second lane.
-    // Scanning PC+4 unconditionally freezes on a control in the NEXT packet.
+    // The current two-lane packet may cross an 8-byte pair, not an I$ line.
+    // Check only a second instruction actually present in that packet.
     safe = !ICacheModule.firstControl(pc) && !ICacheModule.secondControl(pc);
   }
   return !exitCommitted && safe;
+}
+
+bool CPU::frontendResponseCanRun() const {
+  // Old response safety is independent of the NEXT fetch/prediction PC.
+  if (exitCommitted || !ICacheModule.isReturnReady()) return false;
+  bool safe = !recovery.active;
+  if (!safe && FETCH_WIDTH == 2 && !legacyHaltEnabled) {
+    safe = true;
+    for (unsigned lane = 0; lane < FETCH_WIDTH; ++lane)
+      if (lane < ICacheModule.returnCount() && ICache::isControl(ICacheModule.returnRaw(lane)))
+        safe = false;
+  }
+  return safe;
 }
 
 void CPU::comb() {
@@ -108,13 +121,6 @@ void CPU::comb() {
   dcacheInput.decision = memDispatch;
   dcacheInput.squashDetect = squashDetect;
   lqInput.decision = sqInput.decision = memDispatch;
-  lqInput.storeAddrNotify = {};
-  if (!recovery.active && !exitCommitted && !AGUModule.isEmpty() && isStoreMem(AGUModule.headMemIndex())) {
-    const auto tag = AGUModule.headRobTag();
-    if (!squashDetect.needSquash || ROB::isOlder(tag, squashDetect.SquashTag))
-      lqInput.storeAddrNotify = SQModule.planAddressForward(
-          memSlot(AGUModule.headMemIndex()), AGUModule.headValue(), tag);
-  }
   DCacheModule.plan(dcacheInput);
   lqInput.loadResp = dcacheInput.loadResp;
   // Granted write ports and OLD dispatch precede allocation. Neither depends
@@ -180,7 +186,15 @@ void CPU::comb() {
   robInput.commits = ratInput.commits = prfInput.commits = lqInput.commits =
       sqInput.commits = bpuInput.commits = commits;
   isarbInput.squashDetect = squashDetect;
+  const bool wholeGroup = ISSUE_WIDTH == 4 && DECODE_WIDTH == 4 &&
+      DecodeUnitModule.isEmpty() && FQModule.count() != 0 &&
+      !exitCommitted && !squashDetect.needSquash;
+  isarbInput.wholeGroupFQ = wholeGroup ? &FQModule : nullptr;
+  isarbInput.wholeGroupCount = wholeGroup ? FQModule.count() : 0;
+  if (isarbInput.wholeGroupCount > DECODE_WIDTH) isarbInput.wholeGroupCount = DECODE_WIDTH;
   issuePacket = IssueArbiter::buildPrefix(isarbInput);
+  // One authorization shared by RAT/PRF/ROB/RS/LSQ. No partial bypass.
+  if (wholeGroup && issuePacket.count != isarbInput.wholeGroupCount) issuePacket = {};
   if (exitCommitted || recovery.active) issuePacket = {};
   ratInput.recovery = recovery;
   prfInput.recovery = recovery;
@@ -192,17 +206,19 @@ void CPU::comb() {
   sqInput.executeEnabled = !recovery.active;
   exitRetiring = commits.exits;
   sqInput.retireEnabled = !exitCommitted;
-  fqInput.issueValid = issuePacket.count != 0;
+  decodeInput.bypassIQPop = wholeGroup && issuePacket.count != 0;
+  fqInput.issueValid = issuePacket.count != 0 && !decodeInput.bypassIQPop;
   unsigned decodeCount = FQModule.count();
-  const unsigned decodeCapacity = DecodeUnitModule.pushCapacity(issuePacket.count);
+  const unsigned decodeCapacity = DecodeUnitModule.pushCapacity(decodeInput.bypassIQPop ? 0 : issuePacket.count);
   if (decodeCount > DECODE_WIDTH) decodeCount = DECODE_WIDTH;
   if (decodeCount > decodeCapacity) decodeCount = decodeCapacity;
-  if (!frontendCanRun() || squashDetect.needSquash) decodeCount = 0;
-  fqInput.decodeCount = decodeInput.decodeCount = decodeCount;
+  if (exitCommitted || squashDetect.needSquash) decodeCount = 0;
+  fqInput.decodeCount = decodeCount;
+  decodeInput.decodeCount = decodeInput.bypassIQPop ? 0 : decodeCount;
   const bool fqPop = decodeCount != 0;
   const bool fqReady = !squashDetect.needSquash &&
       FQModule.canAccept(ICacheModule.returnCount(), decodeCount);
-  const bool popConsume = frontendCanRun() && fqReady && ICacheModule.isReturnReady() &&
+  const bool popConsume = frontendResponseCanRun() && fqReady && ICacheModule.isReturnReady() &&
                           !FetchUnitModule.isHaltFetched();
   const bool haltSignal =
       FetchUnitModule.isHaltFetched() ||
@@ -220,7 +236,10 @@ void CPU::comb() {
                              (!AXIFetchModule.isRequestFull() || refillHit) &&
                             !readBlocked;
    const bool canMulti = !legacyHaltEnabled && icacheHit;
-   const unsigned blockRemain = canMulti ? FETCH_WIDTH - ((pc >> 2) & (FETCH_WIDTH - 1)) : 1u;
+   const unsigned lineRemain = ICACHE_WORDS_PER_LINE - ((pc >> 2) & ICACHE_WORD_INDEX_MASK);
+    const unsigned blockRemain = !canMulti ? 1u : FETCH_WIDTH == 2 ?
+        (lineRemain < FETCH_WIDTH ? lineRemain : FETCH_WIDTH) :
+        FETCH_WIDTH - ((pc >> 2) & (FETCH_WIDTH - 1));
    unsigned fetchCount = 0;
    bool open = true, hasControl = false;
    for (unsigned lane = 0; lane < FETCH_WIDTH; ++lane) {
@@ -373,11 +392,10 @@ void CPU::clock() {
    LQModule.tick(lqInput, CPUstate);
    BPUModule.tick(bpuInput, CPUstate);
     RATModule.tick(ratInput, CPUstate);
-    if (frontendCanRun()) {
-      FetchUnitModule.tick(fetchUnitInput, CPUstate);
-      FQModule.tick(fqInput, CPUstate);
-      DecodeUnitModule.tick(decodeInput, CPUstate);
-    }
+    // New control prediction may stop; authenticated safe transport does not.
+    FetchUnitModule.tick(fetchUnitInput, CPUstate);
+    FQModule.tick(fqInput, CPUstate);
+    DecodeUnitModule.tick(decodeInput, CPUstate);
     if (!recovery.active) {
   ROBModule.tick(robInput, CPUstate);
   ALUModule.tick(aluInput, CPUstate);

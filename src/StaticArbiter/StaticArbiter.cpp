@@ -850,8 +850,15 @@ IssueGroup IssueArbiter::buildPrefix(const IssueArbiterInput &input) {
     RobTag tag = input.ROBModule.getNextTag();
     bool open = !input.squashDetect.needSquash && !input.ROBModule.isTrapCommitted();
     for (unsigned lane = 0; lane < ISSUE_WIDTH; ++lane) {
-      if (open && lane < input.DecodeUnitModule.count()) {
-        const auto &u = input.DecodeUnitModule.entryAt(lane);
+      if (open && lane < (input.wholeGroupFQ ? input.wholeGroupCount : input.DecodeUnitModule.count())) {
+        // A decoded candidate payload, never a copied module/next-state image.
+        Uop u{};
+        if (input.wholeGroupFQ) {
+          const auto &entry = input.wholeGroupFQ->entry(lane);
+          u = Decoder::decode(static_cast<int32_t>(entry.raw));
+          u.pc = entry.pc; u.predictedPC = entry.predictedPC; u.ckptId = entry.ckptId;
+          u.isHalt = legacyHaltEnabled && entry.raw == 0x0ff00513;
+        } else u = input.DecodeUnitModule.entryAt(lane);
         UopView inst{u.type, u.opcode, u.funct3, u.funct7, u.rd, u.rs1, u.rs2,
                      u.imm, u.pc, u.isHalt, u.allocDest, u.predictedPC, u.ckptId};
         const Operation op = decodeOp(inst);

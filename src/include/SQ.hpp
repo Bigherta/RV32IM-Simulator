@@ -99,7 +99,6 @@ public:
   bool isAddressReady(int index) const { return SQqueue[index].isAddressReady; }
   bool isValueReady(int index) const { return SQqueue[index].isValueReady; }
   auto planDataForward(int index, int32_t value) const -> StoreNotify;
-  auto planAddressForward(int index, uint32_t address, RobTag producerTag) const -> StoreNotify;
   auto replyToLoadRequest(uint32_t addr, uint8_t nBytes,
                           uint8_t loadTag) const -> StoreResponse;
   // Called after forwarding fails; nBytes is the actual Load byte count.
