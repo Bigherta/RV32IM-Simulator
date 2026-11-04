@@ -90,7 +90,7 @@ public:
   uint8_t getTailSnapshot() const { return (tail + 1) & SQ_SEQ_MASK; }
   bool isReadyToCommit(int index) const;
   bool isCommitted(int index) const { return isActive(index) && SQqueue[index].isCommitted; }
-  StoreCompletion completionBitmap() const;
+  StoreCompletion completionBitmap(const SQInput &input, const OperandWriteback &writebacks) const;
   auto getAddress(int index) const -> uint32_t;
   auto getValue(int index) const -> int32_t;
   auto headRobTag() const -> uint8_t;

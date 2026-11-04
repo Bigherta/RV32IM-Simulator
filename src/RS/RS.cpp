@@ -121,7 +121,7 @@ void RSUnit::tick(const RSInput &input, systemState &CPUstate) {
       }
     }
   }
-  // Allocation has final priority over release. Integer/Branch/Load/StoreValue pools
+  // Allocation has final priority over release. Four-wide non-MUL/DIV pools
   // may reuse only the OLD slot actually accepted by its execution unit.
   for (unsigned lane = 0; lane < ISSUE_WIDTH; ++lane) {
    const auto &p = input.issuePacket.lanes[lane];

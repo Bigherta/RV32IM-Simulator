@@ -14,6 +14,7 @@ struct FQInput {
   SquashInfo squashDetect;
   const ICache &ICacheModule;
   const DecodeUnit &DecodeUnitModule;
+  bool bypassReturnStorage = false;
   bool returnAccepted = false; // Same handshake as ICache.popConsume.
   bool issueValid = false; // Actual IQ dequeue, evaluated from the old IQ head.
   unsigned decodeCount = 0; // The same accepted OLD prefix consumed by IQ.
