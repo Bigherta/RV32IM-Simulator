@@ -14,6 +14,7 @@ struct DCachePark {
   bool ready = false;
   bool deferred = false;
   bool cancelled = false;
+  bool prefetch = false; // Internal only; never an LSU response owner.
 };
 struct DCacheMiss {
   uint32_t line = 0;
@@ -32,6 +33,11 @@ struct DCacheMiss {
 // Comb-only events and physical SRAM ports, all derived from one old snapshot.
 struct DCacheInput {
   MemDispatchDecision decision{};
+  bool proposalValid = false; // Raw CPU valid, including full-cache backpressure.
+  uint8_t prefetchMask = 0, prefetchAbort = 0, prefetchMissCount = 0;
+  bool prefetchTrigger = false, prefetchEnqueue = false;
+  bool prefetchDuplicate = false, prefetchStoreConflict = false;
+  uint32_t prefetchNextLine = 0;
   SquashInfo squashDetect{};
   int8_t lookup = -1;
   int8_t lookupCandidate = -1;
@@ -86,6 +92,11 @@ class DCache {
   // Bit j in row i means i was accepted before j. ROB tags cannot order
   // committed Stores that may outlive the current ROB window.
   uint8_t olderMask[REQUEST_CAP]{};
+  bool prefetchPending = false, prefetchStopped = false;
+  uint32_t prefetchTarget = 0;
+  bool prefetchSeenValid[4]{};
+  uint32_t prefetchSeenLine[4]{};
+  uint8_t prefetchSeenVictim = 0;
   uint8_t count = 0;
   uint8_t cursor = 0;
   uint8_t readIndex = 0;
@@ -114,7 +125,7 @@ class DCache {
 public:
   DCache() = default;
   bool isRequestFull() const { return count == REQUEST_CAP; }
-  bool isEmpty() const { return count == 0; }
+  bool isEmpty() const { return count == 0 && !prefetchPending; }
   uint64_t getHitCount() const { return hitCount; }
   uint64_t getMissCount() const { return missCount; }
   void plan(DCacheInput &) const;

@@ -73,12 +73,12 @@ void InstructBuffer::tick(const FQInput &input, systemState &CPUstate) {
       if (lane < lanes) {
         const uint32_t lanePC = pc + (lane << 2);
         const auto raw = input.ICacheModule.returnRaw(lane);
-        CPUstate.FQModule.InstructBufferEntries[(tail + lane) & (FQ_CAP - 1)] =
+        if (!input.bypassReturnStorage) CPUstate.FQModule.InstructBufferEntries[(tail + lane) & (FQ_CAP - 1)] =
             {raw, int(lanePC), int32_t(lane + 1 < lanes ? lanePC + 4u : predPC), uint8_t((cid + lane) & (CKPT_CAP - 1))};
         CPUstate.FQModule.pushCache[lane] = {true, raw, lanePC};
       }
     }
-    CPUstate.FQModule.tail = (tail + lanes) & FQ_SEQ_MASK;
+    if (!input.bypassReturnStorage) CPUstate.FQModule.tail = (tail + lanes) & FQ_SEQ_MASK;
   }
   assert(input.decodeCount <= count() && input.decodeCount <= DECODE_WIDTH);
   if (input.decodeCount != 0)

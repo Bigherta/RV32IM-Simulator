@@ -16,13 +16,31 @@ bool SQ::isActive(uint8_t index) const {
          ((index - head) & SQ_MASK) < ((tail - head) & SQ_SEQ_MASK);
 }
 
-StoreCompletion SQ::completionBitmap() const {
-  // Decode only old, live, address/data-ready, uncommitted Store identities.
-  // Address/data delivered by this edge must wait until the next cycle.
+StoreCompletion SQ::completionBitmap(const SQInput &input,
+                                     const OperandWriteback &writebacks) const {
+  // Pure completion notification; never read next state or change SQ writers.
+  // Software's old StoreValue owner carries the data tag stored in RTL's SQ.
   StoreCompletion completion{};
   for (int i = 0; i < SQ_CAP; ++i) {
-    if (isActive(i) && isReadyToCommit(i) && !isCommitted(i)) {
-      const auto tag = getRobTag(i);
+    const auto tag = getRobTag(i);
+    const bool live = input.executeEnabled &&
+        (!input.squashDetect.needSquash || ROB::isOlder(tag, input.squashDetect.SquashTag));
+    bool addressReady = isAddressReady(i), dataReady = isValueReady(i);
+    if (isActive(i) && !isCommitted(i) && live) {
+      addressReady |= !input.AGUModule.isEmpty() &&
+          isStoreMem(input.AGUModule.headMemIndex()) &&
+          memSlot(input.AGUModule.headMemIndex()) == i && input.AGUModule.headRobTag() == tag;
+      for (int lane = 0; lane < STORERS_CAP; ++lane) {
+        const auto &owner = input.RSModule.storeValueRS[lane];
+        if (!owner.free && memSlot(owner.memIndex) == i && owner.robTag == tag) {
+          // Same old PRF-ready / early-ALU delivery and authentic non-P0 WB.
+          // This predicate is NOT routed into LQ notify, RS release or SQ writes.
+          dataReady |= input.storeValue[lane].valid ||
+              input.PRFModule.isOperandReady(owner.data, writebacks);
+        }
+      }
+    }
+    if (isActive(i) && addressReady && dataReady && !isCommitted(i)) {
       const uint32_t oneHot = uint32_t{1} << robSlot(tag);
       assert(!(completion.readyMask & oneHot));
       completion.readyMask |= oneHot;

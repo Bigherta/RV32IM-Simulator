@@ -40,10 +40,9 @@ FetchTypeInfo scanJump(const struct lastPush &lp) {
     fi.jalTarget = static_cast<uint32_t>(lp.pc) + static_cast<uint32_t>(off);
     fi.valid = true;
   } else if (opcode == 0x67 && funct3 == 0) { // jalr
-    // User RAS contract: link rd pushes; link rs1 pops, independently.
-    // Both link operands (including rd == rs1) perform POP then PUSH.
+    // Standard JALR hints: same link pushes only; different links pop then push.
     fi.isCall = rdLink;
-    fi.isRet = rs1Link;
+    fi.isRet = rs1Link && rd != rs1;
     fi.valid = true;
   }
   return fi;
@@ -102,6 +101,8 @@ void CPU::comb() {
   memcpy(&FetchUnitModule, &CPUstate.FetchUnitModule, sizeof(FetchUnitModule));
   initialized = CPUstate.initialized;
   exitCommitted = CPUstate.exitCommitted;
+  lsuArbitration.yieldDebt = CPUstate.lsuArbitration.yieldDebt;
+  lsuArbitration.owners = CPUstate.lsuArbitration.owners;
   recovery = CPUstate.recovery;
   // The SRAM-backed lookup reads this old snapshot, like ICache.
   memcpy(&DCacheModule, &CPUstate.DCacheModule, sizeof(DCacheModule));
@@ -115,9 +116,15 @@ void CPU::comb() {
   const auto loadAddress = LQModule.addressBypass(
       AGUModule, SQModule, squashDetect, !recovery.active && !exitCommitted);
   auto memDispatch = MemArbiter::arbitrate(LQModule, SQModule, ROBModule,
-                                          DCacheModule, squashDetect, loadAddress);
+                                          DCacheModule, squashDetect, loadAddress, true,
+      initialized && !recovery.active && !exitCommitted && !squashDetect.needSquash,
+      lsuArbitration.yieldDebt, lsuArbitration.owners);
   if (exitCommitted && (memDispatch.request.op != Operation::Store || SQModule.isEmpty() ||
       !SQModule.isCommitted(SQModule.getHead() & SQ_MASK))) memDispatch.valid = false;
+  // RTL keeps CPU valid asserted under cache backpressure. Only the
+  // accepted event is sent to LSQ/tick; raw valid suppresses optional Tag work.
+  dcacheInput.proposalValid = memDispatch.valid;
+  memDispatch.valid = memDispatch.valid && !DCacheModule.isRequestFull();
   dcacheInput.decision = memDispatch;
   dcacheInput.squashDetect = squashDetect;
   lqInput.decision = sqInput.decision = memDispatch;
@@ -186,11 +193,15 @@ void CPU::comb() {
   robInput.commits = ratInput.commits = prfInput.commits = lqInput.commits =
       sqInput.commits = bpuInput.commits = commits;
   isarbInput.squashDetect = squashDetect;
+  const bool emptyReturn = ISSUE_WIDTH == 4 && DECODE_WIDTH == 4 &&
+      FQModule.isEmpty() && DecodeUnitModule.isEmpty() && !exitCommitted && !squashDetect.needSquash &&
+      !FetchUnitModule.isHaltFetched() && frontendResponseCanRun();
+  isarbInput.wholeGroupReturn = emptyReturn ? &ICacheModule : nullptr;
   const bool wholeGroup = ISSUE_WIDTH == 4 && DECODE_WIDTH == 4 &&
-      DecodeUnitModule.isEmpty() && FQModule.count() != 0 &&
+      DecodeUnitModule.isEmpty() && (FQModule.count() != 0 || emptyReturn) &&
       !exitCommitted && !squashDetect.needSquash;
   isarbInput.wholeGroupFQ = wholeGroup ? &FQModule : nullptr;
-  isarbInput.wholeGroupCount = wholeGroup ? FQModule.count() : 0;
+  isarbInput.wholeGroupCount = wholeGroup ? (emptyReturn ? ICacheModule.returnCount() : FQModule.count()) : 0;
   if (isarbInput.wholeGroupCount > DECODE_WIDTH) isarbInput.wholeGroupCount = DECODE_WIDTH;
   issuePacket = IssueArbiter::buildPrefix(isarbInput);
   // One authorization shared by RAT/PRF/ROB/RS/LSQ. No partial bypass.
@@ -208,16 +219,18 @@ void CPU::comb() {
   sqInput.retireEnabled = !exitCommitted;
   decodeInput.bypassIQPop = wholeGroup && issuePacket.count != 0;
   fqInput.issueValid = issuePacket.count != 0 && !decodeInput.bypassIQPop;
-  unsigned decodeCount = FQModule.count();
+  unsigned decodeCount = emptyReturn ? ICacheModule.returnCount() : FQModule.count();
   const unsigned decodeCapacity = DecodeUnitModule.pushCapacity(decodeInput.bypassIQPop ? 0 : issuePacket.count);
   if (decodeCount > DECODE_WIDTH) decodeCount = DECODE_WIDTH;
   if (decodeCount > decodeCapacity) decodeCount = decodeCapacity;
   if (exitCommitted || squashDetect.needSquash) decodeCount = 0;
-  fqInput.decodeCount = decodeCount;
+  fqInput.decodeCount = emptyReturn ? 0 : decodeCount;
+  fqInput.bypassReturnStorage = emptyReturn;
+  decodeInput.directReturn = emptyReturn ? &ICacheModule : nullptr;
   decodeInput.decodeCount = decodeInput.bypassIQPop ? 0 : decodeCount;
   const bool fqPop = decodeCount != 0;
   const bool fqReady = !squashDetect.needSquash &&
-      FQModule.canAccept(ICacheModule.returnCount(), decodeCount);
+      FQModule.canAccept(ICacheModule.returnCount(), fqInput.decodeCount);
   const bool popConsume = frontendResponseCanRun() && fqReady && ICacheModule.isReturnReady() &&
                           !FetchUnitModule.isHaltFetched();
   const bool haltSignal =
@@ -237,9 +250,8 @@ void CPU::comb() {
                             !readBlocked;
    const bool canMulti = !legacyHaltEnabled && icacheHit;
    const unsigned lineRemain = ICACHE_WORDS_PER_LINE - ((pc >> 2) & ICACHE_WORD_INDEX_MASK);
-    const unsigned blockRemain = !canMulti ? 1u : FETCH_WIDTH == 2 ?
-        (lineRemain < FETCH_WIDTH ? lineRemain : FETCH_WIDTH) :
-        FETCH_WIDTH - ((pc >> 2) & (FETCH_WIDTH - 1));
+    const unsigned blockRemain = !canMulti ? 1u :
+        (lineRemain < FETCH_WIDTH ? lineRemain : FETCH_WIDTH);
    unsigned fetchCount = 0;
    bool open = true, hasControl = false;
    for (unsigned lane = 0; lane < FETCH_WIDTH; ++lane) {
@@ -312,7 +324,7 @@ void CPU::comb() {
   sqInput.squashDetect = squashDetect;
   rsInput.squashDetect = squashDetect;
   robInput.squashDetect = squashDetect;
-  robInput.storeCompletion = SQModule.completionBitmap();
+  robInput.storeCompletion = SQModule.completionBitmap(sqInput, writePorts);
   robInput.cdbOfALU = cdbOfALU;
   robInput.cdbOfALUSecond = cdbOfALUSecond;
   robInput.cdbOfShared = cdbOfShared;
@@ -361,6 +373,18 @@ void CPU::comb() {
 }
 
 void CPU::clock() {
+  // Actual accepts and unfiltered Cache completions own the transport count.
+  // Cancellation/flush never clears outstanding ownership or the Store debt.
+  const bool accepted = dcacheInput.decision.valid;
+  const bool storeAccepted = accepted && dcacheInput.decision.request.op == Operation::Store;
+  const bool loadAccepted = accepted && dcacheInput.decision.request.op == Operation::Load;
+  const bool ownerReturned = dcacheInput.response >= 0;
+  assert(!ownerReturned || lsuArbitration.owners != 0);
+  assert(lsuArbitration.owners + unsigned(loadAccepted) >= unsigned(ownerReturned));
+  assert(lsuArbitration.owners + unsigned(loadAccepted) - unsigned(ownerReturned) <= REQUEST_CAP);
+  CPUstate.lsuArbitration.owners = lsuArbitration.owners + unsigned(loadAccepted) - unsigned(ownerReturned);
+  CPUstate.lsuArbitration.yieldDebt = storeAccepted ? false :
+      (loadAccepted && MemArbiter::storeAvailable(SQModule, ROBModule, squashDetect) ? true : lsuArbitration.yieldDebt);
   if (!exitCommitted) {
     if (squashDetect.needSquash) {
       assert(!recovery.active && ROBModule.matchesTag(squashDetect.SquashTag));

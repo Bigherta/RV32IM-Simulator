@@ -25,6 +25,11 @@
 #include "common.hpp"
 #include <cstring>
 
+struct LsuArbitrationState {
+  bool yieldDebt = false;
+  unsigned owners = 0;
+};
+
 struct systemState {
   RSUnit RSModule;
   RAT RATModule;
@@ -46,6 +51,7 @@ struct systemState {
   FetchUnit FetchUnitModule;
   bool initialized = false;
   bool exitCommitted = false;
+  LsuArbitrationState lsuArbitration;
   RecoveryStep recovery;
   AXIFetch AXIFetchModule;
   AXIData AXIDataModule;
@@ -82,6 +88,7 @@ private:
   FetchUnit FetchUnitModule;
   bool initialized = false;
   bool exitCommitted = false;
+  LsuArbitrationState lsuArbitration;
   bool exitRetiring = false;
   RecoveryStep recovery;
   AXIFetch AXIFetchModule;

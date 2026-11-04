@@ -98,8 +98,8 @@ void AGU::tick(const AGUInput &input, systemState &CPUstate) {
            input.dispatch.robTag, rs.memIndex, keep, input, CPUstate);
     } else {
       auto &rs = input.RSModule.storeAddressRS[input.dispatch.rsIndex];
-      push(static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
-           static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
+      push(static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1, input.operandWriteback)),
+           static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2, input.operandWriteback)),
            input.dispatch.robTag, rs.memIndex, keep, input, CPUstate);
     }
   }

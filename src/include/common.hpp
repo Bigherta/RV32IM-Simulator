@@ -24,7 +24,7 @@ static_assert(CPU_ISSUE_WIDTH == CPU_RENAME_WIDTH, "conflicting issue/rename wid
 constexpr unsigned ISSUE_WIDTH = CPU_ISSUE_WIDTH;
 static_assert(ISSUE_WIDTH == 1 || ISSUE_WIDTH == 2 || ISSUE_WIDTH == 4);
 #ifndef CPU_FETCH_WIDTH
-#define CPU_FETCH_WIDTH 2
+#define CPU_FETCH_WIDTH 4
 #endif
 constexpr unsigned FETCH_WIDTH = CPU_FETCH_WIDTH;
 static_assert(FETCH_WIDTH == 1 || FETCH_WIDTH == 2 || FETCH_WIDTH == 4);

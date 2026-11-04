@@ -1,4 +1,5 @@
 #include "../include/StaticArbiter.hpp"
+#include "../include/ICache.hpp"
 #include "../include/DCache.hpp"
 #include "../include/Decoder.hpp"
 #include "../include/PRF.hpp"
@@ -130,7 +131,7 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
     }
     for (int i = 0; i < STORERS_CAP; ++i) {
       const auto &rs_ = rs.storeAddressRS[i];
-      if (!rs_.free && prf.isOperandReady(rs_.src1)) {
+      if (!rs_.free && prf.isOperandReady(rs_.src1, ports)) {
         auto tag = rs_.robTag;
         if (!foundAny || ROB::isOlder(tag, bestTag)) {
           foundAny = true;
@@ -177,51 +178,67 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
   return dispatch;
 }
 
+// Ordinary-RAM complete-byte interval, matching the RTL yield guard.
+static bool yieldRamAccess(uint32_t address, unsigned bytes) {
+  const uint64_t last = uint64_t(address) + bytes - 1u;
+  return (bytes == 1 || bytes == 2 || bytes == 4) && address < 0x10000000u &&
+      last < 0x10000000ull && (uint64_t(address) >> 5) == (last >> 5);
+}
+
+bool MemArbiter::storeAvailable(const SQ &sq, const ROB &rob, const SquashInfo &squash) {
+  return !sq.isEmpty() && (sq.isCommitted(sq.getHead()) ||
+      rob.planCommit(squash, sq).contains(sq.headRobTag()));
+}
+
 MemDispatchDecision MemArbiter::arbitrate(const LQ &LQ, const SQ &SQ,
-                                          const ROB &rob, const DCache &dcache,
-                                        const SquashInfo &squash,
-                                        const LoadAddressBypass &address) {
-  MemDispatchDecision memDecision{};
-  if (!dcache.isRequestFull() && !SQ.isEmpty()) {
-    auto storeTag = SQ.headRobTag();
-    bool committed = SQ.isCommitted(SQ.getHead());
-    bool atHeadReady =
-        !committed && rob.planCommit(squash, SQ).contains(storeTag);
-    if (committed || atHeadReady) {
-      MemRequest newRequest{};
-      newRequest.address = SQ.getAddress(SQ.getHead());
-      newRequest.value = SQ.getValue(SQ.getHead());
-      newRequest.nBytes = SQ.getNBytes(SQ.getHead());
-      newRequest.op = Operation::Store;
-      newRequest.robTag = storeTag;
-      newRequest.memIndex = static_cast<uint8_t>(SQ.getHead() | MEM_STORE_BIT);
-      memDecision.valid = true;
-      memDecision.request = newRequest;
-    }
-  }
-  if (!memDecision.valid) {
-    auto loadIndex = LQ.LoadDetect(address);
-    if (loadIndex != 0xFFFFFFFF && !dcache.isRequestFull()) {
-      auto loadAddr = LQ.requestAddress(loadIndex, address);
-      auto loadTag = LQ.getRobTag(loadIndex);
-      if (SQ.canSendLoadToCache(loadAddr, LQ.getNBytes(loadIndex), loadTag)) {
-        MemRequest newRequest{};
-        newRequest.address = loadAddr;
-        newRequest.isSigned = !LQ.getIsUnsigned(loadIndex);
-        newRequest.nBytes = LQ.getNBytes(loadIndex);
-        newRequest.op = Operation::Load;
-        newRequest.robTag = LQ.getRobTag(loadIndex);
-        newRequest.memIndex = static_cast<uint8_t>(loadIndex);
-        if (!squash.needSquash ||
-            (squash.needSquash &&
-             ROB::isOlder(newRequest.robTag, squash.SquashTag))) {
-          memDecision.valid = true;
-          memDecision.request = newRequest;
+    const ROB &rob, const DCache &dcache, const SquashInfo &squash,
+    const LoadAddressBypass &address, bool proposalOnly,
+    bool yieldEnabled, bool yieldDebt, unsigned owners) {
+  MemDispatchDecision decision{};
+  const bool store = storeAvailable(SQ, rob, squash);
+  const auto load = LQ.LoadDetect(address); // Preserve the original oldest selector.
+  const bool liveLoad = load != 0xFFFFFFFF && owners < REQUEST_CAP &&
+      SQ.canSendLoadToCache(LQ.requestAddress(load, address), LQ.getNBytes(load), LQ.getRobTag(load)) &&
+      (!squash.needSquash || ROB::isOlder(LQ.getRobTag(load), squash.SquashTag));
+  bool safe = liveLoad;
+  if (liveLoad) {
+    const uint32_t addr = LQ.requestAddress(load, address);
+    const unsigned bytes = LQ.getNBytes(load);
+    safe = yieldRamAccess(addr, bytes);
+    const auto retiring = rob.planCommit(squash, SQ);
+    for (unsigned slot = 0; slot < SQ_CAP; ++slot) {
+      if (SQ.isActive(slot) && (SQ.isCommitted(slot) || retiring.contains(SQ.getRobTag(slot)))) {
+        if (!SQ.isAddressReady(slot) || !SQ.isValueReady(slot)) safe = false;
+        else {
+          const uint32_t other = SQ.getAddress(slot);
+          const unsigned width = SQ.getNBytes(slot);
+          if (!yieldRamAccess(other, width) ||
+              (uint64_t(addr) < uint64_t(other) + width && uint64_t(other) < uint64_t(addr) + bytes)) safe = false;
         }
       }
     }
   }
-  return memDecision;
+  const bool bypass = yieldEnabled && !yieldDebt && store && liveLoad && safe &&
+      SQ.count() <= 4 && owners == 0;
+  if ((proposalOnly || !dcache.isRequestFull()) && store && !bypass) {
+    const auto slot = SQ.getHead();
+    decision.valid = true;
+    decision.request.address = SQ.getAddress(slot);
+    decision.request.value = SQ.getValue(slot);
+    decision.request.nBytes = SQ.getNBytes(slot);
+    decision.request.op = Operation::Store;
+    decision.request.robTag = SQ.headRobTag();
+    decision.request.memIndex = static_cast<uint8_t>(slot | MEM_STORE_BIT);
+  } else if ((proposalOnly || !dcache.isRequestFull()) && liveLoad && (!store || bypass)) {
+    decision.valid = true;
+    decision.request.address = LQ.requestAddress(load, address);
+    decision.request.isSigned = !LQ.getIsUnsigned(load);
+    decision.request.nBytes = LQ.getNBytes(load);
+    decision.request.op = Operation::Load;
+    decision.request.robTag = LQ.getRobTag(load);
+    decision.request.memIndex = static_cast<uint8_t>(load);
+  }
+  return decision;
 }
 
 // Resolve an architectural register source into an Operand. RS no longer
@@ -285,7 +302,7 @@ IssuePacket IssueArbiter::issue_IntegerRS(const IssueArbiterInput &input,
     const bool rdLink = inst.rd == 1 || inst.rd == 5;
     const bool rs1Link = inst.rs1 == 1 || inst.rs1 == 5;
     p.robEntry.isCall = rdLink;
-    p.robEntry.isRet = rs1Link; // independent pop; both flags may be true
+    p.robEntry.isRet = rs1Link && inst.rd != inst.rs1; // different-link pop+push only
   }
   p.integerRS.robTag = p.robTag;
   return p;
@@ -839,6 +856,10 @@ IssueGroup IssueArbiter::buildPrefix(const IssueArbiterInput &input) {
     if (dispatch.aluSecond.valid) reuse[0] |= 1u << dispatch.aluSecond.rsIndex;
     if (dispatch.bru.valid) reuse[3] = 1u << dispatch.bru.rsIndex;
     if (dispatch.agu.valid && dispatch.agu.rsType == RSType::Load) reuse[4] = 1u << dispatch.agu.rsIndex;
+    // Four-wide SA credit uses the same actual old AGU acceptance as release.
+    if constexpr (ISSUE_WIDTH == 4)
+      if (dispatch.agu.valid && dispatch.agu.rsType == RSType::StoreAddr)
+        reuse[5] = 1u << dispatch.agu.rsIndex;
     if constexpr (ISSUE_WIDTH == 4)
       for (unsigned pool = 0; pool < 7; ++pool) free[pool] |= reuse[pool];
     unsigned loads = 0, stores = 0, physical = 0;
@@ -854,7 +875,14 @@ IssueGroup IssueArbiter::buildPrefix(const IssueArbiterInput &input) {
         // A decoded candidate payload, never a copied module/next-state image.
         Uop u{};
         if (input.wholeGroupFQ) {
-          const auto &entry = input.wholeGroupFQ->entry(lane);
+          InstructBufferEntry entry{};
+          if (input.wholeGroupReturn) {
+            const auto &packet = *input.wholeGroupReturn;
+            entry.raw = packet.returnRaw(lane);
+            entry.pc = uint32_t(packet.returnPC()) + (lane << 2);
+            entry.predictedPC = lane + 1 < packet.returnCount() ? uint32_t(entry.pc) + 4u : uint32_t(packet.returnPredictPC());
+            entry.ckptId = (packet.returnCkptId() + lane) & (CKPT_CAP - 1);
+          } else entry = input.wholeGroupFQ->entry(lane);
           u = Decoder::decode(static_cast<int32_t>(entry.raw));
           u.pc = entry.pc; u.predictedPC = entry.predictedPC; u.ckptId = entry.ckptId;
           u.isHalt = legacyHaltEnabled && entry.raw == 0x0ff00513;
@@ -941,7 +969,7 @@ IssueGroup IssueArbiter::buildPrefix(const IssueArbiterInput &input) {
           entry.halt = halt; entry.exception = invalid; entry.isCommitReady = halt || invalid;
           entry.isIndirect = p.isControl && u.type == RISC_V::I;
           entry.isCall = p.isControl && (u.rd == 1 || u.rd == 5);
-          entry.isRet = entry.isIndirect && (u.rs1 == 1 || u.rs1 == 5);
+          entry.isRet = entry.isIndirect && (u.rs1 == 1 || u.rs1 == 5) && u.rd != u.rs1;
           entry.newPhy = p.phy;
           entry.oldPhy = writes ? input.RATModule.readRAT(u.rd) : InvalidPhy;
           for (unsigned older = 0; older < lane; ++older)

@@ -38,10 +38,12 @@ public:
 // family; one memory request per cycle, store over load.
 class MemArbiter {
 public:
+  static bool storeAvailable(const SQ &sq, const ROB &rob, const SquashInfo &squash);
   static MemDispatchDecision arbitrate(const LQ &LQ, const SQ &SQ,
                                        const ROB &rob, const DCache &dcache,
                                        const SquashInfo &squash,
-                                       const LoadAddressBypass &address = {});
+                                       const LoadAddressBypass &address = {}, bool proposalOnly = false,
+                                        bool yieldEnabled = false, bool yieldDebt = false, unsigned owners = 0);
 };
 
 struct IssuePacket {
@@ -91,6 +93,7 @@ struct IssueArbiterInput {
   const LQ &LQModule;
   const SQ &SQModule;
   const InstructBuffer *wholeGroupFQ = nullptr;
+  const ICache *wholeGroupReturn = nullptr;
   unsigned wholeGroupCount = 0;
   SquashInfo squashDetect;
   DispatchBus dispatchBus;

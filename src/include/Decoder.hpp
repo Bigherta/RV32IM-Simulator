@@ -24,7 +24,7 @@ public:
   const Uop &entryAt(unsigned lane) const {
     return uopQueueEntries[(head + lane) & (IQ_CAP - 1)];
   }
-  void pushPrefix(const InstructBuffer &fq, unsigned count, systemState &CPUstate) const;
+  void pushPrefix(const InstructBuffer &fq, unsigned count, systemState &CPUstate, const ICache *directReturn = nullptr) const;
   void push(Uop inst, systemState &CPUstate) const;
   RISC_V headType() const { return uopQueueEntries[head & (IQ_CAP - 1)].type; }
   int headOpcode() const { return uopQueueEntries[head & (IQ_CAP - 1)].opcode; }
@@ -49,6 +49,7 @@ struct DecodeInput {
   SquashInfo squashDetect;
   unsigned decodeCount = 0;
   bool bypassIQPop = false;
+  const ICache *directReturn = nullptr;
   const InstructBuffer &FQModule;
   const IssueGroup &issuePacket;
   DecodeInput(const InstructBuffer &fq, const IssueGroup &pkt)
