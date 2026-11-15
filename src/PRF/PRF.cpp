@@ -3,7 +3,6 @@
 #include "common.hpp"
 #include <cassert>
 #include <cstring>
-#include <stdexcept>
 
 PRF::PRF() {
   for (int i = 0; i < PRF_CAP; ++i) {
@@ -53,7 +52,7 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
     const auto &p = input.issuePacket.lanes[lane];
     if (!input.freeze && !input.squashDetect.needSquash && !input.recovery.active &&
         lane < input.issuePacket.count && p.allocDest && p.phy != InvalidPhy) {
-      writes[lane] = {true, p.phy, p.pc + 4u};
+      writes[lane] = {true, static_cast<uint8_t>(p.phy), p.pc + 4u};
       ready[lane] = p.isControl;
     }
   }

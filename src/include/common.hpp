@@ -93,7 +93,7 @@ constexpr int MEMQ_SCAN_WINDOW = SQ_CAP < 8 ? SQ_CAP : 8;
 constexpr uint8_t MEM_STORE_BIT = 0x40;
 inline bool isStoreMem(uint8_t m) { return (m & MEM_STORE_BIT) != 0; }
 inline uint8_t memSlot(uint8_t m) { return m & 0x3F; }
-constexpr uint32_t ROB_CAP = ISSUE_WIDTH == 4 ? 32 : 16;
+constexpr uint32_t ROB_CAP = 16;
 // Packed tag = {1-bit epoch, slot field}. The slot field holds 0..ROB_CAP-1,
 // so its width is bit_width(ROB_CAP-1); the extra top bit is the epoch.
 // ROB_CAP is not required to be a power of two: invalid slot codes between

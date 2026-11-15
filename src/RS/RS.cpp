@@ -1,11 +1,11 @@
 #include "../include/RS.hpp"
 #include "../include/CPU.hpp"
 #include "common.hpp"
-int RSUnit::tryAllocInteger(const DispatchInfo &release) const {
+int RSUnit::tryAllocInteger(const DispatchInfo &) const {
   for (int i = 0; i < INTEGERRS_CAP; i++)
     if (integerRS[i].free)
       return i;
-  return release.valid ? release.rsIndex : -1;
+  return -1;
 }
 int RSUnit::tryAllocLoad() const {
   for (int i = 0; i < LOADRS_CAP; i++)
@@ -25,11 +25,11 @@ int RSUnit::tryAllocStoreValue() const {
       return i;
   return -1;
 }
-int RSUnit::tryAllocBranch(const DispatchInfo &release) const {
+int RSUnit::tryAllocBranch(const DispatchInfo &) const {
   for (int i = 0; i < BRANCHRS_CAP; i++)
     if (branchRS[i].free)
       return i;
-  return release.valid ? release.rsIndex : -1;
+  return -1;
 }
 int RSUnit::tryAllocMultiply() const {
   for (int i = 0; i < MULTIPLYRS_CAP; i++)
@@ -121,8 +121,8 @@ void RSUnit::tick(const RSInput &input, systemState &CPUstate) {
       }
     }
   }
-  // Allocation has final priority over release. Four-wide non-MUL/DIV pools
-  // may reuse only the OLD slot actually accepted by its execution unit.
+  // Keep the original writer priority; allocation selects only OLD free rows.
+  // Actual departure/flush changes availability for the following cycle only.
   for (unsigned lane = 0; lane < ISSUE_WIDTH; ++lane) {
    const auto &p = input.issuePacket.lanes[lane];
    if (lane < input.issuePacket.count) {

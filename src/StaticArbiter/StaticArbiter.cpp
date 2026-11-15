@@ -260,7 +260,7 @@ IssuePacket IssueArbiter::issue_IntegerRS(const IssueArbiterInput &input,
   if (input.ROBModule.isFull()) {
     return p;
   }
-  int integerSlot = input.RSModule.tryAllocInteger(input.dispatchBus.alu);
+  int integerSlot = input.RSModule.tryAllocInteger();
   if (integerSlot < 0) {
     return p;
   }
@@ -403,7 +403,7 @@ IssuePacket IssueArbiter::issue_UandJ(const IssueArbiterInput &input,
   if (input.ROBModule.isFull()) {
     return p;
   }
-  int integerSlot = input.RSModule.tryAllocInteger(input.dispatchBus.alu);
+  int integerSlot = input.RSModule.tryAllocInteger();
   if (integerSlot < 0) {
     return p;
   }
@@ -452,7 +452,7 @@ IssuePacket IssueArbiter::issue_B(const IssueArbiterInput &input,
   if (input.ROBModule.isFull()) {
     return p;
   }
-  int branchSlot = input.RSModule.tryAllocBranch(input.dispatchBus.bru);
+  int branchSlot = input.RSModule.tryAllocBranch();
   if (branchSlot < 0) {
     return p;
   }
@@ -483,10 +483,7 @@ IssuePacket IssueArbiter::issue_Load(const IssueArbiterInput &input,
   if (input.ROBModule.isFull() || input.LQModule.isFull()) {
     return p;
   }
-  const auto &release = input.dispatchBus.agu;
   int loadSlot = input.RSModule.tryAllocLoad();
-  if (loadSlot < 0 && release.valid && release.rsType == RSType::Load)
-    loadSlot = release.rsIndex;
   if (loadSlot < 0) {
     return p;
   }
@@ -533,8 +530,6 @@ IssuePacket IssueArbiter::issue_Store(const IssueArbiterInput &input,
   }
   int storeAddrSlot = input.RSModule.tryAllocStoreAddress();
   int storeValueSlot = input.RSModule.tryAllocStoreValue();
-  for (int row = 0; row < STORERS_CAP; ++row)
-    if (storeValueSlot < 0 && input.dispatchBus.storeValue[row].valid) storeValueSlot = row;
   if (storeAddrSlot < 0 || storeValueSlot < 0) {
     return p;
   }
@@ -838,7 +833,8 @@ IssueGroup IssueArbiter::buildPrefix(const IssueArbiterInput &input) {
   } else {
     // Only small resource masks/cursors and accepted event payloads are folded.
     // No RAT/ROB/PRF/LSQ next-state image or retirement-credit bypass.
-    std::array<uint32_t, 7> free{}, reuse{};
+    // Credits and slot selection both use only the registered old free rows.
+    std::array<uint32_t, 7> free{};
     const auto &rs = input.RSModule;
     for (int row = 0; row < INTEGERRS_CAP; ++row) if (rs.integerRS[row].free) free[0] |= 1u << row;
     for (int row = 0; row < MULTIPLYRS_CAP; ++row) if (rs.multiplyRS[row].free) free[1] |= 1u << row;
@@ -849,19 +845,6 @@ IssueGroup IssueArbiter::buildPrefix(const IssueArbiterInput &input) {
       if (rs.storeAddressRS[row].free) free[5] |= 1u << row;
       if (rs.storeValueRS[row].free) free[6] |= 1u << row;
     }
-    const auto &dispatch = input.dispatchBus;
-    for (int row = 0; row < STORERS_CAP; ++row)
-      if (dispatch.storeValue[row].valid) reuse[6] |= 1u << row;
-    if (dispatch.alu.valid) reuse[0] = 1u << dispatch.alu.rsIndex;
-    if (dispatch.aluSecond.valid) reuse[0] |= 1u << dispatch.aluSecond.rsIndex;
-    if (dispatch.bru.valid) reuse[3] = 1u << dispatch.bru.rsIndex;
-    if (dispatch.agu.valid && dispatch.agu.rsType == RSType::Load) reuse[4] = 1u << dispatch.agu.rsIndex;
-    // Four-wide SA credit uses the same actual old AGU acceptance as release.
-    if constexpr (ISSUE_WIDTH == 4)
-      if (dispatch.agu.valid && dispatch.agu.rsType == RSType::StoreAddr)
-        reuse[5] = 1u << dispatch.agu.rsIndex;
-    if constexpr (ISSUE_WIDTH == 4)
-      for (unsigned pool = 0; pool < 7; ++pool) free[pool] |= reuse[pool];
     unsigned loads = 0, stores = 0, physical = 0;
     const unsigned robUsed = (input.ROBModule.getNextTag() - input.ROBModule.getHead()) & ROB_TAG_MASK;
     PrfSeq phyHead = input.PRFModule.getHeadSeq();
@@ -906,7 +889,7 @@ IssueGroup IssueArbiter::buildPrefix(const IssueArbiterInput &input) {
                    (!load || loads < loadCredits) && (!store || stores < storeCredits);
         for (unsigned which = 0; which < 7; ++which) {
           slots[which] = -1;
-          const uint32_t mask = free[which] ? free[which] : reuse[which];
+          const uint32_t mask = free[which];
           for (unsigned row = 0; row < 32; ++row)
             if (slots[which] < 0 && (mask & (1u << row))) slots[which] = row;
         }
@@ -979,8 +962,8 @@ IssueGroup IssueArbiter::buildPrefix(const IssueArbiterInput &input) {
           entry.lqTailSnapshot = (input.LQModule.getTail() + loads) & LQ_SEQ_MASK;
           entry.sqTailSnapshot = (input.SQModule.getTail() + stores) & SQ_SEQ_MASK;
           if (writes) { ++physical; phyHead = prfSeqNext(phyHead); }
-          if (pool >= 0) { free[pool] &= ~(1u << slots[pool]); reuse[pool] &= ~(1u << slots[pool]); }
-          if (store) { free[6] &= ~(1u << slots[6]); reuse[6] &= ~(1u << slots[6]); }
+          if (pool >= 0) free[pool] &= ~(1u << slots[pool]);
+          if (store) free[6] &= ~(1u << slots[6]);
           tag = robNextTag(tag);
           ++group.count;
         }
