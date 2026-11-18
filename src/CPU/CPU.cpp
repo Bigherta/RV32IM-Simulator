@@ -131,7 +131,7 @@ void CPU::comb() {
   DCacheModule.plan(dcacheInput);
   lqInput.loadResp = dcacheInput.loadResp;
   // Granted write ports and OLD dispatch precede allocation. Neither depends
-  // on the new IssuePacket; this is the RTL full-RS release/reallocate path.
+  // on the new IssuePacket; allocation credits still use old RS occupancy.
   cdbOfALU = aluCDB::build(ALUModule, squashDetect);
   cdbOfALUSecond = ALU_UNITS == 2 ? aluCDB::build(ALUModule, squashDetect, 1) : aluCDB{};
   const bool secondControl = ALUModule.headIsControl(1) &&
@@ -162,11 +162,14 @@ void CPU::comb() {
   cdbOfLQ = {int32_t(loadResult.value), loadResult.robTag, loadResult.index, loadResult.valid};
   cdbOfMul = mulCDB::build(MULModule, squashDetect);
   cdbOfDiv = divCDB::build(DIVModule, squashDetect);
-  if (recovery.active) {
+  cdbOfLQ.valid &= ROBModule.matchesTag(cdbOfLQ.robTag);
+  cdbOfMul.valid &= ROBModule.matchesTag(cdbOfMul.robTag);
+  cdbOfDiv.valid &= ROBModule.matchesTag(cdbOfDiv.robTag);
+  if (recovery.active || exitCommitted) {
     cdbOfALU.valid = false; cdbOfALUSecond.valid = false; cdbOfLQ.valid = false;
     cdbOfMul.valid = false; cdbOfDiv.valid = false;
   }
-  const auto cdbOfShared = sharedCDB::arbitrate(cdbOfMul, cdbOfDiv, cdbOfLQ);
+  const auto cdbOfShared = sharedCDB::arbitrate(cdbOfMul, cdbOfDiv);
   const auto cdbControl = secondControl ? cdbOfALUSecond : cdbOfALU;
   std::array<bool, ALU_UNITS> aluAccept{};
   for (unsigned unit = 0; unit < ALU_UNITS; ++unit) {
@@ -177,17 +180,22 @@ void CPU::comb() {
         !ROB::isOlder(ALUModule.headRobTag(unit), squashDetect.SquashTag);
     aluAccept[unit] = ALUModule.isEmpty(unit) || aluInput.popReady[unit] || cancelled;
   }
-  if (cdbOfShared.valid && ROBModule.matchesTag(cdbOfShared.robTag)) {
-    const auto phy = ROBModule.getNewPhy(robSlot(cdbOfShared.robTag));
-    writePorts[ALU_CDB_PORTS] = {phy != InvalidPhy, uint8_t(phy), cdbOfShared.value};
-  }
+  auto writePort = [&](unsigned port, const auto &grant) {
+    if (grant.valid) {
+      const auto phy = ROBModule.getNewPhy(robSlot(grant.robTag));
+      writePorts[port] = {phy != InvalidPhy, uint8_t(phy), grant.value};
+    }
+  };
+  writePort(MULDIV_CDB_PORT, cdbOfShared);
+  writePort(LOAD_CDB_PORT, cdbOfLQ);
   DispatchBus dispatchBus = DispatchArbiter::arbitrate(
       RSModule, ALUModule, AGUModule, BRUModule, MULModule, DIVModule,
       PRFModule, squashDetect, cdbOfMul, cdbOfDiv, cdbOfDiv.valid, writePorts, aluAccept);
   if (recovery.active || exitCommitted) dispatchBus = {};
   dispatchBus.storeValue = sqInput.storeValue;
   isarbInput.dispatchBus = dispatchBus;
-  aluInput.operandWriteback = bruInput.operandWriteback = aguInput.operandWriteback = writePorts;
+  aluInput.operandWriteback = writePorts;
+  bruInput.operandWriteback = branchIssueWritebacks(writePorts);
   auto commits = ROBModule.planCommit(squashDetect, SQModule);
   if (!initialized || exitCommitted) commits = {};
   robInput.commits = ratInput.commits = prfInput.commits = lqInput.commits =
@@ -328,11 +336,13 @@ void CPU::comb() {
   robInput.cdbOfALU = cdbOfALU;
   robInput.cdbOfALUSecond = cdbOfALUSecond;
   robInput.cdbOfShared = cdbOfShared;
+  robInput.cdbOfLoad = cdbOfLQ;
   prfInput.squashDetect = squashDetect;
   prfInput.freeze = exitCommitted;
   prfInput.cdbOfALU = cdbOfALU;
   prfInput.cdbOfALUSecond = cdbOfALUSecond;
   prfInput.cdbOfShared = cdbOfShared;
+  prfInput.cdbOfLoad = cdbOfLQ;
   ratInput.squashDetect = squashDetect;
   flarbInput.squashDetect = squashDetect;
   flarbInput.cdbOut = cdbControl;

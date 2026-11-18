@@ -193,18 +193,15 @@ void ROB::tick(const ROBInput &input, systemState &CPUstate) {
         (!input.squashDetect.needSquash || isOlder(tag, input.squashDetect.SquashTag)))
       readySetMask |= oneHot;
   }
-  // CDB set ROB ready (dual)
-  for (const auto &cdb : {input.cdbOfALU, input.cdbOfALUSecond})
+  // Grants complete distinct ROB identities, with one ready write per row.
+  auto complete = [&](const auto &cdb) {
     if (cdb.valid && (!input.squashDetect.needSquash || ROB::isOlder(cdb.robTag, input.squashDetect.SquashTag)))
       markReady(cdb.robTag);
-  if (input.cdbOfShared.valid) {
-    if (!input.squashDetect.needSquash ||
-        ROB::isOlder(input.cdbOfShared.robTag, input.squashDetect.SquashTag)) {
-      if (matchesTag(input.cdbOfShared.robTag)) {
-        markReady(input.cdbOfShared.robTag);
-      }
-    }
-  }
+  };
+  complete(input.cdbOfALU);
+  complete(input.cdbOfALUSecond);
+  complete(input.cdbOfShared);
+  complete(input.cdbOfLoad);
   // Single ready write per row, including initialization of a new allocation.
   RobTag allocatedNext = next_tag;
   uint32_t allocatedMask = 0;

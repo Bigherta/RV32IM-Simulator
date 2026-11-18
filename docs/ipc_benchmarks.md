@@ -1,10 +1,36 @@
-# RV32IM IPC Benchmarks
+# RV32IM 性能用例与复验
 
-## 当前两软件默认同步档（2026-10-29）
+## 六项课程对拍（2026-11-18）
 
-fetch/decode/issue/commit=1/1/1/2；Tournament预测时上下文、8 KiB D$、接受沿同步读及Load RS授权WB/离站复用。
-两树25例严格结果/退休/分段周期对照通过；六perf total **537,816**、core **537,732**、retired **374,104**，
-几何IPC **0.678879614277**。严格门禁读取`benchmarks.md`首表，不套用其它宽度或冒充新RTL/PPA测量。
+主树 `403071c` 和模板 `a9b409f` 的 Release 与保断言构建，六项结果、退休数和课程周期均与配套 RTL 一致。两个外部观察副本的退休 PC、周期和提交通道也逐条匹配。
+
+| 用例 | 退休指令 | 课程周期 |
+|---|---:|---:|
+| `perf_median` | 6,961 | 7,954 |
+| `perf_multiply` | 21,722 | 12,795 |
+| `perf_vvadd` | 4,524 | 3,260 |
+| `perf_towers` | 5,278 | 5,791 |
+| `perf_qsort` | 139,900 | 162,865 |
+| `perf_rsort` | 195,719 | 168,045 |
+| 合计 | 374,104 | 360,710 |
+
+以 `init + core + drain` 为分母的六项几何平均 IPC 为 **1.110949**；模拟器日志中的 IPC 以 `core` 为分母。
+
+### 工作区复验
+
+在完整 CPU-2026 工作区根目录，用两个软件的二进制路径设置 `MAIN_BIN` 和 `TEMPLATE_BIN`。报告目录必须尚不存在：
+
+```bash
+python3 -B sync/check_current_production_software.py \
+  --main "$MAIN_BIN" --template "$TEMPLATE_BIN" \
+  --out .cpu2026-synthesis/software-check
+```
+
+脚本通过 `sync/evidence/current-production.json` 读取参照，只校验六项结果、退休数和周期，不重新采集逐条退休轨迹。不要使用[历史黄金表](benchmarks.md)核对现行周期。
+
+## 历史：1/1/1/2 配置（2026-10-29）
+
+两树 25 例通过严格对照。六项软件 total **537,816** 拍、core **537,732** 拍、退休 **374,104** 条，几何 IPC **0.678879614277**（按 core 计算）。
 
 ## 历史单取指RTL对齐档（2026-10-24）
 

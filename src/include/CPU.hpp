@@ -101,7 +101,7 @@ private:
   AXIMaster slaveInput{};
   aluCDB cdbOfALU;
   aluCDB cdbOfALUSecond;
-  // Source-specific acknowledgements for the single shared CDB1.
+  // Load's independent result and the source-specific MUL/DIV grants.
   lqCDB cdbOfLQ;
   mulCDB cdbOfMul;
   divCDB cdbOfDiv;

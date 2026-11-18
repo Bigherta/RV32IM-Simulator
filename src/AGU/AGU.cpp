@@ -93,13 +93,13 @@ void AGU::tick(const AGUInput &input, systemState &CPUstate) {
         ROB::isOlder(input.dispatch.robTag, input.squashDetect.SquashTag);
     if (input.dispatch.rsType == RSType::Load) {
       auto &rs = input.RSModule.loadRS[input.dispatch.rsIndex];
-      push(static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1, input.operandWriteback)),
-           static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2, input.operandWriteback)),
+      push(static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
+           static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
            input.dispatch.robTag, rs.memIndex, keep, input, CPUstate);
     } else {
       auto &rs = input.RSModule.storeAddressRS[input.dispatch.rsIndex];
-      push(static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1, input.operandWriteback)),
-           static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2, input.operandWriteback)),
+      push(static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src1)),
+           static_cast<uint32_t>(input.PRFModule.getOperandValue(rs.src2)),
            input.dispatch.robTag, rs.memIndex, keep, input, CPUstate);
     }
   }

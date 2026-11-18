@@ -44,6 +44,16 @@ int RSUnit::tryAllocDivide() const {
   return -1;
 }
 void RSUnit::tick(const RSInput &input, systemState &CPUstate) {
+  const auto &bus = input.dispatchBus;
+  if (input.squashDetect.needSquash) {
+    CPUstate.RSModule.loadSelected = 0;
+    CPUstate.RSModule.saSelected = 0;
+  } else {
+    if (!loadSelected || (bus.agu.valid && bus.agu.rsType == RSType::Load))
+      CPUstate.RSModule.loadSelected = bus.loadWakeChoice;
+    if (!saSelected || (bus.agu.valid && bus.agu.rsType == RSType::StoreAddr))
+      CPUstate.RSModule.saSelected = bus.saWakeChoice;
+  }
   if (input.dispatchBus.alu.valid) {
     int idx = input.dispatchBus.alu.rsIndex;
     CPUstate.RSModule.integerRS[idx].free = true;

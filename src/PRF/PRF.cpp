@@ -65,20 +65,20 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
       ready[ISSUE_WIDTH + port] = true;
     }
   }
-  // 2. Shared MUL/DIV/LQ result: exactly one physical write port.
-  if (!input.freeze && input.cdbOfShared.valid &&
-      input.ROBModule.matchesTag(input.cdbOfShared.robTag)) {
-    if (!input.squashDetect.needSquash ||
-        ROB::isOlder(input.cdbOfShared.robTag, input.squashDetect.SquashTag)) {
-      auto robIdx = robSlot(input.cdbOfShared.robTag);
-      auto value = input.cdbOfShared.value;
-      int newPhy = input.ROBModule.getNewPhy(robIdx);
+  // Load follows MUL/DIV in WB priority and has its own previous-edge record.
+  auto record = [&](unsigned port, const auto &cdb) {
+    if (!input.freeze && cdb.valid && input.ROBModule.matchesTag(cdb.robTag) &&
+        (!input.squashDetect.needSquash ||
+         ROB::isOlder(cdb.robTag, input.squashDetect.SquashTag))) {
+      const int newPhy = input.ROBModule.getNewPhy(robSlot(cdb.robTag));
       if (newPhy != InvalidPhy) {
-        writes[PRF_VALUE_WRITERS - 1] = {true, uint8_t(newPhy), uint32_t(value)};
-        ready[PRF_VALUE_WRITERS - 1] = true;
+        writes[ISSUE_WIDTH + port] = {true, uint8_t(newPhy), uint32_t(cdb.value)};
+        ready[ISSUE_WIDTH + port] = true;
       }
     }
-  }
+  };
+  record(MULDIV_CDB_PORT, input.cdbOfShared);
+  record(LOAD_CDB_PORT, input.cdbOfLoad);
   // One 1RW SRAM per real physical register. All idle banks read every edge,
   // including freeze; previous-edge writes bridge the unavailable SRAM rdata.
   for (unsigned writer = 0; writer < PRF_VALUE_WRITERS; ++writer) {

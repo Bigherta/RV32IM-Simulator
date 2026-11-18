@@ -24,6 +24,7 @@ struct PRFInput {
   aluCDB cdbOfALU;
   aluCDB cdbOfALUSecond;
   sharedCDB cdbOfShared;
+  lqCDB cdbOfLoad;
   const ROB &ROBModule;
   PRFInput(const ROB &rob, const IssueGroup &pkt)
       : ROBModule(rob), issuePacket(pkt) {}

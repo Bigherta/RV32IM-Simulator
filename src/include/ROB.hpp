@@ -35,6 +35,7 @@ struct ROBInput {
   aluCDB cdbOfALU;
   aluCDB cdbOfALUSecond;
   sharedCDB cdbOfShared;
+  lqCDB cdbOfLoad;
   const BRU &BRUModule;
   StoreCompletion storeCompletion;
   const IssueGroup &issuePacket;

@@ -8,6 +8,38 @@
 #include <cassert>
 #include <cstdint>
 
+namespace {
+struct AddressChoices {
+  DispatchInfo issue;
+  unsigned wake = 0;
+};
+
+template<class Row, std::size_t N>
+AddressChoices addressChoices(const Row (&rows)[N], unsigned selected,
+                              const PRF &prf, const OperandWriteback &ports,
+                              const SquashInfo &squash) {
+  DispatchInfo old, wake, held;
+  for (unsigned row = 0; row < N; ++row) {
+    const auto &r = rows[row];
+    const bool ready = !r.free && prf.isOperandReady(r.src1) && prf.isOperandReady(r.src2);
+    if (selected & (1u << row)) {
+      assert(ready && !held.valid);
+      held = {true, int(row), r.robTag};
+    }
+    if (ready && (!old.valid || ROB::isOlder(r.robTag, old.robTag)))
+      old = {true, int(row), r.robTag};
+    if (!r.free && !ready && !(selected & (1u << row)) &&
+        prf.isOperandReady(r.src1, ports) && prf.isOperandReady(r.src2, ports) &&
+        (!wake.valid || ROB::isOlder(r.robTag, wake.robTag)))
+      wake = {true, int(row), r.robTag};
+  }
+  auto issue = held.valid ? held : old;
+  if (squash.needSquash && !ROB::isOlder(issue.robTag, squash.SquashTag))
+    issue.valid = false;
+  return {issue, wake.valid ? 1u << wake.rsIndex : 0u};
+}
+}
+
 DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
                                        const AGU &agu, const BRU &bru,
                                        const MUL &mul, const DIV &div,
@@ -102,8 +134,12 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
     }
   }
 
-  // AGU channel: one memory-op dispatch per cycle, oldest first; loads
-  // (both sources ready) outrank store-address (single source ready).
+  // Each address pool prefers its held late-wakeup row, otherwise its oldest
+  // already-ready row. Only the actual AGU winner consumes a held choice.
+  const auto load = addressChoices(rs.loadRS, rs.loadSelected, prf, ports, squash);
+  const auto sa = addressChoices(rs.storeAddressRS, rs.saSelected, prf, ports, squash);
+  dispatch.loadWakeChoice = load.wake;
+  dispatch.saWakeChoice = sa.wake;
   const bool aguCanAccept =
       !agu.isFull() ||
       (!agu.isEmpty() &&
@@ -112,53 +148,22 @@ DispatchBus DispatchArbiter::arbitrate(const RSUnit &rs, const ALU &alu,
       (!agu.isEmpty() && squash.needSquash &&
        !ROB::isOlder(agu.headRobTag(), squash.SquashTag));
   if (aguCanAccept) {
-    bool foundAny = false;
-    int best = 0;
-    uint8_t bestTag = 0;
-    RSType bestType = RSType::Load;
-    for (int i = 0; i < LOADRS_CAP; ++i) {
-      const auto &rs_ = rs.loadRS[i];
-      if (!rs_.free && prf.isOperandReady(rs_.src1, ports) &&
-          prf.isOperandReady(rs_.src2, ports)) {
-        auto tag = rs_.robTag;
-        if (!foundAny || ROB::isOlder(tag, bestTag)) {
-          foundAny = true;
-          best = i;
-          bestTag = tag;
-          bestType = RSType::Load;
-        }
-      }
-    }
-    for (int i = 0; i < STORERS_CAP; ++i) {
-      const auto &rs_ = rs.storeAddressRS[i];
-      if (!rs_.free && prf.isOperandReady(rs_.src1, ports)) {
-        auto tag = rs_.robTag;
-        if (!foundAny || ROB::isOlder(tag, bestTag)) {
-          foundAny = true;
-          best = i;
-          bestTag = tag;
-          bestType = RSType::StoreAddr;
-        }
-      }
-    }
-    if (foundAny) {
-      dispatch.agu.rsIndex = best;
-      dispatch.agu.robTag = bestTag;
-      dispatch.agu.rsType = bestType;
-      dispatch.agu.valid = true;
-      if (squash.needSquash && !ROB::isOlder(bestTag, squash.SquashTag))
-        dispatch.agu.valid = false;
-    }
+    const bool chooseLoad = load.issue.valid &&
+        (!sa.issue.valid || ROB::isOlder(load.issue.robTag, sa.issue.robTag));
+    const auto &picked = chooseLoad ? load.issue : sa.issue;
+    dispatch.agu = {picked.valid, picked.rsIndex, picked.robTag,
+                    chooseLoad ? RSType::Load : RSType::StoreAddr};
   }
-  // BRU channel: oldest operand-ready branchRS entry.
+  // Loads still update PRF, but are not a same-cycle Branch issue source.
+  const auto branchPorts = branchIssueWritebacks(ports);
   if (!bru.isFull()) {
     bool foundAny = false;
     int best = 0;
     uint8_t bestTag = 0;
     for (int i = 0; i < BRANCHRS_CAP; ++i) {
       const auto &rs_ = rs.branchRS[i];
-      if (!rs_.free && prf.isOperandReady(rs_.src1, ports) &&
-          prf.isOperandReady(rs_.src2, ports)) {
+      if (!rs_.free && prf.isOperandReady(rs_.src1, branchPorts) &&
+          prf.isOperandReady(rs_.src2, branchPorts)) {
         auto tag = rs_.robTag;
         if (!foundAny || ROB::isOlder(tag, bestTag)) {
           foundAny = true;

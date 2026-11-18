@@ -6,7 +6,6 @@
 struct systemState;
 struct PRF;
 struct AGUInput {
-  OperandWriteback operandWriteback{};
   SquashInfo squashDetect;
   const RSUnit &RSModule;
   const PRF &PRFModule;

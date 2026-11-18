@@ -60,6 +60,8 @@ public:
   ReservationStation divideRS[DIVIDERS_CAP];
   LoadAddressRS loadRS[LOADRS_CAP];
   StoreAddressRS storeAddressRS[STORERS_CAP];
+  // One-hot old row selections. These hold while the other pool wins AGU.
+  unsigned loadSelected = 0, saSelected = 0;
   StoreValueReservationStation storeValueRS[STORERS_CAP];
   BranchReservationStation branchRS[BRANCHRS_CAP];
    int tryAllocInteger(const DispatchInfo &release = {}) const;
