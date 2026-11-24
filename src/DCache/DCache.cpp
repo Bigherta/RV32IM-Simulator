@@ -109,11 +109,13 @@ bool DCache::victimHazard(int miss) const {
 int DCache::hitWay() const {
   int selected = -1;
   if (readValid) {
-    const uint32_t tag = RequestBuffer[readIndex].request.address >> DCACHE_TAG_SHIFT;
-    for (int w = 0; w < NUM_OF_DCACHE_WAYS; ++w)
-      if (selected < 0 && (readWayMask & (1u << w)) &&
-          (metadata[w].readLane(0) & DCACHE_META_TAG_MASK) == tag)
-        selected = w;
+    for (int w = 0; w < NUM_OF_DCACHE_WAYS; ++w) {
+      const uint32_t tag = metadata[w].readLane(0) & DCACHE_META_TAG_MASK;
+      bool hit = false;
+      for (int slot = 0; slot < REQUEST_CAP; ++slot)
+        hit |= (tag == (RequestBuffer[slot].request.address >> DCACHE_TAG_SHIFT)) & (slot == readIndex);
+      if (selected < 0 && (readWayMask & (1u << w)) && hit) selected = w;
+    }
   }
   return selected;
 }
@@ -457,7 +459,8 @@ void DCache::plan(DCacheInput &input) const {
           (request.op == Operation::Store ? DCACHE_META_DIRTY : 0u);
     }
   } else if (input.store >= 0) {
-    const auto &entry = RequestBuffer[input.store];
+    assert(input.store == first);
+    const auto &entry = RequestBuffer[first];
     const auto &request = entry.request;
     const int w = input.storeHintFire ? input.storeHintWay :
         readValid && readIndex == input.store && way >= 0 ? way : entry.way;

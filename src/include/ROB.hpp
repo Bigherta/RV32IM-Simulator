@@ -24,6 +24,7 @@ struct ROBEntry {
   bool isIndirect = false; // JALR variant: target from reg, not static imm
   uint8_t lqTailSnapshot = 0;
   uint8_t sqTailSnapshot = 0;
+  uint8_t storeQueueIndex = 0; // Physical Store slot; snapshot is the post-allocation tail.
   uint8_t ckptId = 0;
   int newPhy = InvalidPhy; // InvalidPhy = instruction allocates no destination
   int oldPhy = InvalidPhy; // InvalidPhy = no mapping to free on commit

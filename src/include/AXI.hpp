@@ -84,6 +84,7 @@ class AXIData {
   std::array<std::array<uint32_t, DCACHE_WORDS_PER_LINE>, AXI_DATA_CAP> payload{};
   uint8_t dataBusy = 0;
   uint8_t rh = 0, rn = 0, wh = 0, wn = 0;
+  uint8_t readHeadOwner = 0, writeHeadOwner = 0, readHeadTxn = 0, writeHeadTxn = 0;
   // Epoch cursors retain the RTL's 16-row order ring, independently of credits.
   uint8_t rt = 0, wt = 0, ra = 0, rr = 0, wa = 0, wd = 0, wb = 0;
   MemWordReply wordResponse{}; // Registered accepted R beat; visible on the next cycle.

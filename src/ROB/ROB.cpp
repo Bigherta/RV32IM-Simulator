@@ -75,12 +75,12 @@ CommitPlan ROB::planCommit(const SquashInfo &squash, const SQ &sq) const {
       bool storeReady = entry.type != ROBType::STORE;
       bool exits = false;
       if (entry.type == ROBType::STORE) {
-        for (int row = 0; row < SQ_CAP; ++row) {
-          if (sq.isActive(row) && !sq.isCommitted(row) && sq.getRobTag(row) == tag &&
-              sq.isReadyToCommit(row)) {
-            storeReady = true;
-            exits = sq.getAddress(row) == AXI_EXIT_ADDR;
-          }
+        const auto row = entry.storeQueueIndex;
+        storeReady = sq.isActive(row) && !sq.isCommitted(row) &&
+                     sq.getRobTag(row) == tag && sq.isReadyToCommit(row);
+        if (storeReady) {
+          plan.storeMask |= uint64_t{1} << row;
+          exits = sq.getAddress(row) == AXI_EXIT_ADDR;
         }
       }
       if (storeReady) {

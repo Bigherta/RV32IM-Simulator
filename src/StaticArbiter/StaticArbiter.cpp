@@ -192,7 +192,7 @@ static bool yieldRamAccess(uint32_t address, unsigned bytes) {
 
 bool MemArbiter::storeAvailable(const SQ &sq, const ROB &rob, const SquashInfo &squash) {
   return !sq.isEmpty() && (sq.isCommitted(sq.getHead()) ||
-      rob.planCommit(squash, sq).contains(sq.headRobTag()));
+      rob.planCommit(squash, sq).retiresStore(sq.getHead()));
 }
 
 MemDispatchDecision MemArbiter::arbitrate(const LQ &LQ, const SQ &SQ,
@@ -212,7 +212,7 @@ MemDispatchDecision MemArbiter::arbitrate(const LQ &LQ, const SQ &SQ,
     safe = yieldRamAccess(addr, bytes);
     const auto retiring = rob.planCommit(squash, SQ);
     for (unsigned slot = 0; slot < SQ_CAP; ++slot) {
-      if (SQ.isActive(slot) && (SQ.isCommitted(slot) || retiring.contains(SQ.getRobTag(slot)))) {
+      if (SQ.isActive(slot) && (SQ.isCommitted(slot) || retiring.retiresStore(slot))) {
         if (!SQ.isAddressReady(slot) || !SQ.isValueReady(slot)) safe = false;
         else {
           const uint32_t other = SQ.getAddress(slot);
@@ -557,6 +557,7 @@ IssuePacket IssueArbiter::issue_Store(const IssueArbiterInput &input,
   p.storeValueRS.free = false;
   p.storeValueRS.data = resolveSrc(input, inst.rs2);
   p.robEntry = ROBEntry(ROBType::STORE);
+  p.robEntry.storeQueueIndex = memSlot(p.storeAddrRS.memIndex);
   p.robEntry.pc = inst.pc;
   // Include-self boundary on the SQ side; the store never enters the LQ,
   // so its lqTailSnapshot stays the raw tail.
@@ -943,6 +944,7 @@ IssueGroup IssueArbiter::buildPrefix(const IssueArbiterInput &input) {
             p.hasStore = true; p.storeAddrSlot = slots[5]; p.storeValueSlot = slots[6];
             payload(p.storeAddrRS);
             p.storeAddrRS.memIndex = MEM_STORE_BIT | ((input.SQModule.getTail() + stores) & SQ_MASK);
+            p.robEntry.storeQueueIndex = memSlot(p.storeAddrRS.memIndex);
             p.storeValueRS.free = false; p.storeValueRS.robTag = tag;
             p.storeValueRS.data = s2; p.storeValueRS.memIndex = p.storeAddrRS.memIndex;
           }

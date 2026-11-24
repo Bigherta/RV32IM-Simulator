@@ -148,13 +148,13 @@ bool AXIData::isWriteReplyReady() const {
 MemReply AXIData::reply() const {
   MemReply out{};
   out.address = readEntry(rh).address;
-  out.transaction = readEntry(rh).transaction;
+  out.transaction = readHeadTxn;
   if (isReplyReady())
     for (int i = 0; i < DCACHE_BLOCK_CAP; ++i)
       out.lineData[i] = payload[readOrder[rh]][i >> 2] >> ((i & 3) << 3);
   return out;
 }
-MemWriteReply AXIData::writeReply() const { return {writeEntry(wh).address, writeEntry(wh).transaction}; }
+MemWriteReply AXIData::writeReply() const { return {writeEntry(wh).address, writeHeadTxn}; }
 AXIMaster AXIData::port() const {
   AXIMaster out{};
   const int rd = readIssue(), aw = writeIssue(true), wd = writeIssue(false);
@@ -193,6 +193,22 @@ void AXIData::tick(const AXIDataInput &in, systemState &next) const {
     readSlot = freeDataSlot(reserved);
     allocated |= uint16_t{1} << readSlot;
   }
+  assert(readHeadOwner == readOrder[rh] && writeHeadOwner == writeOrder[wh]);
+  assert(readHeadTxn == entries[readHeadOwner].transaction && writeHeadTxn == entries[writeHeadOwner].transaction);
+  const auto ro = pushR && (rn == 0 || (in.replyConsumed && rn == 1)) ? readSlot :
+      in.replyConsumed ? readOrder[(rh + 1) & (AXI_ORDER_CAP - 1)] : readHeadOwner;
+  const auto wo = pushW && (wn == 0 || (in.writeConsumed && wn == 1)) ? writeSlot :
+      in.writeConsumed ? writeOrder[(wh + 1) & (AXI_ORDER_CAP - 1)] : writeHeadOwner;
+  // Use old descriptors, bypassing either writer on the edge exposing the head.
+  auto headTxn = [&](unsigned owner, bool pop, uint8_t held) {
+    return pushW && writeSlot == owner ? in.request.write.transaction :
+           pushR && readSlot == owner ? in.request.read.transaction :
+           pop ? entries[owner].transaction : held;
+  };
+  next.AXIDataModule.readHeadOwner = ro;
+  next.AXIDataModule.writeHeadOwner = wo;
+  next.AXIDataModule.readHeadTxn = headTxn(ro, in.replyConsumed, readHeadTxn);
+  next.AXIDataModule.writeHeadTxn = headTxn(wo, in.writeConsumed, writeHeadTxn);
   if (out.arValid && in.bus.arReady) {
     next.AXIDataModule.entries[readOrder[rd]].issued = readEntry(rd).issued + 1;
     if (readEntry(rd).issued + 1 == DCACHE_WORDS_PER_LINE)

@@ -63,6 +63,8 @@ struct CommitPlan {
   unsigned count = 0;
   std::array<RobTag, COMMIT_WIDTH> tags{};
   bool exits = false;
+  uint64_t storeMask = 0; // Authenticated physical SQ slots in the accepted prefix.
+  bool retiresStore(unsigned slot) const { return (storeMask & (uint64_t{1} << slot)) != 0; }
   bool contains(RobTag tag) const {
     bool found = false;
     for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane)
@@ -85,8 +87,9 @@ constexpr int DIVIDERS_CAP = 1;
 constexpr int STORERS_CAP = 2;
 constexpr int LOADRS_CAP = 2;
 constexpr int BRANCHRS_CAP = CPU_BRANCH_RS_ENTRIES;
-constexpr int LQ_CAP = 8;
-constexpr int SQ_CAP = 8;
+// Physical LSQ slots; outstanding Load transport credit is independent.
+constexpr int LQ_CAP = 4;
+constexpr int SQ_CAP = 4;
 constexpr int LQ_MASK = LQ_CAP - 1;
 constexpr int SQ_MASK = SQ_CAP - 1;
 constexpr int LQ_SEQ_MASK = (LQ_CAP << 1) - 1;
@@ -151,7 +154,7 @@ static_assert((1 << GHR_WIDTH) >= BHT_CAP &&
               "GHR must cover the direction-table index width");
 constexpr uint16_t HISTORY_MASK = (1u << GHR_WIDTH) - 1;
 #ifndef CPU_RAS_ENTRIES
-#define CPU_RAS_ENTRIES 8
+#define CPU_RAS_ENTRIES 3
 #endif
 constexpr int RAS_CAP = CPU_RAS_ENTRIES;
 static_assert(RAS_CAP > 0 && RAS_CAP <= 0xFF,

@@ -260,8 +260,7 @@ void SQ::tick(const SQInput &input, systemState &CPUstate) {
     pop(CPUstate);
   if (input.retireEnabled) {
     for (int i = 0; i < SQ_CAP; ++i) {
-      if (isActive(i) && input.commits.contains(SQqueue[i].robTag) &&
-          !SQqueue[i].isCommitted) {
+      if (input.commits.retiresStore(i)) {
         setCommitted(i, CPUstate);
       }
     }

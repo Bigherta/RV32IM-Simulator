@@ -65,7 +65,7 @@ private:
                             systemState &CPUstate) const;
   void setValueState(int index, ValueState state, systemState &CPUstate) const;
   void setCDBBroadcast(int index, systemState &CPUstate) const;
-  uint32_t applyStoreForward(const StoreNotify &notify,
+  uint32_t applyStoreForward(const StoreNotify &notify, int addressOverride,
                               systemState &CPUstate) const;
   bool notifyMatches(const StoreNotify &notify, int index) const;
   void flush(uint8_t tailSnapshot, systemState &CPUstate) const;

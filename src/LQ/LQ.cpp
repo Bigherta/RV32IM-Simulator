@@ -183,30 +183,32 @@ LoadResultCandidate LQ::resultCandidate(const LQInput &input) const {
   if (response.valid && matchesAddress(index, response.robTag) &&
       row.valueState == ValueState::FETCHING && !row.isCDBBroadcast &&
       (!input.squashDetect.needSquash || ROB::isOlder(response.robTag, input.squashDetect.SquashTag))) {
-    bool forwardPriority = false;
-    for (int lane = 0; lane < STORERS_CAP; ++lane)
-      forwardPriority |= notifyMatches(input.storeNotifies[lane], index);
     const auto event = addressBypass(input.AGUModule, input.SQModule,
                                      input.squashDetect, input.executeEnabled);
-    if (event.valid && event.index == index) forwardPriority = event.forwarded;
-    if (!forwardPriority && (!result.valid || ROB::isOlder(row.robTag, result.robTag) ||
-        (row.robTag == result.robTag && index < result.index)))
+    const bool sameAddressEvent = event.valid && event.index == index;
+    uint32_t raw = uint32_t(response.value);
+    if (!sameAddressEvent)
+      for (int lane = 0; lane < STORERS_CAP; ++lane)
+        if (notifyMatches(input.storeNotifies[lane], index))
+          raw = uint32_t(input.storeNotifies[lane].value);
+    if (!(sameAddressEvent && event.forwarded) && (!result.valid || ROB::isOlder(row.robTag, result.robTag) ||
+         (row.robTag == result.robTag && index < result.index)))
       result = {true, index, row.robTag,
-                extendLoad(uint32_t(response.value), row.nBytes, row.isUnsigned)};
+                extendLoad(raw, row.nBytes, row.isUnsigned)};
   }
   if (result.valid && input.squashDetect.needSquash &&
       !ROB::isOlder(result.robTag, input.squashDetect.SquashTag)) result.valid = false;
   return result;
 }
 
-uint32_t LQ::applyStoreForward(const StoreNotify &notify,
+uint32_t LQ::applyStoreForward(const StoreNotify &notify, int addressOverride,
                                systemState &CPUstate) const {
   uint32_t forwarded = 0;
   for (int k = 0; k < LQ_CAP; ++k) {
     uint8_t i = (head + k) & LQ_MASK;
     if (!isActive(i))
       break;
-    if (!LQqueue[i].isAddressReady || LQqueue[i].valueState == ValueState::READY ||
+    if (i == addressOverride || !LQqueue[i].isAddressReady || LQqueue[i].valueState == ValueState::READY ||
         LQqueue[i].isCDBBroadcast)
       continue;
     if (LQqueue[i].address != notify.addr || LQqueue[i].nBytes != notify.nBytes)
@@ -229,29 +231,23 @@ uint32_t LQ::applyStoreForward(const StoreNotify &notify,
 
 void LQ::tick(const LQInput &input, systemState &CPUstate) {
   uint32_t forwarded = 0; // Comb flag only: forwarding wins over a late reply.
+  const auto aguTag = input.AGUModule.headRobTag();
+  const auto aguRow = memSlot(input.AGUModule.headMemIndex());
+  const bool addressEvent = input.executeEnabled && !input.AGUModule.isEmpty() &&
+      !isStoreMem(input.AGUModule.headMemIndex()) && matchesAddress(aguRow, aguTag) &&
+      (!input.squashDetect.needSquash || ROB::isOlder(aguTag, input.squashDetect.SquashTag));
   // store-forward broadcasts from SQ (data-ready events pre-computed in comb)
   for (int i = 0; i < STORERS_CAP; ++i)
     if (input.storeNotifies[i].valid)
-      forwarded |= applyStoreForward(input.storeNotifies[i], CPUstate);
+      forwarded |= applyStoreForward(input.storeNotifies[i], addressEvent ? int(aguRow) : -1, CPUstate);
   // AGU: load address ready -> write address + query SQ for forwarding
-  if (input.executeEnabled && !input.AGUModule.isEmpty() &&
-      !isStoreMem(input.AGUModule.headMemIndex())) {
-    auto aguRobTag = input.AGUModule.headRobTag();
-    const auto index = memSlot(input.AGUModule.headMemIndex());
-    if (matchesAddress(index, aguRobTag) &&
-        (!input.squashDetect.needSquash ||
-         (input.squashDetect.needSquash &&
-          ROB::isOlder(aguRobTag, input.squashDetect.SquashTag)))) {
-      const uint32_t value = input.AGUModule.headValue();
-      writeAddress(value, index, CPUstate);
-      auto reply = input.SQModule.replyToLoadRequest(
-          value, LQqueue[index].nBytes, aguRobTag);
-      if (reply.valid && LQqueue[index].valueState != ValueState::READY &&
-          !LQqueue[index].isCDBBroadcast) {
-        writeValue(reply.value, index, LQqueue[index].nBytes,
-                   !LQqueue[index].isUnsigned, CPUstate);
-        forwarded |= 1u << index;
-      }
+  if (addressEvent) {
+    const auto value = input.AGUModule.headValue();
+    writeAddress(value, aguRow, CPUstate);
+    auto reply = input.SQModule.replyToLoadRequest(value, LQqueue[aguRow].nBytes, aguTag);
+    if (reply.valid && LQqueue[aguRow].valueState != ValueState::READY && !LQqueue[aguRow].isCDBBroadcast) {
+      writeValue(reply.value, aguRow, LQqueue[aguRow].nBytes, !LQqueue[aguRow].isUnsigned, CPUstate);
+      forwarded |= 1u << aguRow;
     }
   }
   // dispatch decision apply
