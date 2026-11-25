@@ -45,6 +45,30 @@ int32_t PRF::getValue(int index) const {
   return static_cast<int32_t>(value);
 }
 
+void PRF::advanceReplayTickets(const PRFInput &input, systemState &CPUstate) const {
+  if (input.squashDetect.needSquash) {
+    // The flush edge still sees the original live ROB window.
+    const RobTag head = input.ROBModule.getHead();
+    const unsigned boundary = (input.squashDetect.SquashTag - head) & ROB_TAG_MASK;
+    const unsigned live = (input.ROBModule.getNextTag() - head) & ROB_TAG_MASK;
+    assert(!input.recovery.active && boundary < live && live <= ROB_CAP);
+    for (unsigned slot = 0; slot < ROB_CAP; ++slot)
+      CPUstate.PRFModule.recycleWindow[slot] = slot > boundary && slot < live;
+    RobTag tag = head;
+    for (unsigned lane = 0; lane < RECOVERY_WIDTH; ++lane) {
+      CPUstate.PRFModule.recycleTags[lane] = tag;
+      tag = robNextTag(tag);
+    }
+  } else if (input.recovery.active) {
+    for (unsigned slot = 0; slot < ROB_CAP; ++slot)
+      CPUstate.PRFModule.recycleWindow[slot] =
+          slot + RECOVERY_WIDTH < ROB_CAP && recycleWindow[slot + RECOVERY_WIDTH];
+    for (unsigned lane = 0; lane < RECOVERY_WIDTH; ++lane)
+      CPUstate.PRFModule.recycleTags[lane] =
+          RobTag((recycleTags[lane] + RECOVERY_WIDTH) & ROB_TAG_MASK);
+  }
+}
+
 void PRF::tick(const PRFInput &input, systemState &CPUstate) {
   std::array<PRFWriteRecord, PRF_VALUE_WRITERS> writes{};
   std::array<bool, PRF_VALUE_WRITERS> ready{};
@@ -104,19 +128,27 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
       CPUstate.PRFModule.PhysicalRegs[bank + 1].everWritten = true;
     }
   }
-  if (!input.freeze) {
+  if (input.freeze) return;
+  if constexpr (useReplayTickets) advanceReplayTickets(input, CPUstate);
   PrfSeq writeTail = tailSeq; // Multiple recycle writes share one local cursor.
   // Squash recycles young destinations without clearing their payloads.
   if (input.recovery.active) {
     RobTag tag = input.recovery.nextTag;
     for (unsigned lane = 0; lane < RECOVERY_WIDTH; ++lane) {
-      const unsigned offset = unsigned(input.recovery.offset) + lane;
-      if (offset < ROB_CAP && offset < input.recovery.liveCount &&
-          input.replay[lane].tag == tag &&
-          ROB::isYounger(tag, input.recovery.squashTag)) {
-        const auto phy = input.replay[lane].newPhy;
-        if (phy != InvalidPhy) push(phy, writeTail, CPUstate);
+      const auto &entry = input.replay[lane];
+      const auto original = [&] {
+        const unsigned offset = unsigned(input.recovery.offset) + lane;
+        return offset < ROB_CAP && offset < input.recovery.liveCount &&
+               entry.tag == tag && ROB::isYounger(tag, input.recovery.squashTag);
+      };
+      bool eligible;
+      if constexpr (useReplayTickets) {
+        eligible = recycleWindow[lane] && entry.tag == recycleTags[lane];
+        assert(recycleTags[lane] == tag && eligible == original());
+      } else {
+        eligible = original();
       }
+      if (eligible && entry.newPhy != InvalidPhy) push(entry.newPhy, writeTail, CPUstate);
       tag = robNextTag(tag);
     }
   } else if (!input.squashDetect.needSquash) {
@@ -134,16 +166,14 @@ void PRF::tick(const PRFInput &input, systemState &CPUstate) {
   }
   // 7. release the old physical register
   for (unsigned lane = 0; lane < COMMIT_WIDTH; ++lane) {
-   if (lane < input.commits.count) {
-    int headIdx = robSlot(input.commits.tags[lane]);
-    if (!input.ROBModule.isHalt(headIdx) &&
-        (input.ROBModule.getType(headIdx) == ROBType::REGISTER ||
-         input.ROBModule.getType(headIdx) == ROBType::LINK)) {
-      int oldPhy = input.ROBModule.getOldPhy(headIdx);
-      if (oldPhy != InvalidPhy)
-        push(oldPhy, writeTail, CPUstate);
+    if (lane < input.commits.count) {
+      int headIdx = robSlot(input.commits.tags[lane]);
+      if (!input.ROBModule.isHalt(headIdx) &&
+          (input.ROBModule.getType(headIdx) == ROBType::REGISTER ||
+           input.ROBModule.getType(headIdx) == ROBType::LINK)) {
+        int oldPhy = input.ROBModule.getOldPhy(headIdx);
+        if (oldPhy != InvalidPhy) push(oldPhy, writeTail, CPUstate);
+      }
     }
-  }
-  }
   }
 }

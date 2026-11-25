@@ -2,6 +2,7 @@
 #include "ROB.hpp"
 #include "SRAM.hpp"
 #include "common.hpp"
+#include <array>
 #include <cstdint>
 struct IssueGroup;
 struct PRFEntry {
@@ -32,12 +33,17 @@ struct PRFInput {
 struct systemState;
 class PRF {
 private:
+  static constexpr bool useReplayTickets =
+      ISSUE_WIDTH == 4 && (ROB_CAP & (ROB_CAP - 1)) == 0;
   PRFEntry PhysicalRegs[PRF_CAP];
   SRAM<1, 32> payload[PRF_CAP - 1]; // P0 has no storage bank.
   std::array<PRFWriteRecord, PRF_VALUE_WRITERS> priorWrites{};
   uint8_t freeList[PRF_CAP];
   PrfSeq headSeq = 0;
   PrfSeq tailSeq = 0;
+  std::array<bool, ROB_CAP> recycleWindow{};
+  std::array<RobTag, RECOVERY_WIDTH> recycleTags{};
+  void advanceReplayTickets(const PRFInput &, systemState &) const;
   void push(int index, PrfSeq &writeTail, systemState &CPUstate) const;
 
 public:
